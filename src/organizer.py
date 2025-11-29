@@ -129,12 +129,6 @@ class Organizer:
 
     async def organize_emails(self):
         """Iterate over unprocessed emails and organize them."""
-        # Fetch current folders from mailbox
-        user_folders = self.poller.get_user_folders()
-        if not user_folders:
-            # Fallback to standard if fetch fails
-            user_folders = STANDARD_FOLDERS
-            
         conn = get_connection(self.db_path)
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM emails WHERE processed_at IS NULL")
@@ -142,9 +136,9 @@ class Organizer:
         conn.close()
 
         for email in emails:
-            await self._process_email(email, user_folders)
+            await self._process_email(email)
 
-    async def _process_email(self, email, folders: list[str]):
+    async def _process_email(self, email):
         conn = get_connection(self.db_path)
         logger.info(f"Processing email {email['id']}: {email['subject']}")
         
@@ -152,8 +146,8 @@ class Organizer:
         email_content = f"Subject: {email['subject']}\nSender: {email['sender']}\nPreview: {email['body_preview']}"
         
         try:
-            # Run AI Agent
-            result = await self._get_agent(folders).run(email_content)
+            # Run AI Agent with STANDARD_FOLDERS
+            result = await self._get_agent(STANDARD_FOLDERS).run(email_content)
             decision = result.output
             
             logger.info(f"AI Decision for {email['id']}: {decision}")

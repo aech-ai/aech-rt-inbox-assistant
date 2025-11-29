@@ -15,7 +15,7 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-def _service_loop(user_email: str, poll_interval: int, run_once: bool, reprocess: bool):
+def _service_loop(user_email: str, poll_interval: int, run_once: bool):
     db_path = get_db_path(user_email)
     logger.info(f"Initializing database at {db_path}")
     init_db(db_path)
@@ -23,13 +23,6 @@ def _service_loop(user_email: str, poll_interval: int, run_once: bool, reprocess
     poller = GraphPoller(db_path, user_email)
     poller.ensure_standard_folders()
     
-    if reprocess:
-        logger.info("Starting full reprocessing of all folders...")
-        poller.reprocess_all_folders()
-        logger.info("Reprocessing complete.")
-        if run_once:
-            return
-
     organizer = Organizer(db_path, poller, user_email)
 
     logger.info("Starting Inbox Assistant Service")
@@ -58,11 +51,6 @@ def run(argv=None):
         help="Run a single poll/organize cycle and exit.",
     )
     parser.add_argument(
-        "--reprocess",
-        action="store_true",
-        help="Scan all folders and reset email status for reprocessing.",
-    )
-    parser.add_argument(
         "--poll-interval",
         type=int,
         default=None,
@@ -72,7 +60,7 @@ def run(argv=None):
 
     user_email = os.environ.get("DELEGATED_USER", "unknown@example.com")
     poll_interval = args.poll_interval or int(os.environ.get("POLL_INTERVAL", 5))
-    _service_loop(user_email, poll_interval, run_once=args.once, reprocess=args.reprocess)
+    _service_loop(user_email, poll_interval, run_once=args.once)
 
 
 if __name__ == "__main__":
