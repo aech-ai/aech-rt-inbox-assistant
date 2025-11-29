@@ -1,0 +1,28 @@
+services:
+  inbox-assistant:
+    build:
+      context: ..
+      dockerfile: aech-rt-inbox-assistant/Dockerfile
+    image: aech-rt-inbox-assistant
+    env_file:
+      - .env
+      - ./data/public.env
+    volumes:
+      # Mount specific user's data directory
+      # This assumes the host has data/users/... structure
+      - ./data/users/${DELEGATED_USER}:/home/agentaech
+      # Mount triggers file
+      - ./data/rt-triggers.json:/data/rt-triggers.json
+      # Mount token cache
+      - ./data/app_context/aech-cli-msgraph/token_cache.json:/app/token_cache.json
+    restart: unless-stopped
+    environment:
+      - PYTHONUNBUFFERED=1
+      - OPENAI_API_KEY
+      - MSGRAPH_TOKEN
+      - DELEGATED_USER
+      - POLL_INTERVAL
+      - MODEL_NAME
+      - AZURE_CLIENT_ID
+      - AZURE_TENANT_ID
+      - MSGRAPH_TOKEN_CACHE_PATH=/app/token_cache.json

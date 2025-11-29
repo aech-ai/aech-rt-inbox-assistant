@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aech-rt-inbox-assistant"
+version = "0.1.0"
+description = "Delegated inbox management CLI for Agent Aech"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "typer",
+    "requests",
+    "pydantic",
+    "pydantic-ai",
+    "openai",
+    "msal",
+]
+
+[project.scripts]
+aech-rt-inbox-assistant = "src.main:run"
+
+[tool.setuptools.packages.find]
+include = ["src"]

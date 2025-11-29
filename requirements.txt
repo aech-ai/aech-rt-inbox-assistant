@@ -1,0 +1,6 @@
+requests
+pydantic
+pydantic-ai
+openai
+msal
+pysqlite3
