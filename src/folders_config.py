@@ -16,6 +16,7 @@ STANDARD_FOLDERS = [
     "Security Notifications",
     "Updates",
     "Forums",
+    "Cold Outreach",
     "Should Delete",
 ]
 

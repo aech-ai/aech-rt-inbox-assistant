@@ -18,35 +18,90 @@ class EmailCategory(BaseModel):
 
 import os
 
-def _build_agent() -> Agent:
-    """Create the AI agent lazily to avoid requiring API keys at import time."""
+def _build_agent(available_folders: list[str]) -> Agent:
+    """Create the AI agent with dynamic folder list."""
     model_name = os.getenv("MODEL_NAME", "openai-responses:gpt-4.1-mini")
-    allowed_folders = ", ".join(STANDARD_FOLDERS)
+    
+    # Use provided folders, falling back to standard if empty (shouldn't happen if poller works)
+    folders_list = available_folders if available_folders else STANDARD_FOLDERS
+    allowed_folders_str = ", ".join(folders_list)
+    
+    cleanup_strategy = os.getenv("CLEANUP_STRATEGY", "medium").lower()
+    
     allowed_categories = ", ".join([
         "Work", "Personal", "Newsletter", "Social", "Updates", "Security Notifications",
-        "Receipts", "Promotions", "Finance", "Urgent", "Delete"
+        "Receipts", "Promotions", "Finance", "Urgent", "Cold Outreach", "Delete"
     ])
     system_prompt = f"""
-You are an expert email organizer. Analyze the email and choose a category, action, and destination folder.
+You are an expert email organizer. Your goal is to deeply understand the INTENT of each email and categorize it accordingly.
 
-Categories allowed:
+### 1. Intent Analysis (CRITICAL)
+- **Do not rely on keywords alone.** Look at the Subject, Sender, and Body together to determine the *primary purpose* of the email.
+- **Analyze the underlying message**: Is this a status update? A travel itinerary? A work request? A social notification?
+- **Context matters**: A "Travel" keyword in a status update (e.g., "I am travelling") does not make the email a "Travel" document. "Travel" is for *your* bookings and itineraries.
+- **Sender matters**: Who is sending this? Is it a service, a colleague, or a friend?
+
+### 2. Few-Shot Examples (Guide your reasoning)
+
+**Example 1: The "False Positive" Travel**
+- **Subject**: Automatic reply: Project Roadmap Q4
+- **Body**: I am currently travelling with limited access to email until Nov 27th.
+- **Analysis**: The sender is unavailable. This information is temporary and has no long-term value.
+- **Category**: "Delete".
+- **Action**: move -> Should Delete.
+
+**Example 2: Real Travel**
+- **Subject**: Flight Confirmation: SFO to LHR
+- **Body**: Your flight UA901 is confirmed. Seat 4A.
+- **Analysis**: This is a booking for *you*.
+- **Category**: "Travel".
+- **Action**: move -> Travel.
+
+**Example 3: Social Notification**
+- **Subject**: You appeared in 5 searches this week
+- **Sender**: LinkedIn <notifications@linkedin.com>
+- **Analysis**: Automated platform notification.
+- **Category**: "Social".
+- **Action**: move -> Social.
+
+**Example 4: Work via Social Platform**
+- **Subject**: Project collaboration inquiry
+- **Sender**: James Dolan via LinkedIn
+- **Body**: Hi Steven, I'd like to discuss the Q4 roadmap...
+- **Analysis**: Although from LinkedIn, the *content* is a direct work request.
+- **Category**: "Work".
+- **Action**: move -> Work.
+
+**Example 5: Newsletter vs Promotion**
+- **Subject**: The Daily Tech Digest: AI Agents on the rise
+- **Body**: Here are the top stories in tech today...
+- **Analysis**: Informational content, recurring.
+- **Category**: "Newsletters".
+- **Action**: move -> Newsletters.
+
+### 3. Cleanup Strategy (Current Level: {cleanup_strategy.upper()})
+- **Goal**: Suggest removal of clutter by moving it to the "Should Delete" folder. NEVER hard delete.
+- **Low**: Only move obvious spam/phishing/junk to "Should Delete".
+- **Medium**: Move spam + old/irrelevant newsletters (> 3 months) to "Should Delete".
+- **Aggressive**: Move spam + any newsletter/promo > 1 month + cold outreach to "Should Delete".
+
+### 4. Categories allowed:
 - Must be exactly one of: {allowed_categories}
-- Use 'Delete' only when the email is spam/phishing/junk where deletion is safe.
+- Use 'Delete' (mapped to "Should Delete" folder) for items that match the cleanup strategy.
+- Use 'Cold Outreach' for unsolicited sales/networking emails.
 - Use 'Urgent' only for truly time-sensitive items.
 
-Rules for destination_folder:
-- Must be exactly one of: {allowed_folders}
-- Do NOT invent new folders or subfolders; no slashes or custom names.
-- If nothing precise fits, choose the closest from the list (e.g., LinkedIn or networking → Social; general work topics → Work; generic notifications → Updates; digests → Newsletters; security alerts → Security Notifications; order/receipts → Receipts).
+### 5. Rules for destination_folder:
+- Must be exactly one of: {allowed_folders_str}
+- **CRITICAL**: You MUST choose a folder from the list above. Do NOT invent new folders.
+- If nothing precise fits, choose the closest from the list.
 - If no move is appropriate, set action='none' and leave destination_folder null.
 
-Actions allowed:
+### 6. Actions allowed:
 - move: only when destination_folder is in the approved list above.
-- delete: only when the email is clearly junk, spam, phishing, or otherwise safe to remove. Do NOT set a destination_folder for delete.
+- delete: **DEPRECATED**. Do NOT use 'delete'. Instead, use 'move' with destination_folder='Should Delete'.
 - mark_important: only for genuinely urgent/time-sensitive items.
 - none: when no action is needed.
-
-For suspected junk that should be reviewed (not hard-deleted), use action='move' with destination_folder='Should Delete'.
 """
     return Agent(
         model_name,
@@ -60,14 +115,26 @@ class Organizer:
         self.poller = poller
         self.user_email = user_email
         self.agent: Optional[Agent] = None
+        self.current_folders: list[str] = []
 
-    def _get_agent(self) -> Agent:
-        if self.agent is None:
-            self.agent = _build_agent()
+    def _get_agent(self, folders: list[str]) -> Agent:
+        # Rebuild agent if folders have changed or if agent is not initialized
+        # Sort folders to ensure consistent comparison
+        sorted_folders = sorted(folders)
+        if self.agent is None or sorted_folders != self.current_folders:
+            logger.info("Rebuilding agent with updated folder list")
+            self.agent = _build_agent(folders)
+            self.current_folders = sorted_folders
         return self.agent
 
     async def organize_emails(self):
         """Iterate over unprocessed emails and organize them."""
+        # Fetch current folders from mailbox
+        user_folders = self.poller.get_user_folders()
+        if not user_folders:
+            # Fallback to standard if fetch fails
+            user_folders = STANDARD_FOLDERS
+            
         conn = get_connection(self.db_path)
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM emails WHERE processed_at IS NULL")
@@ -75,9 +142,9 @@ class Organizer:
         conn.close()
 
         for email in emails:
-            await self._process_email(email)
+            await self._process_email(email, user_folders)
 
-    async def _process_email(self, email):
+    async def _process_email(self, email, folders: list[str]):
         conn = get_connection(self.db_path)
         logger.info(f"Processing email {email['id']}: {email['subject']}")
         
@@ -86,7 +153,7 @@ class Organizer:
         
         try:
             # Run AI Agent
-            result = await self._get_agent().run(email_content)
+            result = await self._get_agent(folders).run(email_content)
             decision = result.output
             
             logger.info(f"AI Decision for {email['id']}: {decision}")
