@@ -1,39 +1,89 @@
 import logging
-import json
+import os
 from typing import Optional
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 from .database import get_connection
 from .poller import GraphPoller
+from .preferences import read_preferences
 from .triggers import write_trigger
 from .folders_config import STANDARD_FOLDERS, FOLDER_ALIASES
 
 logger = logging.getLogger(__name__)
 
+class AvailabilityRequestInfo(BaseModel):
+    time_window: Optional[str] = Field(
+        default=None,
+        description="Requested time window (natural language or structured).",
+    )
+    duration_minutes: Optional[int] = Field(
+        default=None,
+        description="Requested meeting duration in minutes, if specified.",
+    )
+    timezone: Optional[str] = Field(
+        default=None,
+        description="IANA timezone (e.g. America/Los_Angeles).",
+    )
+    constraints: Optional[str] = Field(
+        default=None,
+        description="Constraints like 'no fridays' or 'avoid mornings'.",
+    )
+    proposed_slots: list[str] = Field(
+        default_factory=list,
+        description="Optional ISO-8601 intervals if explicit times are suggested.",
+    )
+
 class EmailCategory(BaseModel):
-    category: str = Field(description="The category of the email (e.g., Work, Personal, Spam, Newsletter, Finance, Urgent)")
+    category: str = Field(description="Must be one of the standard folder categories")
     reason: str = Field(description="The reason for this categorization")
     action: str = Field(description="Recommended action: 'move', 'delete', 'mark_important', 'none'")
     destination_folder: Optional[str] = Field(description="Name of the folder to move to, if action is 'move'")
 
-import os
+    labels: list[str] = Field(
+        default_factory=list,
+        description="Short labels like: pitch, marketing, billing, vip, action_required, newsletter.",
+    )
+    confidence: float = Field(
+        default=0.7,
+        ge=0,
+        le=1,
+        description="Overall confidence score (0-1).",
+    )
+
+    requires_reply: bool = Field(
+        default=False,
+        description="True if the user should reply (direct question, decision, approval, etc).",
+    )
+    reply_reason: Optional[str] = Field(
+        default=None,
+        description="Short reason why a reply is needed (if requires_reply=true).",
+    )
+
+    availability_requested: bool = Field(
+        default=False,
+        description="True if the email is requesting meeting availability/scheduling.",
+    )
+    availability: Optional[AvailabilityRequestInfo] = Field(
+        default=None,
+        description="Structured scheduling request details (if availability_requested=true).",
+    )
 
 def _build_agent(available_folders: list[str]) -> Agent:
     """Create the AI agent with dynamic folder list."""
-    model_name = os.getenv("MODEL_NAME", "openai-responses:gpt-4.1-mini")
-    
+    model_name = os.getenv("MODEL_NAME", "openai-responses:gpt-5-mini")
+
     # Use provided folders, falling back to standard if empty (shouldn't happen if poller works)
     folders_list = available_folders if available_folders else STANDARD_FOLDERS
     allowed_folders_str = ", ".join(folders_list)
-    
+
+    # The worker will add the prefix (e.g., aa_) automatically; model should NOT include it.
+    folder_prefix = os.getenv("FOLDER_PREFIX", "aa_")
+
     cleanup_strategy = os.getenv("CLEANUP_STRATEGY", "medium").lower()
-    
-    allowed_categories = ", ".join([
-        "Work", "Personal", "Newsletter", "Social", "Updates", "Security Notifications",
-        "Receipts", "Promotions", "Finance", "Urgent", "Cold Outreach", "Delete"
-    ])
+
+    allowed_categories = ", ".join(STANDARD_FOLDERS)
     system_prompt = f"""
-You are an expert email organizer. Your goal is to deeply understand the INTENT of each email and categorize it accordingly.
+You are an expert executive assistant. Your goal is to deeply understand the INTENT of each email and (a) triage it into a standard folder category, and (b) surface executive-assistant signals like "requires reply" and "availability request".
 
 ### 1. Intent Analysis (CRITICAL)
 - **Do not rely on keywords alone.** Look at the Subject, Sender, and Body together to determine the *primary purpose* of the email.
@@ -47,7 +97,7 @@ You are an expert email organizer. Your goal is to deeply understand the INTENT 
 - **Subject**: Automatic reply: Project Roadmap Q4
 - **Body**: I am currently travelling with limited access to email until Nov 27th.
 - **Analysis**: The sender is unavailable. This information is temporary and has no long-term value.
-- **Category**: "Delete".
+- **Category**: "Should Delete".
 - **Action**: move -> Should Delete.
 
 **Example 2: Real Travel**
@@ -85,14 +135,15 @@ You are an expert email organizer. Your goal is to deeply understand the INTENT 
 - **Medium**: Move spam + old/irrelevant newsletters (> 3 months) to "Should Delete".
 - **Aggressive**: Move spam + any newsletter/promo > 1 month + cold outreach to "Should Delete".
 
-### 4. Categories allowed:
+### 4. Categories allowed (must match exactly):
 - Must be exactly one of: {allowed_categories}
-- Use 'Delete' (mapped to "Should Delete" folder) for items that match the cleanup strategy.
+- Use 'Should Delete' for items that match the cleanup strategy.
 - Use 'Cold Outreach' for unsolicited sales/networking emails.
 - Use 'Urgent' only for truly time-sensitive items.
 
 ### 5. Rules for destination_folder:
 - Must be exactly one of: {allowed_folders_str}
+- Do NOT include the prefix "{folder_prefix}" in the folder name; the system will add it automatically.
 - **CRITICAL**: You MUST choose a folder from the list above. Do NOT invent new folders.
 - If nothing precise fits, choose the closest from the list.
 - If no move is appropriate, set action='none' and leave destination_folder null.
@@ -102,6 +153,14 @@ You are an expert email organizer. Your goal is to deeply understand the INTENT 
 - delete: **DEPRECATED**. Do NOT use 'delete'. Instead, use 'move' with destination_folder='Should Delete'.
 - mark_important: only for genuinely urgent/time-sensitive items.
 - none: when no action is needed.
+
+### 7. Executive assistant signals (set these fields explicitly):
+- labels: include any of: vip, action_required, billing, marketing, newsletter, pitch, security.
+- confidence: 0-1 overall confidence.
+- requires_reply: true if the sender is asking a direct question, requesting a decision, or needs approval.
+- reply_reason: short reason when requires_reply=true (e.g. direct_question, asks_for_decision, approval_needed).
+- availability_requested: true if the email asks to schedule a meeting or requests availability.
+- availability: if availability_requested=true, fill any of: duration_minutes, timezone, time_window, constraints, proposed_slots.
 """
     return Agent(
         model_name,
@@ -110,12 +169,42 @@ You are an expert email organizer. Your goal is to deeply understand the INTENT 
     )
 
 class Organizer:
-    def __init__(self, db_path: str, poller: GraphPoller, user_email: str):
-        self.db_path = db_path
+    def __init__(self, poller: GraphPoller):
         self.poller = poller
-        self.user_email = user_email
+        self.user_email = poller.user_email
         self.agent: Optional[Agent] = None
         self.current_folders: list[str] = []
+
+    def _canonicalize_folders(self, folders: list[str]) -> list[str]:
+        """
+        Normalize folder names to the standard set and strip any prefix (e.g., aa_).
+        This prevents old folder names from being treated as distinct targets.
+        """
+        prefix = (getattr(self.poller, "folder_prefix", "") or "").lower()
+        lower_standard = {name.lower(): name for name in STANDARD_FOLDERS}
+        lower_aliases = {alias.lower(): target for alias, target in FOLDER_ALIASES.items()}
+
+        canonical: set[str] = set()
+        for folder in folders or []:
+            if not folder:
+                continue
+
+            base_name = folder
+            lower_name = folder.lower()
+
+            if prefix and lower_name.startswith(prefix):
+                base_name = folder[len(self.poller.folder_prefix):]
+                lower_name = base_name.lower()
+
+            if lower_name in lower_standard:
+                canonical.add(lower_standard[lower_name])
+            elif lower_name in lower_aliases:
+                canonical.add(lower_aliases[lower_name])
+
+        if not canonical:
+            return STANDARD_FOLDERS
+
+        return sorted(canonical)
 
     def _get_agent(self, folders: list[str]) -> Agent:
         # Rebuild agent if folders have changed or if agent is not initialized
@@ -129,28 +218,46 @@ class Organizer:
 
     async def organize_emails(self):
         """Iterate over unprocessed emails and organize them."""
-        conn = get_connection(self.db_path)
+        prefs = read_preferences()
+
+        # Fetch current folders from mailbox
+        user_folders = self.poller.get_user_folders()
+        available_folders = self._canonicalize_folders(user_folders)
+
+        conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM emails WHERE processed_at IS NULL")
         emails = cursor.fetchall()
         conn.close()
 
         for email in emails:
-            await self._process_email(email)
+            await self._process_email(email, available_folders, prefs)
 
-    async def _process_email(self, email):
-        conn = get_connection(self.db_path)
+        self._emit_followup_triggers(prefs)
+        self._emit_weekly_digest_trigger(prefs)
+
+    async def _process_email(self, email, folders: list[str], prefs: dict):
+        conn = get_connection()
         logger.info(f"Processing email {email['id']}: {email['subject']}")
         
         # Construct context for AI
-        email_content = f"Subject: {email['subject']}\nSender: {email['sender']}\nPreview: {email['body_preview']}"
+        vip_senders = {str(s).strip().lower() for s in (prefs.get("vip_senders") or []) if str(s).strip()}
+        is_vip_sender = str(email["sender"] or "").strip().lower() in vip_senders
+        email_content = (
+            f"VIP_SENDER: {str(is_vip_sender).lower()}\n"
+            f"Subject: {email['subject']}\nSender: {email['sender']}\nPreview: {email['body_preview']}"
+        )
         
         try:
-            # Run AI Agent with STANDARD_FOLDERS
-            result = await self._get_agent(STANDARD_FOLDERS).run(email_content)
+            # Run AI Agent
+            result = await self._get_agent(folders).run(email_content)
             decision = result.output
             
             logger.info(f"AI Decision for {email['id']}: {decision}")
+
+            # Enrich labels deterministically
+            if is_vip_sender:
+                decision.labels = list({*(getattr(decision, "labels", []) or []), "vip"})
             
             # Execute Action
             self._execute_action(email['id'], decision)
@@ -171,15 +278,77 @@ class Organizer:
                     (decision.category, email['id'])
                 )
                 logger.debug(f"Marked email {email['id']} processed with category {decision.category}")
+
+            # Persist labels
+            try:
+                conn.execute("DELETE FROM labels WHERE message_id = ?", (email["id"],))
+                for label in getattr(decision, "labels", []) or []:
+                    label_str = str(label).strip()
+                    if not label_str:
+                        continue
+                    conn.execute(
+                        "INSERT OR REPLACE INTO labels (message_id, label, confidence) VALUES (?, ?, ?)",
+                        (email["id"], label_str, float(getattr(decision, "confidence", 0.0) or 0.0)),
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to persist labels for {email['id']}: {e}")
+
+            # Persist reply tracking for follow-ups
+            if getattr(decision, "requires_reply", False):
+                reply_reason = getattr(decision, "reply_reason", None) or decision.reason
+                conn.execute(
+                    """
+                    INSERT INTO reply_tracking (message_id, requires_reply, reason, last_activity_at)
+                    VALUES (?, 1, ?, ?)
+                    ON CONFLICT(message_id) DO UPDATE SET
+                        requires_reply=1,
+                        reason=excluded.reason,
+                        last_activity_at=excluded.last_activity_at
+                    """,
+                    (email["id"], reply_reason, email["received_at"]),
+                )
             conn.commit()
             
             # Create Trigger if Urgent
             if decision.category.lower() == "urgent" or decision.action == "mark_important":
                 write_trigger(self.user_email, "urgent_email", {
                     "subject": email['subject'],
-                    "id": email['id'],
+                    "sender": email["sender"],
+                    "message_id": email["id"],
+                    "received_at": email["received_at"],
                     "reason": decision.reason
                 })
+
+            if getattr(decision, "requires_reply", False):
+                write_trigger(
+                    self.user_email,
+                    "reply_needed",
+                    {
+                        "message_id": email["id"],
+                        "subject": email["subject"],
+                        "sender": email["sender"],
+                        "received_at": email["received_at"],
+                        "reason": getattr(decision, "reply_reason", None) or decision.reason,
+                    },
+                )
+
+            if getattr(decision, "availability_requested", False):
+                availability = getattr(decision, "availability", None)
+                default_timezone = str(prefs.get("timezone") or os.getenv("DEFAULT_TIMEZONE", "UTC"))
+                write_trigger(
+                    self.user_email,
+                    "availability_requested",
+                    {
+                        "message_id": email["id"],
+                        "subject": email["subject"],
+                        "requester": email["sender"],
+                        "time_window": getattr(availability, "time_window", None),
+                        "duration_minutes": getattr(availability, "duration_minutes", None) or 30,
+                        "timezone": getattr(availability, "timezone", None) or default_timezone,
+                        "constraints": getattr(availability, "constraints", None),
+                        "proposed_slots": getattr(availability, "proposed_slots", None) or [],
+                    },
+                )
                 
         except Exception as e:
             conn.rollback()
@@ -196,6 +365,211 @@ class Organizer:
         finally:
             conn.close()
 
+    def _emit_followup_triggers(self, prefs: dict) -> None:
+        followup_n_days = int(prefs.get("followup_n_days") or os.getenv("FOLLOWUP_N_DAYS", "2"))
+        if followup_n_days <= 0:
+            return
+
+        conn = get_connection()
+        try:
+            rows = conn.execute(
+                """
+                SELECT rt.message_id, rt.last_activity_at, e.subject, e.sender
+                FROM reply_tracking rt
+                JOIN emails e ON e.id = rt.message_id
+                WHERE rt.requires_reply = 1
+                  AND rt.follow_up_sent_at IS NULL
+                  AND rt.nudge_scheduled_at IS NULL
+                  AND rt.last_activity_at IS NOT NULL
+                ORDER BY rt.last_activity_at ASC
+                LIMIT 50
+                """
+            ).fetchall()
+
+            from datetime import datetime, timezone, timedelta
+
+            now = datetime.now(timezone.utc)
+            for row in rows:
+                last_activity_raw = row["last_activity_at"]
+                try:
+                    last_activity = datetime.fromisoformat(
+                        str(last_activity_raw).replace("Z", "+00:00")
+                    )
+                    if last_activity.tzinfo is None:
+                        last_activity = last_activity.replace(tzinfo=timezone.utc)
+                except Exception:
+                    continue
+
+                waiting = now - last_activity
+                if waiting < timedelta(days=followup_n_days):
+                    continue
+
+                message_id = row["message_id"]
+                days_waiting = max(followup_n_days, int(waiting.days))
+                follow_up_draft = (
+                    f"Following up on \"{row['subject']}\" — do you have an update?\n\n"
+                    "Thanks!"
+                )
+
+                write_trigger(
+                    self.user_email,
+                    "no_reply_after_n_days",
+                    {
+                        "message_id": message_id,
+                        "subject": row["subject"],
+                        "sender": row["sender"],
+                        "last_activity_at": last_activity_raw,
+                        "days_waiting": days_waiting,
+                        "follow_up_draft": follow_up_draft,
+                    },
+                )
+                conn.execute(
+                    "UPDATE reply_tracking SET nudge_scheduled_at = CURRENT_TIMESTAMP WHERE message_id = ?",
+                    (message_id,),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _emit_weekly_digest_trigger(self, prefs: dict) -> None:
+        enabled = os.getenv("ENABLE_WEEKLY_DIGEST", "").strip().lower() in {"1", "true", "yes"}
+        if not enabled and not (("digest_day" in prefs) or ("digest_time_local" in prefs)):
+            return
+
+        digest_day = str(prefs.get("digest_day") or os.getenv("DIGEST_DAY", "friday")).strip().lower()
+        digest_time = str(prefs.get("digest_time_local") or os.getenv("DIGEST_TIME_LOCAL", "08:30")).strip()
+        timezone_name = str(prefs.get("timezone") or os.getenv("DEFAULT_TIMEZONE", "UTC")).strip()
+
+        try:
+            from zoneinfo import ZoneInfo
+
+            tz = ZoneInfo(timezone_name)
+        except Exception:
+            from datetime import timezone
+
+            tz = timezone.utc
+
+        from datetime import datetime, timedelta
+
+        now_local = datetime.now(tz)
+        weekday_map = {
+            "monday": 0,
+            "tuesday": 1,
+            "wednesday": 2,
+            "thursday": 3,
+            "friday": 4,
+            "saturday": 5,
+            "sunday": 6,
+        }
+        if digest_day not in weekday_map:
+            return
+
+        try:
+            hour_str, minute_str = digest_time.split(":", 1)
+            digest_hour = int(hour_str)
+            digest_minute = int(minute_str)
+        except Exception:
+            return
+
+        window_minutes = int(os.getenv("DIGEST_WINDOW_MINUTES", "30"))
+        scheduled_today = now_local.replace(hour=digest_hour, minute=digest_minute, second=0, microsecond=0)
+        in_window = (
+            now_local.weekday() == weekday_map[digest_day]
+            and scheduled_today <= now_local <= scheduled_today + timedelta(minutes=window_minutes)
+        )
+        if not in_window:
+            return
+
+        week_start = (now_local.date() - timedelta(days=now_local.date().weekday()))
+        week_end = week_start + timedelta(days=6)
+        week_start_iso = week_start.isoformat()
+
+        conn = get_connection()
+        try:
+            last = conn.execute(
+                "SELECT value FROM user_preferences WHERE key = ?",
+                ("_internal.last_weekly_digest_week_start",),
+            ).fetchone()
+            if last and str(last[0]) == week_start_iso:
+                return
+
+            rows = conn.execute(
+                """
+                SELECT id, subject, sender, received_at, category, body_preview
+                FROM emails
+                WHERE received_at IS NOT NULL
+                ORDER BY received_at DESC
+                LIMIT 500
+                """
+            ).fetchall()
+
+            top_items: list[dict] = []
+            newsletter_summaries: list[dict] = []
+            recommended_actions: list[str] = []
+
+            for row in rows:
+                received_raw = row["received_at"]
+                try:
+                    received_dt = datetime.fromisoformat(str(received_raw).replace("Z", "+00:00"))
+                    if received_dt.tzinfo is None:
+                        received_dt = received_dt.replace(tzinfo=tz)
+                    received_local = received_dt.astimezone(tz)
+                except Exception:
+                    continue
+
+                if not (week_start <= received_local.date() <= week_end):
+                    continue
+
+                category = row["category"] or ""
+                if category == "Newsletters":
+                    if len(newsletter_summaries) < 20:
+                        newsletter_summaries.append(
+                            {
+                                "from": row["sender"],
+                                "subject": row["subject"],
+                                "summary": (row["body_preview"] or "")[:280],
+                            }
+                        )
+                    continue
+
+                if category in {"Urgent", "Action Required"} and row["subject"]:
+                    recommended_actions.append(row["subject"])
+
+                if len(top_items) < 15:
+                    top_items.append(
+                        {
+                            "title": row["subject"],
+                            "why_it_matters": f"From {row['sender']} ({category or 'unclassified'})",
+                            "links": [row["id"]],
+                        }
+                    )
+
+            write_trigger(
+                self.user_email,
+                "weekly_digest_ready",
+                {
+                    "week_start": week_start_iso,
+                    "week_end": week_end.isoformat(),
+                    "top_items": top_items,
+                    "newsletter_summaries": newsletter_summaries,
+                    "recommended_actions": recommended_actions[:20],
+                },
+            )
+
+            conn.execute(
+                """
+                INSERT INTO user_preferences (key, value, updated_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(key) DO UPDATE SET
+                    value = excluded.value,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                ("_internal.last_weekly_digest_week_start", week_start_iso),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
     def _normalize_folder_name(self, folder_name: str) -> Optional[str]:
         """
         Normalize and validate folder name against standard folders.
@@ -203,17 +577,24 @@ class Organizer:
         """
         if not folder_name:
             return None
-            
+
+        prefix = (getattr(self.poller, "folder_prefix", "") or "").lower()
+        lower_name = folder_name.lower()
+
+        # Strip known prefix if present (e.g., aa_Work -> Work)
+        if prefix and lower_name.startswith(prefix):
+            folder_name = folder_name[len(self.poller.folder_prefix):]
+            lower_name = folder_name.lower()
+
         # Check exact match (case-insensitive)
         for std_folder in STANDARD_FOLDERS:
-            if folder_name.lower() == std_folder.lower():
+            if lower_name == std_folder.lower():
                 return std_folder
-        
+
         # Check aliases
-        lower_name = folder_name.lower()
         if lower_name in FOLDER_ALIASES:
             return FOLDER_ALIASES[lower_name]
-        
+
         # Not a valid standard folder
         logger.warning(f"Folder '{folder_name}' not in standard folder list. Skipping.")
         return None

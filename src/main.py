@@ -4,7 +4,7 @@ import logging
 import os
 import time
 
-from src.database import init_db, get_db_path
+from src.database import init_db, get_connection
 from src.poller import GraphPoller
 from src.organizer import Organizer
 
@@ -15,15 +15,22 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-def _service_loop(user_email: str, poll_interval: int, run_once: bool):
-    db_path = get_db_path(user_email)
-    logger.info(f"Initializing database at {db_path}")
-    init_db(db_path)
+def service_loop(user_email: str, poll_interval: int, run_once: bool, reprocess: bool, reprocess_only: bool):
+    logger.info("Initializing database...")
+    init_db()
 
-    poller = GraphPoller(db_path, user_email)
+    logger.info("Initializing poller...")
+    poller = GraphPoller()
     poller.ensure_standard_folders()
     
-    organizer = Organizer(db_path, poller, user_email)
+    if reprocess:
+        logger.info("Starting full reprocessing of all folders...")
+        poller.reprocess_all_folders()
+        logger.info("Reprocessing complete.")
+        if reprocess_only:
+            return
+
+    organizer = Organizer(poller)
 
     logger.info("Starting Inbox Assistant Service")
     logger.info(f"User: {user_email}")
@@ -44,11 +51,25 @@ def _service_loop(user_email: str, poll_interval: int, run_once: bool):
 
 
 def run(argv=None):
+    user_email = os.environ.get("DELEGATED_USER")
+    if not user_email:
+        raise ValueError("DELEGATED_USER environment variable must be set") 
+    
     parser = argparse.ArgumentParser(description="Aech Inbox Assistant service runner")
     parser.add_argument(
         "--once",
         action="store_true",
         help="Run a single poll/organize cycle and exit.",
+    )
+    parser.add_argument(
+        "--reprocess",
+        action="store_true",
+        help="Scan all folders and reset email status for reprocessing.",
+    )
+    parser.add_argument(
+        "--reprocess-only",
+        action="store_true",
+        help="Reprocess folders and exit without running an organize cycle.",
     )
     parser.add_argument(
         "--poll-interval",
@@ -58,9 +79,17 @@ def run(argv=None):
     )
     args = parser.parse_args(argv)
 
-    user_email = os.environ.get("DELEGATED_USER", "unknown@example.com")
+    if args.reprocess_only and not args.reprocess:
+        parser.error("--reprocess-only must be used together with --reprocess")
+
     poll_interval = args.poll_interval or int(os.environ.get("POLL_INTERVAL", 5))
-    _service_loop(user_email, poll_interval, run_once=args.once)
+    service_loop(
+        user_email,
+        poll_interval,
+        run_once=args.once,
+        reprocess=args.reprocess,
+        reprocess_only=args.reprocess_only,
+    )
 
 
 if __name__ == "__main__":

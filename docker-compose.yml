@@ -1,19 +1,18 @@
 services:
   inbox-assistant:
     build:
-      context: ..
-      dockerfile: aech-rt-inbox-assistant/Dockerfile
+      context: .
+      dockerfile: Dockerfile
     image: aech-rt-inbox-assistant
     env_file:
       - .env
-      - ./data/public.env
     volumes:
-      # Mount specific user's data directory
-      # This assumes the host has data/users/... structure
       - ./data/users/${DELEGATED_USER}:/home/agentaech
-      # Mount triggers file
-      - ./data/rt-triggers.json:/data/rt-triggers.json
-      # Mount token cache
+      # Preferred RT trigger outbox (one file per trigger)
+      - ./data/rt_triggers/inbox-assistant:/triggers/outbox:rw
+      # Optional legacy trigger file (set RT_WRITE_LEGACY=1 to use)
+      # - ./data/rt-triggers.json:/triggers/rt-triggers.json:rw
+      # Token cache (explicit for clarity)
       - ./data/app_context/aech-cli-msgraph/token_cache.json:/app/token_cache.json
     restart: unless-stopped
     environment:

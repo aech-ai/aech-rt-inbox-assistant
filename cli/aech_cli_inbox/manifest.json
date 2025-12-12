@@ -1,0 +1,82 @@
+{
+  "name": "inbox",
+  "type": "cli",
+  "description": "Query Inbox Assistant state (SQLite) and per-user preferences.json.",
+  "command": "aech-cli-inbox",
+  "actions": [
+    {
+      "name": "list",
+      "description": "List ingested emails.",
+      "parameters": [
+        {"name": "limit", "type": "option", "required": false, "description": "Number of emails to list."},
+        {"name": "include-read", "type": "flag", "required": false, "description": "Include read emails."},
+        {"name": "json", "type": "flag", "required": false, "description": "Output as JSON."}
+      ]
+    },
+    {
+      "name": "history",
+      "description": "View triage history.",
+      "parameters": [
+        {"name": "limit", "type": "option", "required": false, "description": "Number of entries to list."},
+        {"name": "json", "type": "flag", "required": false, "description": "Output as JSON."}
+      ]
+    },
+    {
+      "name": "search",
+      "description": "Search emails in the local DB.",
+      "parameters": [
+        {"name": "query", "type": "argument", "required": true, "description": "Search query."},
+        {"name": "limit", "type": "option", "required": false, "description": "Number of results to return."},
+        {"name": "json", "type": "flag", "required": false, "description": "Output as JSON."}
+      ]
+    },
+    {
+      "name": "reply-needed",
+      "description": "List messages currently marked as requiring a reply.",
+      "parameters": [
+        {"name": "limit", "type": "option", "required": false, "description": "Number of messages to list."},
+        {"name": "json", "type": "flag", "required": false, "description": "Output as JSON."}
+      ]
+    },
+    {
+      "name": "dbpath",
+      "description": "Print the resolved SQLite DB path.",
+      "parameters": []
+    },
+    {
+      "name": "schema",
+      "description": "Print CREATE TABLE statements from SQLite.",
+      "parameters": []
+    },
+    {
+      "name": "prefs show",
+      "description": "Show preferences.json.",
+      "parameters": []
+    },
+    {
+      "name": "prefs set",
+      "description": "Set a key in preferences.json.",
+      "parameters": [
+        {"name": "key", "type": "argument", "required": true, "description": "Preference key."},
+        {"name": "value", "type": "argument", "required": true, "description": "Preference value (string/number/bool/JSON)."}
+      ]
+    },
+    {
+      "name": "prefs unset",
+      "description": "Unset a key in preferences.json.",
+      "parameters": [
+        {"name": "key", "type": "argument", "required": true, "description": "Preference key."}
+      ]
+    }
+  ],
+  "documentation": {
+    "usage": "aech-cli-inbox <command> [args]",
+    "examples": [
+      "aech-cli-inbox list --include-read",
+      "aech-cli-inbox search urgent --json",
+      "aech-cli-inbox reply-needed",
+      "aech-cli-inbox prefs set teams_default_target 'chat:<composite_id>'",
+      "aech-cli-inbox prefs set followup_n_days 2"
+    ]
+  }
+}

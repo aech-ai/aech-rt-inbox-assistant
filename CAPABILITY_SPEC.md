@@ -173,11 +173,10 @@ The key point: **the CLI is a separate pip package** that gets built into a `.wh
 ```
 RT-Service                   Shared Filesystem              CLI (in Agent Worker)
     │                              │                              │
-    ├──writes──▶  data/users/{email}/{name}/  ◀──reads────────────┤
-    │                   ├── state.sqlite                          │
-    │                   └── config.json                           │
-    │                                                             │
-    └──trigger──▶  data/rt-triggers.json  ◀──poll── Agent Manager─┘
+    ├──writes──▶  data/users/{email}/capabilities/{name}/  ◀──reads────────────┤
+    │                   └── state.sqlite                                     │
+    │                                                                        │
+    └──trigger──▶  data/rt_triggers/{name}/*.json  ◀──poll── Agent Manager───┘
 ```
 
 **When to use:**
@@ -216,10 +215,10 @@ services:
     env_file:
       - .env
     volumes:
-      # Mount specific user's data directory
-      - ../data/users/${DELEGATED_USER}/{name}:/data
-      # Mount triggers file for writing
-      - ../data/rt-triggers.json:/triggers/rt-triggers.json
+      # Mount the delegated user's directory (capability state lives under /home/agentaech/capabilities/{name}/)
+      - ../data/users/${DELEGATED_USER}:/home/agentaech:rw
+      # Preferred trigger outbox (one file per trigger)
+      - ../data/rt_triggers/{name}:/triggers/outbox:rw
     restart: unless-stopped
 
 # No network needed - communicates via filesystem
@@ -236,31 +235,41 @@ POLL_INTERVAL=60                   # Seconds between polls
 ### Data Directory Structure
 
 ```
-data/users/{email}/{name}/
-├── state.sqlite          # Primary data store
-├── config.json           # User-specific configuration
-└── cache/                # Temporary files
+data/users/{email}/
+├── capabilities/{name}/
+│   ├── state.sqlite          # Primary data store
+│   └── ...                  # capability-owned user state
+├── sessions/<session_id>/    # Aech sessions (created by Manager)
+└── preferences.json          # Aech routing prefs (optional)
 ```
 
 ### Trigger Format
 
-RT-capabilities write triggers to `data/rt-triggers.json`:
+Preferred: RT-capabilities write one-file-per-trigger JSON documents to:
+
+`data/rt_triggers/{name}/*.json`
 
 ```json
 {
-  "{name}": [
-    {
-      "id": "uuid-v4",
-      "user": "user@example.com",
-      "type": "event_type",
-      "created_at": "2025-01-15T10:30:00Z",
-      "payload": {
-        "key": "value"
-      }
-    }
-  ]
+  "id": "uuid-v4",
+  "user": "user@example.com",
+  "type": "event_type",
+  "created_at": "2025-01-15T10:30:00Z",
+  "payload": {
+    "key": "value"
+  },
+  "routing": {
+    "channel": "teams",
+    "target": "chat:<composite_id>"
+  }
 }
 ```
+
+Atomic write pattern:
+1. write `.../<uuid>.json.tmp`
+2. rename to `.../<uuid>.json`
+
+Legacy (supported): `data/rt-triggers.json` with `{ "{name}": [ ... ] }` (avoid for production).
 
 **Required trigger fields:**
 
@@ -281,19 +290,18 @@ RT-capabilities write triggers to `data/rt-triggers.json`:
 │       │                                                         │
 │       ▼                                                         │
 │  ┌─────────────┐                                                │
-│  │   pending   │  (in rt-triggers.json)                         │
+│  │   pending   │  (in rt_triggers/{name}/<id>.json)             │
 │  └─────────────┘                                                │
 │       │                                                         │
-│       │  Manager polls, picks up trigger                        │
+│       │  Manager polls, claims by rename/move (atomic)          │
 │       ▼                                                         │
 │  ┌─────────────┐                                                │
-│  │ processing  │  (Manager adds _processing: true)              │
+│  │ processing  │  (file claimed; session spawned)               │
 │  └─────────────┘                                                │
 │       │                                                         │
-│       ├──success──▶  Manager removes trigger                    │
+│       ├──success──▶  Manager moves to _done/ (or deletes)        │
 │       │                                                         │
-│       └──failure──▶  Manager removes _processing flag           │
-│                      (trigger remains for retry)                │
+│       └──failure──▶  Manager moves back for retry               │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -452,11 +460,14 @@ if __name__ == "__main__":
 │   ├── sessions/
 │   ├── users/
 │   │   └── user@example.com/
-│   │       ├── inbox-assistant/    # RT-capability data
+│   │       ├── capabilities/
+│   │       │   ├── inbox-assistant/    # RT-capability data
 │   │       └── ...
 │   ├── app_context/
 │   │   └── helpdesk/               # Shared service data
-│   └── rt-triggers.json
+│   └── rt_triggers/
+│       ├── inbox-assistant/
+│       └── helpdesk/
 ├── aech-main/
 │   └── capabilities/
 │       └── clis/
