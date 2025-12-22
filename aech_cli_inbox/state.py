@@ -41,7 +41,13 @@ def get_preferences_path() -> Path:
 
 
 def connect_db() -> sqlite3.Connection:
-    conn = sqlite3.connect(get_db_path())
+    db_path = get_db_path()
+    if not db_path.exists():
+        raise FileNotFoundError(
+            f"Database not found at {db_path}. "
+            "The inbox has not been synced yet."
+        )
+    conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     return conn
 
