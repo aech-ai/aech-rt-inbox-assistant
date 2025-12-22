@@ -120,7 +120,7 @@ def write_trigger(
         trigger["routing"] = routing
 
     outbox = outbox_dir or Path(os.environ.get("RT_OUTBOX_DIR", "/triggers/outbox"))
-    dedupe_root = dedupe_dir or Path(os.environ.get("RT_DEDUPE_DIR", str(outbox.parent / "dedupe")))
+    dedupe_root = dedupe_dir or Path(os.environ.get("RT_DEDUPE_DIR", str(outbox.parent / "dedupe" / "emitted")))
     ttl_seconds = _dedupe_ttl_seconds(dedupe_ttl_days)
     if not _claim_dedupe_marker(dedupe_root, dedupe_key, ttl_seconds, trigger_uuid):
         return trigger
