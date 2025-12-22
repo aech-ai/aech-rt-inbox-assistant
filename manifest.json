@@ -1,65 +1,65 @@
 {
   "name": "inbox",
   "type": "cli",
-  "description": "Query Inbox Assistant state (SQLite), manage corpus, and search emails.",
+  "description": "Query Inbox Assistant state (SQLite), manage corpus, and search emails. All commands output JSON by default.",
   "command": "aech-cli-inbox",
   "actions": [
     {
       "name": "list",
-      "description": "List ingested emails.",
+      "description": "List ingested emails (JSON by default).",
       "parameters": [
         {"name": "limit", "type": "option", "required": false, "description": "Number of emails to list."},
         {"name": "include-read", "type": "flag", "required": false, "description": "Include read emails."},
-        {"name": "json", "type": "flag", "required": false, "description": "Output as JSON."}
+        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
       ]
     },
     {
       "name": "search",
-      "description": "Search emails and attachments with FTS, vector, or hybrid mode.",
+      "description": "Search emails and attachments with FTS, vector, or hybrid mode (JSON by default).",
       "parameters": [
         {"name": "query", "type": "argument", "required": true, "description": "Search query."},
         {"name": "limit", "type": "option", "required": false, "description": "Number of results to return."},
         {"name": "mode", "type": "option", "required": false, "description": "Search mode: fts, vector, or hybrid."},
-        {"name": "json", "type": "flag", "required": false, "description": "Output as JSON."}
+        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
       ]
     },
     {
       "name": "sync-status",
-      "description": "Show the sync status for all folders.",
+      "description": "Show the sync status for all folders (JSON by default).",
       "parameters": [
-        {"name": "json", "type": "flag", "required": false, "description": "Output as JSON."}
+        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
       ]
     },
     {
       "name": "stats",
-      "description": "Show corpus statistics (emails, attachments, chunks, embeddings).",
+      "description": "Show corpus statistics (emails, attachments, chunks, embeddings) (JSON by default).",
       "parameters": [
-        {"name": "json", "type": "flag", "required": false, "description": "Output as JSON."}
+        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
       ]
     },
     {
       "name": "attachment-status",
-      "description": "Show attachment extraction status.",
+      "description": "Show attachment extraction status (JSON by default).",
       "parameters": [
         {"name": "limit", "type": "option", "required": false, "description": "Number of attachments to list."},
         {"name": "status", "type": "option", "required": false, "description": "Filter by status (pending/success/failed/unsupported)."},
-        {"name": "json", "type": "flag", "required": false, "description": "Output as JSON."}
+        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
       ]
     },
     {
       "name": "history",
-      "description": "View triage history.",
+      "description": "View triage history (JSON by default).",
       "parameters": [
         {"name": "limit", "type": "option", "required": false, "description": "Number of entries to list."},
-        {"name": "json", "type": "flag", "required": false, "description": "Output as JSON."}
+        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
       ]
     },
     {
       "name": "reply-needed",
-      "description": "List messages currently marked as requiring a reply.",
+      "description": "List messages currently marked as requiring a reply (JSON by default).",
       "parameters": [
         {"name": "limit", "type": "option", "required": false, "description": "Number of messages to list."},
-        {"name": "json", "type": "flag", "required": false, "description": "Output as JSON."}
+        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
       ]
     },
     {
@@ -74,7 +74,7 @@
     },
     {
       "name": "prefs show",
-      "description": "Show preferences.json.",
+      "description": "Show preferences.json (always JSON).",
       "parameters": []
     },
     {
@@ -98,7 +98,8 @@
     "examples": [
       "aech-cli-inbox list --include-read",
       "aech-cli-inbox search 'contract renewal' --mode hybrid",
-      "aech-cli-inbox stats --json",
+      "aech-cli-inbox stats",
+      "aech-cli-inbox stats --human",
       "aech-cli-inbox sync-status",
       "aech-cli-inbox reply-needed",
       "aech-cli-inbox prefs show"

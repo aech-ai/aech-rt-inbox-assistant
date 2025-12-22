@@ -25,64 +25,64 @@ app.add_typer(prefs_app, name="prefs")
 def list(
     limit: int = typer.Option(20, help="Number of emails to list"),
     include_read: bool = typer.Option(False, "--include-read", help="Include read emails"),
-    json_output: bool = typer.Option(False, "--json", help="Output as JSON")
+    human: bool = typer.Option(False, "--human", help="Human-readable output instead of JSON")
 ):
     """List ingested emails."""
     conn = connect_db()
     cursor = conn.cursor()
-    
+
     query = "SELECT * FROM emails WHERE 1=1"
     params = []
-    
+
     if not include_read:
         query += " AND is_read = 0"
-        
+
     query += " ORDER BY received_at DESC LIMIT ?"
     params.append(limit)
-    
+
     cursor.execute(query, params)
     rows = cursor.fetchall()
-    
+
     emails = [dict(row) for row in rows]
-    
-    if json_output:
-        typer.echo(json.dumps(emails, default=str))
-    else:
+
+    if human:
         if not emails:
             typer.echo("No emails found.")
         for email in emails:
             typer.echo(f"[{email['id']}] {email['subject']} ({email['category']})")
+    else:
+        typer.echo(json.dumps(emails, default=str))
 
 @app.command()
 def history(
     limit: int = typer.Option(20, help="Number of entries to list"),
-    json_output: bool = typer.Option(False, "--json", help="Output as JSON")
+    human: bool = typer.Option(False, "--human", help="Human-readable output instead of JSON")
 ):
     """View triage history."""
     conn = connect_db()
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT t.*, e.subject 
-        FROM triage_log t 
-        JOIN emails e ON t.email_id = e.id 
+        SELECT t.*, e.subject
+        FROM triage_log t
+        JOIN emails e ON t.email_id = e.id
         ORDER BY t.timestamp DESC LIMIT ?
     """, (limit,))
     rows = cursor.fetchall()
-    
+
     logs = [dict(row) for row in rows]
-    
-    if json_output:
-        typer.echo(json.dumps(logs, default=str))
-    else:
+
+    if human:
         for log in logs:
             typer.echo(f"{log['timestamp']} - {log['action']} - {log['subject']} -> {log['destination_folder']} ({log['reason']})")
+    else:
+        typer.echo(json.dumps(logs, default=str))
 
 @app.command()
 def search(
     query: str,
     limit: int = typer.Option(20, help="Number of results to return"),
     mode: str = typer.Option("fts", help="Search mode: fts, vector, or hybrid"),
-    json_output: bool = typer.Option(False, "--json", help="Output as JSON")
+    human: bool = typer.Option(False, "--human", help="Human-readable output instead of JSON")
 ):
     """Search emails and attachments in the local DB."""
     # Use hybrid search if mode is vector or hybrid
@@ -92,9 +92,7 @@ def search(
 
             results = search_with_source_details(query, limit, mode)
 
-            if json_output:
-                typer.echo(json.dumps(results, default=str))
-            else:
+            if human:
                 if not results:
                     typer.echo("No results.")
                     return
@@ -120,6 +118,8 @@ def search(
 
                     typer.echo(f"  Preview: {r['content_preview'][:100]}...")
                     typer.echo("")
+            else:
+                typer.echo(json.dumps(results, default=str))
             return
 
         except ImportError as e:
@@ -163,13 +163,13 @@ def search(
         rows = cursor.fetchall()
         results = [dict(row) for row in rows]
 
-    if json_output:
-        typer.echo(json.dumps(results, default=str))
-    else:
+    if human:
         if not results:
             typer.echo("No results.")
         for email in results:
             typer.echo(f"[{email['id']}] {email['subject']} ({email.get('category')})")
+    else:
+        typer.echo(json.dumps(results, default=str))
 
 @app.command()
 def dbpath():
@@ -179,7 +179,7 @@ def dbpath():
 
 @app.command("sync-status")
 def sync_status(
-    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+    human: bool = typer.Option(False, "--human", help="Human-readable output instead of JSON"),
 ):
     """Show the sync status for all folders."""
     conn = connect_db()
@@ -197,9 +197,7 @@ def sync_status(
 
     status = [dict(r) for r in rows]
 
-    if json_output:
-        typer.echo(json.dumps(status, default=str))
-    else:
+    if human:
         if not status:
             typer.echo("No sync state found. Run a full sync first.")
             return
@@ -208,11 +206,13 @@ def sync_status(
         for s in status:
             delta = "Yes" if s["has_delta_link"] else "No"
             typer.echo(f"{s['folder_id'][:38]:<40} {str(s['last_sync_at']):<20} {s['sync_type']:<8} {s['messages_synced']:<10} {delta}")
+    else:
+        typer.echo(json.dumps(status, default=str))
 
 
 @app.command()
 def stats(
-    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+    human: bool = typer.Option(False, "--human", help="Human-readable output instead of JSON"),
 ):
     """Show corpus statistics."""
     conn = connect_db()
@@ -257,9 +257,7 @@ def stats(
 
     conn.close()
 
-    if json_output:
-        typer.echo(json.dumps(stats_data))
-    else:
+    if human:
         typer.echo("=== Email Corpus Statistics ===")
         typer.echo(f"Total emails:              {stats_data['total_emails']:,}")
         typer.echo(f"Emails with full body:     {stats_data['emails_with_body']:,}")
@@ -277,13 +275,15 @@ def stats(
         typer.echo("=== Sync State ===")
         typer.echo(f"Folders synced:            {stats_data['folders_synced']:,}")
         typer.echo(f"Total synced messages:     {stats_data['total_synced_messages']:,}")
+    else:
+        typer.echo(json.dumps(stats_data))
 
 
 @app.command("attachment-status")
 def attachment_status(
     limit: int = typer.Option(20, help="Number of attachments to list"),
     status_filter: str = typer.Option(None, "--status", help="Filter by status (pending/success/failed/unsupported)"),
-    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+    human: bool = typer.Option(False, "--human", help="Human-readable output instead of JSON"),
 ):
     """Show attachment extraction status."""
     conn = connect_db()
@@ -311,9 +311,7 @@ def attachment_status(
 
     attachments = [dict(r) for r in rows]
 
-    if json_output:
-        typer.echo(json.dumps(attachments, default=str))
-    else:
+    if human:
         if not attachments:
             typer.echo("No attachments found.")
             return
@@ -334,6 +332,8 @@ def attachment_status(
             if a["extraction_error"]:
                 typer.echo(f"  Error: {a['extraction_error']}")
             typer.echo("")
+    else:
+        typer.echo(json.dumps(attachments, default=str))
 
 @app.command()
 def schema():
@@ -358,7 +358,7 @@ def schema():
 @app.command("reply-needed")
 def reply_needed(
     limit: int = typer.Option(20, help="Number of messages to list"),
-    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+    human: bool = typer.Option(False, "--human", help="Human-readable output instead of JSON"),
 ):
     """List messages currently marked as requiring a reply."""
     conn = connect_db()
@@ -376,14 +376,15 @@ def reply_needed(
     conn.close()
 
     items = [dict(r) for r in rows]
-    if json_output:
+
+    if human:
+        if not items:
+            typer.echo("No reply-needed items.")
+            return
+        for item in items:
+            typer.echo(f"[{item['message_id']}] {item['subject']} ({item['sender']}) - {item.get('reason')}")
+    else:
         typer.echo(json.dumps(items, default=str))
-        return
-    if not items:
-        typer.echo("No reply-needed items.")
-        return
-    for item in items:
-        typer.echo(f"[{item['message_id']}] {item['subject']} ({item['sender']}) - {item.get('reason')}")
 
 
 @prefs_app.command("show")
