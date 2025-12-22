@@ -1,8 +1,8 @@
 {
-  "name": "inbox",
+  "name": "inbox-assistant",
   "type": "cli",
   "description": "Query Inbox Assistant state (SQLite), manage corpus, and search emails. All commands output JSON by default.",
-  "command": "aech-cli-inbox",
+  "command": "aech-cli-inbox-assistant",
   "actions": [
     {
       "name": "list",
@@ -94,15 +94,15 @@
     }
   ],
   "documentation": {
-    "usage": "aech-cli-inbox <command> [args]",
+    "usage": "aech-cli-inbox-assistant <command> [args]",
     "examples": [
-      "aech-cli-inbox list --include-read",
-      "aech-cli-inbox search 'contract renewal' --mode hybrid",
-      "aech-cli-inbox stats",
-      "aech-cli-inbox stats --human",
-      "aech-cli-inbox sync-status",
-      "aech-cli-inbox reply-needed",
-      "aech-cli-inbox prefs show"
+      "aech-cli-inbox-assistant list --include-read",
+      "aech-cli-inbox-assistant search 'contract renewal' --mode hybrid",
+      "aech-cli-inbox-assistant stats",
+      "aech-cli-inbox-assistant stats --human",
+      "aech-cli-inbox-assistant sync-status",
+      "aech-cli-inbox-assistant reply-needed",
+      "aech-cli-inbox-assistant prefs show"
     ]
   }
 }
