@@ -1,7 +1,7 @@
 {
   "name": "inbox",
   "type": "cli",
-  "description": "Query Inbox Assistant state (SQLite) and per-user preferences.json.",
+  "description": "Query Inbox Assistant state (SQLite), manage corpus, and search emails.",
   "command": "aech-cli-inbox",
   "actions": [
     {
@@ -14,19 +14,74 @@
       ]
     },
     {
-      "name": "history",
-      "description": "View triage history.",
+      "name": "search",
+      "description": "Search emails and attachments with FTS, vector, or hybrid mode.",
       "parameters": [
-        {"name": "limit", "type": "option", "required": false, "description": "Number of entries to list."},
+        {"name": "query", "type": "argument", "required": true, "description": "Search query."},
+        {"name": "limit", "type": "option", "required": false, "description": "Number of results to return."},
+        {"name": "mode", "type": "option", "required": false, "description": "Search mode: fts, vector, or hybrid."},
         {"name": "json", "type": "flag", "required": false, "description": "Output as JSON."}
       ]
     },
     {
-      "name": "search",
-      "description": "Search emails in the local DB.",
+      "name": "init-db",
+      "description": "Initialize or migrate the database schema.",
+      "parameters": []
+    },
+    {
+      "name": "sync",
+      "description": "Sync emails from M365 mailbox (full or delta).",
       "parameters": [
-        {"name": "query", "type": "argument", "required": true, "description": "Search query."},
-        {"name": "limit", "type": "option", "required": false, "description": "Number of results to return."},
+        {"name": "mode", "type": "option", "required": false, "description": "Sync mode: full or delta."},
+        {"name": "folder", "type": "option", "required": false, "description": "Specific folder ID to sync."},
+        {"name": "json", "type": "flag", "required": false, "description": "Output as JSON."}
+      ]
+    },
+    {
+      "name": "sync-status",
+      "description": "Show the sync status for all folders.",
+      "parameters": [
+        {"name": "json", "type": "flag", "required": false, "description": "Output as JSON."}
+      ]
+    },
+    {
+      "name": "process",
+      "description": "Process emails for chunking and embedding generation.",
+      "parameters": [
+        {"name": "limit", "type": "option", "required": false, "description": "Max items to process per batch."},
+        {"name": "skip-embeddings", "type": "flag", "required": false, "description": "Skip embedding generation."},
+        {"name": "json", "type": "flag", "required": false, "description": "Output as JSON."}
+      ]
+    },
+    {
+      "name": "extract-attachments",
+      "description": "Download and extract text from pending attachments.",
+      "parameters": [
+        {"name": "limit", "type": "option", "required": false, "description": "Max attachments to process."},
+        {"name": "json", "type": "flag", "required": false, "description": "Output as JSON."}
+      ]
+    },
+    {
+      "name": "stats",
+      "description": "Show corpus statistics (emails, attachments, chunks, embeddings).",
+      "parameters": [
+        {"name": "json", "type": "flag", "required": false, "description": "Output as JSON."}
+      ]
+    },
+    {
+      "name": "attachment-status",
+      "description": "Show attachment extraction status.",
+      "parameters": [
+        {"name": "limit", "type": "option", "required": false, "description": "Number of attachments to list."},
+        {"name": "status", "type": "option", "required": false, "description": "Filter by status (pending/success/failed/unsupported)."},
+        {"name": "json", "type": "flag", "required": false, "description": "Output as JSON."}
+      ]
+    },
+    {
+      "name": "history",
+      "description": "View triage history.",
+      "parameters": [
+        {"name": "limit", "type": "option", "required": false, "description": "Number of entries to list."},
         {"name": "json", "type": "flag", "required": false, "description": "Output as JSON."}
       ]
     },
@@ -72,11 +127,15 @@
   "documentation": {
     "usage": "aech-cli-inbox <command> [args]",
     "examples": [
+      "aech-cli-inbox init-db",
+      "aech-cli-inbox sync --mode full",
+      "aech-cli-inbox sync --mode delta",
+      "aech-cli-inbox process --skip-embeddings",
+      "aech-cli-inbox extract-attachments --limit 50",
+      "aech-cli-inbox search 'contract renewal' --mode hybrid",
+      "aech-cli-inbox stats --json",
       "aech-cli-inbox list --include-read",
-      "aech-cli-inbox search urgent --json",
-      "aech-cli-inbox reply-needed",
-      "aech-cli-inbox prefs set teams_default_target 'chat:<composite_id>'",
-      "aech-cli-inbox prefs set followup_n_days 2"
+      "aech-cli-inbox reply-needed"
     ]
   }
 }

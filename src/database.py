@@ -97,6 +97,9 @@ def init_db(db_path: Optional[Path] = None) -> None:
             "cc_emails": "TEXT",
             "has_attachments": "BOOLEAN",
             "etag": "TEXT",
+            "body_text": "TEXT",
+            "body_html": "TEXT",
+            "body_hash": "TEXT",
         },
     )
     
@@ -181,7 +184,57 @@ def init_db(db_path: Optional[Path] = None) -> None:
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
     """)
-    
+
+    # Sync state for delta sync tracking (per-folder)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS sync_state (
+        folder_id TEXT PRIMARY KEY,
+        delta_link TEXT,
+        last_sync_at DATETIME,
+        sync_type TEXT,
+        messages_synced INTEGER DEFAULT 0
+    )
+    """)
+
+    # Attachments table for extracted content
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS attachments (
+        id TEXT PRIMARY KEY,
+        email_id TEXT NOT NULL,
+        filename TEXT,
+        content_type TEXT,
+        size_bytes INTEGER,
+        content_hash TEXT,
+        extracted_text TEXT,
+        extraction_status TEXT DEFAULT 'pending',
+        extraction_error TEXT,
+        downloaded_at DATETIME,
+        extracted_at DATETIME,
+        FOREIGN KEY(email_id) REFERENCES emails(id) ON DELETE CASCADE
+    )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_attachments_email ON attachments(email_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_attachments_hash ON attachments(content_hash)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_attachments_status ON attachments(extraction_status)")
+
+    # Chunks table for searchable text segments
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS chunks (
+        id TEXT PRIMARY KEY,
+        source_type TEXT NOT NULL,
+        source_id TEXT NOT NULL,
+        chunk_index INTEGER NOT NULL,
+        content TEXT NOT NULL,
+        char_offset_start INTEGER,
+        char_offset_end INTEGER,
+        metadata_json TEXT,
+        embedding BLOB,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(source_type, source_id, chunk_index)
+    )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_chunks_source ON chunks(source_type, source_id)")
+
     conn.commit()
     _ensure_fts(cursor)
     conn.commit()
@@ -207,34 +260,48 @@ def _ensure_columns(cursor: sqlite3.Cursor, table: str, columns: dict[str, str])
 
 def _ensure_fts(cursor: sqlite3.Cursor) -> None:
     """
-    Create an FTS5 index over email subject/body for search and keep it in sync.
+    Create FTS5 indexes over email subject/body and chunks for search.
     This is idempotent and safe to call at startup.
     """
-    existed = cursor.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='emails_fts'"
+    # Check current emails_fts schema to see if we need to migrate
+    fts_info = cursor.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='emails_fts'"
     ).fetchone()
 
+    # If old FTS exists with body_preview, drop and recreate with body_text
+    if fts_info and "body_preview" in (fts_info[0] or ""):
+        cursor.execute("DROP TRIGGER IF EXISTS emails_ai_fts")
+        cursor.execute("DROP TRIGGER IF EXISTS emails_ad_fts")
+        cursor.execute("DROP TRIGGER IF EXISTS emails_au_fts")
+        cursor.execute("DROP TABLE IF EXISTS emails_fts")
+        fts_info = None
+
+    existed = fts_info is not None
+
+    # Create FTS5 index for emails with full body_text
     cursor.execute("""
     CREATE VIRTUAL TABLE IF NOT EXISTS emails_fts
     USING fts5(
         id UNINDEXED,
         subject,
-        body_preview,
+        body_text,
+        sender,
         tokenize = 'porter'
     )
     """)
 
     if not existed:
+        # Populate from existing data - use body_text if available, fallback to body_preview
         cursor.execute("""
-            INSERT INTO emails_fts(id, subject, body_preview)
-            SELECT id, subject, body_preview FROM emails
+            INSERT INTO emails_fts(id, subject, body_text, sender)
+            SELECT id, subject, COALESCE(body_text, body_preview), sender FROM emails
         """)
 
     cursor.execute("""
     CREATE TRIGGER IF NOT EXISTS emails_ai_fts
     AFTER INSERT ON emails BEGIN
-        INSERT OR REPLACE INTO emails_fts(id, subject, body_preview)
-        VALUES (new.id, new.subject, new.body_preview);
+        INSERT OR REPLACE INTO emails_fts(id, subject, body_text, sender)
+        VALUES (new.id, new.subject, COALESCE(new.body_text, new.body_preview), new.sender);
     END;
     """)
 
@@ -249,8 +316,42 @@ def _ensure_fts(cursor: sqlite3.Cursor) -> None:
     CREATE TRIGGER IF NOT EXISTS emails_au_fts
     AFTER UPDATE ON emails BEGIN
         DELETE FROM emails_fts WHERE id = old.id;
-        INSERT OR REPLACE INTO emails_fts(id, subject, body_preview)
-        VALUES (new.id, new.subject, new.body_preview);
+        INSERT OR REPLACE INTO emails_fts(id, subject, body_text, sender)
+        VALUES (new.id, new.subject, COALESCE(new.body_text, new.body_preview), new.sender);
+    END;
+    """)
+
+    # Create FTS5 index for chunks
+    cursor.execute("""
+    CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts
+    USING fts5(
+        id UNINDEXED,
+        content,
+        tokenize = 'porter'
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TRIGGER IF NOT EXISTS chunks_ai_fts
+    AFTER INSERT ON chunks BEGIN
+        INSERT OR REPLACE INTO chunks_fts(id, content)
+        VALUES (new.id, new.content);
+    END;
+    """)
+
+    cursor.execute("""
+    CREATE TRIGGER IF NOT EXISTS chunks_ad_fts
+    AFTER DELETE ON chunks BEGIN
+        DELETE FROM chunks_fts WHERE id = old.id;
+    END;
+    """)
+
+    cursor.execute("""
+    CREATE TRIGGER IF NOT EXISTS chunks_au_fts
+    AFTER UPDATE ON chunks BEGIN
+        DELETE FROM chunks_fts WHERE id = old.id;
+        INSERT OR REPLACE INTO chunks_fts(id, content)
+        VALUES (new.id, new.content);
     END;
     """)
 
