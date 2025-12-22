@@ -17,12 +17,12 @@ RUN pip install uv && uv pip install --system /tmp/aech_cli_msgraph-0.1.22-py3-n
 
 # App source
 COPY aech-rt-inbox-assistant/src/ src/
-COPY aech-rt-inbox-assistant/cli/ cli/
+COPY aech-rt-inbox-assistant/aech_cli_inbox/ aech_cli_inbox/
 COPY aech-rt-inbox-assistant/manifest.json manifest.json
 
 # Create non-root user
 RUN useradd -m -s /bin/bash agentaech && \
-    mkdir -p /home/agentaech/inbox-assistant && \
+    mkdir -p /home/agentaech/.inbox-assistant && \
     chown -R agentaech:agentaech /home/agentaech /app && \
     mkdir -p /data/users
 
