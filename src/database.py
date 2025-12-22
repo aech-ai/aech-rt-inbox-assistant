@@ -40,7 +40,7 @@ def get_state_dir() -> Path:
     configured = os.environ.get("INBOX_STATE_DIR")
     if configured:
         return Path(configured).expanduser().resolve()
-    return get_user_root() / CAPABILITY_NAME
+    return get_user_root() / f".{CAPABILITY_NAME}"
 
 
 def get_db_path() -> Path:
