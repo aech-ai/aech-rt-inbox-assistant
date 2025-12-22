@@ -40,7 +40,7 @@ def get_state_dir() -> Path:
     configured = os.environ.get("INBOX_STATE_DIR")
     if configured:
         return Path(configured).expanduser().resolve()
-    return get_user_root() / "capabilities" / CAPABILITY_NAME
+    return get_user_root() / CAPABILITY_NAME
 
 
 def get_db_path() -> Path:
@@ -52,25 +52,13 @@ def get_db_path() -> Path:
     db_path_str = os.environ.get("INBOX_DB_PATH")
     if db_path_str:
         return Path(db_path_str).expanduser().resolve()
-    return get_state_dir() / "state.sqlite"
+    return get_state_dir() / "inbox.sqlite"
 
 
 def init_db(db_path: Optional[Path] = None) -> None:
     """Initialize (or migrate) the database schema."""
     db_path = (db_path or get_db_path()).expanduser().resolve()
     db_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Best-effort migration from the legacy location used by early versions.
-    if not db_path.exists():
-        legacy = get_user_root() / "inbox-assistant" / "inbox.sqlite"
-        if legacy.exists():
-            logger.info("Migrating legacy DB into capability state dir", extra={"legacy": str(legacy), "new": str(db_path)})
-            db_path.parent.mkdir(parents=True, exist_ok=True)
-            db_path.write_bytes(legacy.read_bytes())
-            for suffix in ("-wal", "-shm"):
-                legacy_sidecar = Path(str(legacy) + suffix)
-                if legacy_sidecar.exists():
-                    Path(str(db_path) + suffix).write_bytes(legacy_sidecar.read_bytes())
 
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()

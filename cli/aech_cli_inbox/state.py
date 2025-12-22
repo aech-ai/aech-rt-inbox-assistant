@@ -23,14 +23,14 @@ def get_state_dir() -> Path:
     configured = os.environ.get("INBOX_STATE_DIR")
     if configured:
         return Path(configured).expanduser().resolve()
-    return get_user_root() / "capabilities" / CAPABILITY_NAME
+    return get_user_root() / CAPABILITY_NAME
 
 
 def get_db_path() -> Path:
     configured = os.environ.get("INBOX_DB_PATH")
     if configured:
         return Path(configured).expanduser().resolve()
-    return get_state_dir() / "state.sqlite"
+    return get_state_dir() / "inbox.sqlite"
 
 
 def get_preferences_path() -> Path:

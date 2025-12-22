@@ -1,8 +1,8 @@
 services:
   inbox-assistant:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: aech-rt-inbox-assistant/Dockerfile
     image: aech-rt-inbox-assistant
     env_file:
       - .env
