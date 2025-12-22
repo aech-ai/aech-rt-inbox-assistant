@@ -24,40 +24,9 @@
       ]
     },
     {
-      "name": "init-db",
-      "description": "Initialize or migrate the database schema.",
-      "parameters": []
-    },
-    {
-      "name": "sync",
-      "description": "Sync emails from M365 mailbox (full or delta).",
-      "parameters": [
-        {"name": "mode", "type": "option", "required": false, "description": "Sync mode: full or delta."},
-        {"name": "folder", "type": "option", "required": false, "description": "Specific folder ID to sync."},
-        {"name": "json", "type": "flag", "required": false, "description": "Output as JSON."}
-      ]
-    },
-    {
       "name": "sync-status",
       "description": "Show the sync status for all folders.",
       "parameters": [
-        {"name": "json", "type": "flag", "required": false, "description": "Output as JSON."}
-      ]
-    },
-    {
-      "name": "process",
-      "description": "Process emails for chunking and embedding generation.",
-      "parameters": [
-        {"name": "limit", "type": "option", "required": false, "description": "Max items to process per batch."},
-        {"name": "skip-embeddings", "type": "flag", "required": false, "description": "Skip embedding generation."},
-        {"name": "json", "type": "flag", "required": false, "description": "Output as JSON."}
-      ]
-    },
-    {
-      "name": "extract-attachments",
-      "description": "Download and extract text from pending attachments.",
-      "parameters": [
-        {"name": "limit", "type": "option", "required": false, "description": "Max attachments to process."},
         {"name": "json", "type": "flag", "required": false, "description": "Output as JSON."}
       ]
     },
@@ -127,15 +96,12 @@
   "documentation": {
     "usage": "aech-cli-inbox <command> [args]",
     "examples": [
-      "aech-cli-inbox init-db",
-      "aech-cli-inbox sync --mode full",
-      "aech-cli-inbox sync --mode delta",
-      "aech-cli-inbox process --skip-embeddings",
-      "aech-cli-inbox extract-attachments --limit 50",
+      "aech-cli-inbox list --include-read",
       "aech-cli-inbox search 'contract renewal' --mode hybrid",
       "aech-cli-inbox stats --json",
-      "aech-cli-inbox list --include-read",
-      "aech-cli-inbox reply-needed"
+      "aech-cli-inbox sync-status",
+      "aech-cli-inbox reply-needed",
+      "aech-cli-inbox prefs show"
     ]
   }
 }

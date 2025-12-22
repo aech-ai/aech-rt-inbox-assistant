@@ -78,21 +78,6 @@ def history(
             typer.echo(f"{log['timestamp']} - {log['action']} - {log['subject']} -> {log['destination_folder']} ({log['reason']})")
 
 @app.command()
-def move(
-    message_id: str,
-    folder: str,
-):
-    """Manually move an email (override)."""
-    # This just updates the DB to say we want to move it, or we need to actually move it?
-    # The CLI should probably just update the DB or trigger an action.
-    # But since the RT service is the one with the token, the CLI might not be able to move it directly unless it also has a token.
-    # The spec says: "CLI is read/write to DB - can query and update status (approve/reject)"
-    # So maybe we write a "pending_action" to the DB and the RT service picks it up?
-    # Or we just update the category/folder in the DB and let the RT service sync?
-    # For now, let's just print a message that this is not fully implemented in this phase.
-    typer.echo("Manual move not yet implemented. Please use the Outlook client or wait for the next update.")
-
-@app.command()
 def search(
     query: str,
     limit: int = typer.Option(20, help="Number of results to return"),
@@ -103,15 +88,6 @@ def search(
     # Use hybrid search if mode is vector or hybrid
     if mode in ("vector", "hybrid"):
         try:
-            # Import from src module
-            import sys
-            from pathlib import Path
-
-            # Add repo root to path if needed
-            repo_root = Path(__file__).parent.parent.parent
-            if repo_root.exists() and str(repo_root) not in sys.path:
-                sys.path.insert(0, str(repo_root))
-
             from src.search import search_with_source_details
 
             results = search_with_source_details(query, limit, mode)
@@ -199,24 +175,6 @@ def search(
 def dbpath():
     """Get the absolute path to the user's database."""
     typer.echo(get_db_path())
-
-
-@app.command("init-db")
-def init_db_cmd():
-    """Initialize or migrate the database schema."""
-    import sys
-    from pathlib import Path
-
-    repo_root = Path(__file__).parent.parent.parent
-    if repo_root.exists() and str(repo_root) not in sys.path:
-        sys.path.insert(0, str(repo_root))
-
-    from src.database import init_db
-
-    db_path = get_db_path()
-    typer.echo(f"Initializing database at {db_path}...")
-    init_db(db_path)
-    typer.echo("Database schema initialized/migrated successfully.")
 
 
 @app.command("sync-status")
@@ -376,135 +334,6 @@ def attachment_status(
             if a["extraction_error"]:
                 typer.echo(f"  Error: {a['extraction_error']}")
             typer.echo("")
-
-@app.command()
-def sync(
-    mode: str = typer.Option("delta", help="Sync mode: full or delta"),
-    folder: str = typer.Option(None, help="Specific folder ID to sync (defaults to all)"),
-    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
-):
-    """Sync emails from M365 mailbox."""
-    import sys
-    from pathlib import Path
-
-    # Add repo root to path if needed
-    repo_root = Path(__file__).parent.parent.parent
-    if repo_root.exists() and str(repo_root) not in sys.path:
-        sys.path.insert(0, str(repo_root))
-
-    from src.poller import GraphPoller
-
-    try:
-        poller = GraphPoller()
-    except ValueError as e:
-        typer.echo(f"Error: {e}", err=True)
-        typer.echo("Set DELEGATED_USER environment variable.", err=True)
-        raise typer.Exit(1)
-
-    if folder:
-        # Sync specific folder
-        if mode == "full":
-            typer.echo(f"Running full sync for folder {folder}...")
-            count = poller.full_sync_folder(folder, folder)
-            result = {"folder_id": folder, "mode": "full", "messages_synced": count}
-        else:
-            typer.echo(f"Running delta sync for folder {folder}...")
-            added, removed = poller.delta_sync_folder(folder, folder)
-            result = {"folder_id": folder, "mode": "delta", "added": added, "removed": removed}
-    else:
-        # Sync all folders
-        typer.echo(f"Running {mode} sync for all folders...")
-        result = poller.sync_all_folders()
-
-    if json_output:
-        typer.echo(json.dumps(result, default=str))
-    else:
-        if folder:
-            if mode == "full":
-                typer.echo(f"Synced {result['messages_synced']} messages from {folder}")
-            else:
-                typer.echo(f"Delta sync: +{result['added']} added, -{result['removed']} removed")
-        else:
-            typer.echo(f"Sync complete: {result.get('total_synced', 0)} messages across {result.get('folders_synced', 0)} folders")
-
-
-@app.command()
-def process(
-    limit: int = typer.Option(100, help="Max items to process per batch"),
-    skip_embeddings: bool = typer.Option(False, "--skip-embeddings", help="Skip embedding generation"),
-    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
-):
-    """Process emails for chunking and embedding generation."""
-    import sys
-    from pathlib import Path
-
-    repo_root = Path(__file__).parent.parent.parent
-    if repo_root.exists() and str(repo_root) not in sys.path:
-        sys.path.insert(0, str(repo_root))
-
-    from src.chunker import process_unindexed_emails, process_unindexed_attachments
-
-    results = {}
-
-    typer.echo("Processing unindexed emails...")
-    email_result = process_unindexed_emails(limit)
-    results["emails"] = email_result
-    typer.echo(f"  Emails: {email_result['processed']} processed, {email_result.get('chunks_created', 0)} chunks, {email_result.get('virtual_emails', 0)} virtual")
-
-    typer.echo("Processing unindexed attachments...")
-    attach_result = process_unindexed_attachments(limit)
-    results["attachments"] = attach_result
-    typer.echo(f"  Attachments: {attach_result['processed']} processed, {attach_result.get('chunks_created', 0)} chunks")
-
-    if not skip_embeddings:
-        try:
-            from src.embeddings import embed_pending_chunks
-
-            typer.echo("Generating embeddings for new chunks...")
-            embed_result = embed_pending_chunks(limit)
-            results["embeddings"] = embed_result
-            typer.echo(f"  Embeddings: {embed_result['processed']} generated, {embed_result['failed']} failed")
-        except ImportError as e:
-            typer.echo(f"  Embeddings skipped (sentence-transformers not installed): {e}", err=True)
-            results["embeddings"] = {"skipped": True, "reason": str(e)}
-
-    if json_output:
-        typer.echo(json.dumps(results, default=str))
-
-
-@app.command("extract-attachments")
-def extract_attachments(
-    limit: int = typer.Option(50, help="Max attachments to process"),
-    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
-):
-    """Download and extract text from pending attachments."""
-    import sys
-    from pathlib import Path
-
-    repo_root = Path(__file__).parent.parent.parent
-    if repo_root.exists() and str(repo_root) not in sys.path:
-        sys.path.insert(0, str(repo_root))
-
-    try:
-        from src.attachments import AttachmentProcessor
-
-        processor = AttachmentProcessor()
-        typer.echo(f"Processing up to {limit} pending attachments...")
-        result = processor.process_pending_attachments(limit)
-
-        if json_output:
-            typer.echo(json.dumps(result, default=str))
-        else:
-            typer.echo(f"Processed: {result['processed']}, Failed: {result['failed']}, Skipped: {result['skipped']}")
-
-    except ImportError as e:
-        typer.echo(f"Error: {e}", err=True)
-        raise typer.Exit(1)
-    except ValueError as e:
-        typer.echo(f"Error: {e}", err=True)
-        typer.echo("Set DELEGATED_USER environment variable.", err=True)
-        raise typer.Exit(1)
-
 
 @app.command()
 def schema():

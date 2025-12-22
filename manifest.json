@@ -1,112 +1,107 @@
 {
-    "name": "inbox-assistant",
-    "type": "cli",
-    "description": "Manage delegated email inboxes for other users. Allows the agent to list, move, delete, and archive emails in a mailbox the agent has delegate access to. Wraps aech-cli-msgraph with the --user flag.",
-    "command": "aech-rt-inbox-assistant",
-    "actions": [
-        {
-            "name": "list-emails",
-            "description": "List emails from a delegated inbox. By default lists unread emails, use flags to see more.",
-            "parameters": [
-                {
-                    "name": "user",
-                    "type": "option",
-                    "required": true,
-                    "description": "Email address of the delegated mailbox owner (e.g. steven@aech.ai)"
-                },
-                {
-                    "name": "all_senders",
-                    "type": "option",
-                    "required": false,
-                    "description": "If true, lists emails from all senders, not just whitelisted ones."
-                },
-                {
-                    "name": "include_read",
-                    "type": "option",
-                    "required": false,
-                    "description": "If true, includes read emails in the list."
-                },
-                {
-                    "name": "since",
-                    "type": "option",
-                    "required": false,
-                    "description": "Look back window in minutes (default is usually configured in msgraph CLI)."
-                }
-            ]
-        },
-        {
-            "name": "move-email",
-            "description": "Move a specific email to a destination folder in the delegated mailbox.",
-            "parameters": [
-                {
-                    "name": "message_id",
-                    "type": "argument",
-                    "required": true,
-                    "description": "The ID of the message to move."
-                },
-                {
-                    "name": "folder_name",
-                    "type": "argument",
-                    "required": true,
-                    "description": "The destination folder name (e.g. 'Archive', 'Important')."
-                },
-                {
-                    "name": "user",
-                    "type": "option",
-                    "required": true,
-                    "description": "Email address of the delegated mailbox owner."
-                }
-            ]
-        },
-        {
-            "name": "delete-email",
-            "description": "Delete a specific email (move to Deleted Items) in the delegated mailbox.",
-            "parameters": [
-                {
-                    "name": "message_id",
-                    "type": "argument",
-                    "required": true,
-                    "description": "The ID of the message to delete."
-                },
-                {
-                    "name": "user",
-                    "type": "option",
-                    "required": true,
-                    "description": "Email address of the delegated mailbox owner."
-                }
-            ]
-        },
-        {
-            "name": "archive-email",
-            "description": "Archive a specific email (move to 'Archive' folder) in the delegated mailbox.",
-            "parameters": [
-                {
-                    "name": "message_id",
-                    "type": "argument",
-                    "required": true,
-                    "description": "The ID of the message to archive."
-                },
-                {
-                    "name": "user",
-                    "type": "option",
-                    "required": true,
-                    "description": "Email address of the delegated mailbox owner."
-                }
-            ]
-        }
-    ],
-    "documentation": {
-        "readme": "# Inbox Assistant CLI\n\nCapability for Agent Aech to manage delegated email inboxes. This CLI wraps `aech-cli-msgraph` and enforces the usage of the `--user` flag to operate on a specific user's mailbox rather than the agent's own.\n\n## Prerequisites\n\nThe Agent's M365 account must have **Exchange Delegate Access** to the target user's mailbox.\n\n## Usage\n\n### List Emails\n\n```bash\naech-rt-inbox-assistant list-emails --user steven@aech.ai --all-senders --include-read\n```\n\n### Move Email\n\n```bash\naech-rt-inbox-assistant move-email <message_id> \"Project X\" --user steven@aech.ai\n```\n\n### Archive Email\n\n```bash\naech-rt-inbox-assistant archive-email <message_id> --user steven@aech.ai\n```\n\n### Delete Email\n\n```bash\naech-rt-inbox-assistant delete-email <message_id> --user steven@aech.ai\n```\n",
-        "usage": "aech-rt-inbox-assistant <command> [args] --user <email>",
-        "inputs": {
-            "user": "The email address of the user whose mailbox is being accessed.",
-            "message_id": "The unique ID of the email message."
-        },
-        "outputs": {
-            "stdout": {
-                "description": "Output from the underlying aech-cli-msgraph command (JSON or text)."
-            }
-        }
+  "name": "inbox",
+  "type": "cli",
+  "description": "Query Inbox Assistant state (SQLite), manage corpus, and search emails.",
+  "command": "aech-cli-inbox",
+  "actions": [
+    {
+      "name": "list",
+      "description": "List ingested emails.",
+      "parameters": [
+        {"name": "limit", "type": "option", "required": false, "description": "Number of emails to list."},
+        {"name": "include-read", "type": "flag", "required": false, "description": "Include read emails."},
+        {"name": "json", "type": "flag", "required": false, "description": "Output as JSON."}
+      ]
     },
-    "available_in_sandbox": true
+    {
+      "name": "search",
+      "description": "Search emails and attachments with FTS, vector, or hybrid mode.",
+      "parameters": [
+        {"name": "query", "type": "argument", "required": true, "description": "Search query."},
+        {"name": "limit", "type": "option", "required": false, "description": "Number of results to return."},
+        {"name": "mode", "type": "option", "required": false, "description": "Search mode: fts, vector, or hybrid."},
+        {"name": "json", "type": "flag", "required": false, "description": "Output as JSON."}
+      ]
+    },
+    {
+      "name": "sync-status",
+      "description": "Show the sync status for all folders.",
+      "parameters": [
+        {"name": "json", "type": "flag", "required": false, "description": "Output as JSON."}
+      ]
+    },
+    {
+      "name": "stats",
+      "description": "Show corpus statistics (emails, attachments, chunks, embeddings).",
+      "parameters": [
+        {"name": "json", "type": "flag", "required": false, "description": "Output as JSON."}
+      ]
+    },
+    {
+      "name": "attachment-status",
+      "description": "Show attachment extraction status.",
+      "parameters": [
+        {"name": "limit", "type": "option", "required": false, "description": "Number of attachments to list."},
+        {"name": "status", "type": "option", "required": false, "description": "Filter by status (pending/success/failed/unsupported)."},
+        {"name": "json", "type": "flag", "required": false, "description": "Output as JSON."}
+      ]
+    },
+    {
+      "name": "history",
+      "description": "View triage history.",
+      "parameters": [
+        {"name": "limit", "type": "option", "required": false, "description": "Number of entries to list."},
+        {"name": "json", "type": "flag", "required": false, "description": "Output as JSON."}
+      ]
+    },
+    {
+      "name": "reply-needed",
+      "description": "List messages currently marked as requiring a reply.",
+      "parameters": [
+        {"name": "limit", "type": "option", "required": false, "description": "Number of messages to list."},
+        {"name": "json", "type": "flag", "required": false, "description": "Output as JSON."}
+      ]
+    },
+    {
+      "name": "dbpath",
+      "description": "Print the resolved SQLite DB path.",
+      "parameters": []
+    },
+    {
+      "name": "schema",
+      "description": "Print CREATE TABLE statements from SQLite.",
+      "parameters": []
+    },
+    {
+      "name": "prefs show",
+      "description": "Show preferences.json.",
+      "parameters": []
+    },
+    {
+      "name": "prefs set",
+      "description": "Set a key in preferences.json.",
+      "parameters": [
+        {"name": "key", "type": "argument", "required": true, "description": "Preference key."},
+        {"name": "value", "type": "argument", "required": true, "description": "Preference value (string/number/bool/JSON)."}
+      ]
+    },
+    {
+      "name": "prefs unset",
+      "description": "Unset a key in preferences.json.",
+      "parameters": [
+        {"name": "key", "type": "argument", "required": true, "description": "Preference key."}
+      ]
+    }
+  ],
+  "documentation": {
+    "usage": "aech-cli-inbox <command> [args]",
+    "examples": [
+      "aech-cli-inbox list --include-read",
+      "aech-cli-inbox search 'contract renewal' --mode hybrid",
+      "aech-cli-inbox stats --json",
+      "aech-cli-inbox sync-status",
+      "aech-cli-inbox reply-needed",
+      "aech-cli-inbox prefs show"
+    ]
+  }
 }
