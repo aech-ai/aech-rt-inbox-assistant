@@ -1,5 +1,6 @@
 import json
 import os
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,62 +20,111 @@ def _atomic_write_json(path: Path, data: Dict[str, Any]) -> None:
     os.replace(tmp_path, path)
 
 
+def make_dedupe_key(trigger_type: str, user_email: str, primary_id: str) -> str:
+    return f"{CAPABILITY_NAME}:{trigger_type}:{user_email}:{primary_id}"
+
+
+def _sanitize_dedupe_key(key: str) -> str:
+    sanitized = key.replace(os.sep, "_")
+    if os.altsep:
+        sanitized = sanitized.replace(os.altsep, "_")
+    return sanitized
+
+
+def _dedupe_ttl_seconds(ttl_days: Optional[int]) -> int:
+    if ttl_days is None:
+        raw = os.environ.get("RT_DEDUPE_TTL_DAYS", "7")
+        try:
+            ttl_days = int(raw)
+        except ValueError:
+            ttl_days = 7
+    return max(0, ttl_days) * 24 * 60 * 60
+
+
+def _dedupe_marker_path(dedupe_dir: Path, dedupe_key: str) -> Path:
+    return dedupe_dir / _sanitize_dedupe_key(dedupe_key)
+
+
+def _is_marker_fresh(marker: Path, ttl_seconds: int) -> bool:
+    if ttl_seconds <= 0 or not marker.exists():
+        return False
+    try:
+        age = time.time() - marker.stat().st_mtime
+    except OSError:
+        return False
+    return age < ttl_seconds
+
+
+def _claim_dedupe_marker(dedupe_dir: Path, dedupe_key: str, ttl_seconds: int, trigger_id: str) -> bool:
+    if ttl_seconds <= 0:
+        return True
+
+    marker = _dedupe_marker_path(dedupe_dir, dedupe_key)
+    if _is_marker_fresh(marker, ttl_seconds):
+        return False
+
+    if marker.exists():
+        try:
+            marker.unlink()
+        except OSError:
+            return False
+
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        fd = os.open(marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        return False
+
+    with os.fdopen(fd, "w") as handle:
+        handle.write(
+            json.dumps({"dedupe_key": dedupe_key, "trigger_id": trigger_id, "created_at": _now_utc_iso()})
+            + "\n"
+        )
+    return True
+
+
 def write_trigger(
     user_email: str,
     trigger_type: str,
     payload: Dict[str, Any],
     *,
+    dedupe_key: str,
     routing: Optional[Dict[str, Any]] = None,
     trigger_id: Optional[str] = None,
     created_at: Optional[str] = None,
     outbox_dir: Optional[Path] = None,
-    write_legacy: bool | None = None,
+    dedupe_dir: Optional[Path] = None,
+    dedupe_ttl_days: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
     Emit a v1 RT trigger.
 
     Preferred format: one JSON file per trigger in the capability outbox directory.
       - write <uuid>.json.tmp then rename to <uuid>.json (atomic claim friendly)
-
-    Legacy format (optional): append into a shared rt-triggers.json object.
+    Creates a dedupe marker to avoid emitting duplicate triggers.
     """
+    if not dedupe_key:
+        raise ValueError("dedupe_key is required")
+
     trigger_uuid = trigger_id or str(uuid.uuid4())
     trigger: Dict[str, Any] = {
         "id": trigger_uuid,
+        "capability": CAPABILITY_NAME,
         "user": user_email,
         "type": trigger_type,
         "created_at": created_at or _now_utc_iso(),
+        "dedupe_key": dedupe_key,
         "payload": payload,
     }
     if routing:
         trigger["routing"] = routing
 
     outbox = outbox_dir or Path(os.environ.get("RT_OUTBOX_DIR", "/triggers/outbox"))
+    dedupe_root = dedupe_dir or Path(os.environ.get("RT_DEDUPE_DIR", str(outbox.parent / "dedupe")))
+    ttl_seconds = _dedupe_ttl_seconds(dedupe_ttl_days)
+    if not _claim_dedupe_marker(dedupe_root, dedupe_key, ttl_seconds, trigger_uuid):
+        return trigger
+
     _atomic_write_json(outbox / f"{trigger_uuid}.json", trigger)
 
-    if write_legacy is None:
-        write_legacy = os.environ.get("RT_WRITE_LEGACY", "").strip().lower() in {"1", "true", "yes"}
-    if write_legacy:
-        legacy_path = Path(os.environ.get("RT_LEGACY_FILE", "/triggers/rt-triggers.json"))
-        _write_legacy_trigger(legacy_path, trigger)
-
     return trigger
-
-
-def _write_legacy_trigger(path: Path, trigger: Dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists():
-        try:
-            data = json.loads(path.read_text() or "{}")
-        except json.JSONDecodeError:
-            data = {}
-    else:
-        data = {}
-
-    existing = data.get(CAPABILITY_NAME)
-    if not isinstance(existing, list):
-        existing = []
-        data[CAPABILITY_NAME] = existing
-
-    existing.append(trigger)
-    _atomic_write_json(path, data)

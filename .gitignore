@@ -34,3 +34,9 @@ ENV/
 
 # Environment
 .env
+
+# Local runtime artifacts
+data/
+.tmp/
+.socktainer.log
+.DS_Store

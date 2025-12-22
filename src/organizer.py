@@ -6,7 +6,7 @@ from pydantic_ai import Agent
 from .database import get_connection
 from .poller import GraphPoller
 from .preferences import read_preferences
-from .triggers import write_trigger
+from .triggers import make_dedupe_key, write_trigger
 from .folders_config import STANDARD_FOLDERS, FOLDER_ALIASES
 
 logger = logging.getLogger(__name__)
@@ -317,7 +317,7 @@ class Organizer:
                     "message_id": email["id"],
                     "received_at": email["received_at"],
                     "reason": decision.reason
-                })
+                }, dedupe_key=make_dedupe_key("urgent_email", self.user_email, email["id"]))
 
             if getattr(decision, "requires_reply", False):
                 write_trigger(
@@ -330,6 +330,7 @@ class Organizer:
                         "received_at": email["received_at"],
                         "reason": getattr(decision, "reply_reason", None) or decision.reason,
                     },
+                    dedupe_key=make_dedupe_key("reply_needed", self.user_email, email["id"]),
                 )
 
             if getattr(decision, "availability_requested", False):
@@ -348,6 +349,7 @@ class Organizer:
                         "constraints": getattr(availability, "constraints", None),
                         "proposed_slots": getattr(availability, "proposed_slots", None) or [],
                     },
+                    dedupe_key=make_dedupe_key("availability_requested", self.user_email, email["id"]),
                 )
                 
         except Exception as e:
@@ -422,6 +424,7 @@ class Organizer:
                         "days_waiting": days_waiting,
                         "follow_up_draft": follow_up_draft,
                     },
+                    dedupe_key=make_dedupe_key("no_reply_after_n_days", self.user_email, message_id),
                 )
                 conn.execute(
                     "UPDATE reply_tracking SET nudge_scheduled_at = CURRENT_TIMESTAMP WHERE message_id = ?",
@@ -554,6 +557,7 @@ class Organizer:
                     "newsletter_summaries": newsletter_summaries,
                     "recommended_actions": recommended_actions[:20],
                 },
+                dedupe_key=make_dedupe_key("weekly_digest_ready", self.user_email, week_start_iso),
             )
 
             conn.execute(

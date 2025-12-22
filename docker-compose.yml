@@ -8,10 +8,8 @@ services:
       - .env
     volumes:
       - ./data/users/${DELEGATED_USER}:/home/agentaech
-      # Preferred RT trigger outbox (one file per trigger)
-      - ./data/rt_triggers/inbox-assistant:/triggers/outbox:rw
-      # Optional legacy trigger file (set RT_WRITE_LEGACY=1 to use)
-      # - ./data/rt-triggers.json:/triggers/rt-triggers.json:rw
+      # RT trigger queue root (outbox/processing/done/failed/dedupe)
+      - ./data/rt_triggers/inbox-assistant:/triggers:rw
       # Token cache (explicit for clarity)
       - ./data/app_context/aech-cli-msgraph/token_cache.json:/app/token_cache.json
     restart: unless-stopped
