@@ -309,7 +309,7 @@ class Organizer:
                 )
             conn.commit()
             
-            # Create Trigger if Urgent
+            # Create Trigger if Urgent - notify via Teams
             if decision.category.lower() == "urgent" or decision.action == "mark_important":
                 write_trigger(self.user_email, "urgent_email", {
                     "subject": email['subject'],
@@ -317,7 +317,9 @@ class Organizer:
                     "message_id": email["id"],
                     "received_at": email["received_at"],
                     "reason": decision.reason
-                }, dedupe_key=make_dedupe_key("urgent_email", self.user_email, email["id"]))
+                },
+                dedupe_key=make_dedupe_key("urgent_email", self.user_email, email["id"]),
+                routing={"channel": "teams"})
 
             if getattr(decision, "requires_reply", False):
                 write_trigger(
@@ -331,6 +333,7 @@ class Organizer:
                         "reason": getattr(decision, "reply_reason", None) or decision.reason,
                     },
                     dedupe_key=make_dedupe_key("reply_needed", self.user_email, email["id"]),
+                    routing={"channel": "teams"},
                 )
 
             if getattr(decision, "availability_requested", False):
@@ -350,6 +353,7 @@ class Organizer:
                         "proposed_slots": getattr(availability, "proposed_slots", None) or [],
                     },
                     dedupe_key=make_dedupe_key("availability_requested", self.user_email, email["id"]),
+                    routing={"channel": "teams"},
                 )
                 
         except Exception as e:
@@ -425,6 +429,7 @@ class Organizer:
                         "follow_up_draft": follow_up_draft,
                     },
                     dedupe_key=make_dedupe_key("no_reply_after_n_days", self.user_email, message_id),
+                    routing={"channel": "teams"},
                 )
                 conn.execute(
                     "UPDATE reply_tracking SET nudge_scheduled_at = CURRENT_TIMESTAMP WHERE message_id = ?",
@@ -558,6 +563,7 @@ class Organizer:
                     "recommended_actions": recommended_actions[:20],
                 },
                 dedupe_key=make_dedupe_key("weekly_digest_ready", self.user_email, week_start_iso),
+                routing={"channel": "teams"},
             )
 
             conn.execute(
