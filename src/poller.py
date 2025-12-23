@@ -57,7 +57,7 @@ class GraphPoller:
 
     def poll_inbox(self) -> List[Dict[str, Any]]:
         """Poll the delegated inbox for unread messages via aech-cli-msgraph."""
-        logger.info(f"Polling inbox for {self.user_email}")
+        logger.debug(f"Polling inbox for {self.user_email}")
         try:
             stdout = self._run_cli(["poll-inbox", "--json", "--count", "50", "--all-senders", "--include-read"])
             messages = json.loads(stdout or "[]")

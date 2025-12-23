@@ -46,7 +46,7 @@ def service_loop(user_email: str, poll_interval: int, run_once: bool, reprocess:
         if run_once:
             break
 
-        logger.info(f"Sleeping for {poll_interval} seconds")
+        logger.debug(f"Sleeping for {poll_interval} seconds")
         time.sleep(poll_interval)
 
 
