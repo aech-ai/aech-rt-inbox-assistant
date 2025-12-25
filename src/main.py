@@ -7,6 +7,7 @@ import time
 from src.database import init_db, get_connection
 from src.poller import GraphPoller
 from src.organizer import Organizer
+from src.working_memory.engine import run_memory_engine_cycle
 
 logging.basicConfig(
     level=logging.INFO,
@@ -22,7 +23,7 @@ def service_loop(user_email: str, poll_interval: int, run_once: bool, reprocess:
     logger.info("Initializing poller...")
     poller = GraphPoller()
     poller.ensure_standard_folders()
-    
+
     if reprocess:
         logger.info("Starting full reprocessing of all folders...")
         poller.reprocess_all_folders()
@@ -32,14 +33,28 @@ def service_loop(user_email: str, poll_interval: int, run_once: bool, reprocess:
 
     organizer = Organizer(poller)
 
+    # Working memory engine configuration
+    wm_engine_interval = int(os.environ.get("WM_ENGINE_INTERVAL", 300))  # Default 5 minutes
+    last_wm_engine_run = 0.0
+
     logger.info("Starting Inbox Assistant Service")
     logger.info(f"User: {user_email}")
     logger.info(f"Poll Interval: {poll_interval}s")
+    logger.info(f"Working Memory Engine Interval: {wm_engine_interval}s")
 
     while True:
         try:
             poller.poll_inbox()
             asyncio.run(organizer.organize_emails())
+
+            # Run working memory engine periodically
+            now = time.time()
+            if now - last_wm_engine_run >= wm_engine_interval:
+                try:
+                    asyncio.run(run_memory_engine_cycle(user_email))
+                    last_wm_engine_run = now
+                except Exception as wm_err:
+                    logger.warning(f"Working memory engine error: {wm_err}")
         except Exception as e:
             logger.error(f"Error in main loop: {e}")
 

@@ -175,16 +175,112 @@ aech-cli-inbox calendar prep-config --human
 
 Configure via `prefs set meeting_prep '{"rules": [...]}'`
 
+## Working Memory (EA Cognitive State)
+
+The EA maintains continuous awareness through a "working memory" system that tracks:
+
+- **Active Threads** - Ongoing conversations and their status
+- **Pending Decisions** - Questions awaiting user response
+- **Commitments** - Promises the user made to others
+- **Contacts** - People and relationship context
+- **Projects** - Inferred initiatives from email patterns
+- **Observations** - Passive learnings from CC'd emails
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     TWO PARALLEL LOOPS                          │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  EMAIL LOOP (existing)          MEMORY ENGINE LOOP (new)        │
+│  ─────────────────────          ─────────────────────────       │
+│  Poll inbox                     Run every N minutes             │
+│       ↓                              ↓                          │
+│  Categorize email               Re-evaluate urgency             │
+│       ↓                              ↓                          │
+│  Update working memory          Synthesize insights             │
+│  (email-triggered)                   ↓                          │
+│       ↓                         Generate nudges                 │
+│  Emit triggers                       ↓                          │
+│       ↓                         Prune/consolidate               │
+│  Sleep → repeat                 Sleep → repeat                  │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### CC Mode (Passive Learning)
+
+When the user is CC'd on an email (not in TO), the EA:
+- Does **NOT** trigger actions or notifications
+- **Updates** working memory with learned context
+- **Builds** understanding of projects, people, and terminology
+
+### CLI Commands
+
+```bash
+# Complete state snapshot
+aech-cli-inbox wm snapshot --human
+
+# Query active threads
+aech-cli-inbox wm threads --needs-reply
+aech-cli-inbox wm threads --urgency today
+
+# Query contacts
+aech-cli-inbox wm contacts --external
+aech-cli-inbox wm contacts --search "acme"
+
+# Pending decisions
+aech-cli-inbox wm decisions
+
+# Open commitments
+aech-cli-inbox wm commitments --overdue
+
+# Passive observations
+aech-cli-inbox wm observations --days 7
+
+# Inferred projects
+aech-cli-inbox wm projects
+```
+
+### Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `WM_ENGINE_INTERVAL` | `300` | Seconds between engine cycles (5 min) |
+| `WM_STALE_THRESHOLD_DAYS` | `3` | Days before thread marked stale |
+| `WM_URGENCY_ESCALATION_DAYS` | `2` | Days before urgency escalates |
+| `WM_OBSERVATION_RETENTION_DAYS` | `30` | Days to retain observations |
+
+### Proactive Nudges
+
+The memory engine generates nudges for:
+- Overdue replies (threads awaiting response > N days)
+- Overdue commitments (past due date)
+- Stale urgent threads (no activity for 24h)
+- Pending decisions (waiting > 3 days)
+
 ## Data Storage
 
 All state is stored in `~/.inbox-assistant/` (per capability convention):
 
 ```
 ~/.inbox-assistant/
-├── inbox.sqlite      # Main database (emails, labels, triage_log, etc.)
+├── inbox.sqlite      # Main database (emails, labels, triage_log, working memory, etc.)
 ├── queries/          # SQL query templates
 └── preferences.json  # User preferences (optional)
 ```
+
+### Working Memory Tables
+
+| Table | Purpose |
+|-------|---------|
+| `wm_threads` | Active conversation threads |
+| `wm_contacts` | Known contacts with interaction history |
+| `wm_decisions` | Pending decisions awaiting response |
+| `wm_commitments` | User's commitments to others |
+| `wm_observations` | Passive learnings from CC'd emails |
+| `wm_projects` | Inferred projects/initiatives |
 
 ## Standard Folders
 

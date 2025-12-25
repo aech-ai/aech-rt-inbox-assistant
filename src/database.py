@@ -224,6 +224,142 @@ def init_db(db_path: Optional[Path] = None) -> None:
     """)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_chunks_source ON chunks(source_type, source_id)")
 
+    # === Working Memory Tables ===
+
+    # Active threads being tracked
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS wm_threads (
+        id TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL UNIQUE,
+        subject TEXT,
+        participants_json TEXT,
+        status TEXT DEFAULT 'active',
+        urgency TEXT DEFAULT 'this_week',
+        started_at DATETIME,
+        last_activity_at DATETIME,
+        user_last_action_at DATETIME,
+        summary TEXT,
+        key_points_json TEXT,
+        pending_questions_json TEXT,
+        message_count INTEGER DEFAULT 0,
+        user_is_cc BOOLEAN DEFAULT 0,
+        needs_reply BOOLEAN DEFAULT 0,
+        reply_deadline DATETIME,
+        labels_json TEXT,
+        project_refs_json TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_wm_threads_status ON wm_threads(status)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_wm_threads_urgency ON wm_threads(urgency)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_wm_threads_needs_reply ON wm_threads(needs_reply)")
+
+    # Known contacts with interaction history
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS wm_contacts (
+        id TEXT PRIMARY KEY,
+        email TEXT NOT NULL UNIQUE,
+        name TEXT,
+        organization TEXT,
+        relationship TEXT DEFAULT 'unknown',
+        first_seen_at DATETIME,
+        last_interaction_at DATETIME,
+        total_interactions INTEGER DEFAULT 0,
+        user_initiated_count INTEGER DEFAULT 0,
+        they_initiated_count INTEGER DEFAULT 0,
+        cc_count INTEGER DEFAULT 0,
+        topics_json TEXT,
+        notes TEXT,
+        is_vip BOOLEAN DEFAULT 0,
+        is_internal BOOLEAN DEFAULT 0,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_wm_contacts_email ON wm_contacts(email)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_wm_contacts_relationship ON wm_contacts(relationship)")
+
+    # Inferred projects/initiatives
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS wm_projects (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        description TEXT,
+        related_threads_json TEXT,
+        participants_json TEXT,
+        status TEXT DEFAULT 'active',
+        confidence REAL DEFAULT 0.5,
+        first_mentioned_at DATETIME,
+        last_activity_at DATETIME,
+        key_decisions_json TEXT,
+        deadlines_json TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+
+    # Observations from passive learning (CC emails)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS wm_observations (
+        id TEXT PRIMARY KEY,
+        type TEXT NOT NULL,
+        content TEXT NOT NULL,
+        source_email_id TEXT,
+        source_thread_id TEXT,
+        related_contacts_json TEXT,
+        related_projects_json TEXT,
+        importance REAL DEFAULT 0.5,
+        confidence REAL DEFAULT 0.5,
+        observed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        relevant_until DATETIME,
+        FOREIGN KEY(source_email_id) REFERENCES emails(id) ON DELETE CASCADE
+    )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_wm_observations_type ON wm_observations(type)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_wm_observations_observed ON wm_observations(observed_at)")
+
+    # Pending decisions requiring user response
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS wm_decisions (
+        id TEXT PRIMARY KEY,
+        question TEXT NOT NULL,
+        context TEXT,
+        options_json TEXT,
+        source_email_id TEXT,
+        source_thread_id TEXT,
+        requester TEXT,
+        urgency TEXT DEFAULT 'this_week',
+        deadline DATETIME,
+        is_resolved BOOLEAN DEFAULT 0,
+        resolution TEXT,
+        resolved_at DATETIME,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(source_email_id) REFERENCES emails(id) ON DELETE CASCADE
+    )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_wm_decisions_resolved ON wm_decisions(is_resolved)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_wm_decisions_urgency ON wm_decisions(urgency)")
+
+    # User commitments to others
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS wm_commitments (
+        id TEXT PRIMARY KEY,
+        description TEXT NOT NULL,
+        to_whom TEXT,
+        source_email_id TEXT,
+        committed_at DATETIME,
+        due_by DATETIME,
+        is_completed BOOLEAN DEFAULT 0,
+        completed_at DATETIME,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(source_email_id) REFERENCES emails(id) ON DELETE CASCADE
+    )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_wm_commitments_completed ON wm_commitments(is_completed)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_wm_commitments_due ON wm_commitments(due_by)")
+
     conn.commit()
     _ensure_fts(cursor)
     conn.commit()

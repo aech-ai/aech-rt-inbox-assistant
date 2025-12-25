@@ -2,8 +2,8 @@ import typer
 import sqlite3
 import json
 import logging
-from datetime import datetime, timedelta
-from typing import Optional
+from datetime import datetime, timedelta, timezone
+from typing import Any, List, Optional
 
 from .state import (
     connect_db,
@@ -915,6 +915,435 @@ def calendar_prep_config(
                 typer.echo(f"    Matches VIPs: {', '.join(rule.vip_attendees)}")
     else:
         typer.echo(json.dumps(config.model_dump(), default=str))
+
+
+# =============================================================================
+# Working Memory Commands (EA State Awareness)
+# =============================================================================
+
+wm_app = typer.Typer(
+    help="Query EA working memory - threads, decisions, commitments, contacts, projects.",
+    add_completion=False,
+)
+app.add_typer(wm_app, name="wm")
+
+
+@wm_app.command("snapshot")
+def wm_snapshot(
+    limit_threads: int = typer.Option(10, help="Max active threads to include"),
+    limit_decisions: int = typer.Option(5, help="Max pending decisions"),
+    limit_observations: int = typer.Option(10, help="Max recent observations"),
+    human: bool = typer.Option(False, "--human", help="Human-readable output"),
+):
+    """
+    Get a complete snapshot of current working memory state.
+
+    This is the primary tool for understanding "what's going on" across
+    all tracked threads, decisions, commitments, and observations.
+    """
+    conn = connect_db()
+
+    # Active threads
+    threads = conn.execute(
+        """
+        SELECT * FROM wm_threads
+        WHERE status NOT IN ('resolved')
+        ORDER BY
+            CASE urgency
+                WHEN 'immediate' THEN 1
+                WHEN 'today' THEN 2
+                WHEN 'this_week' THEN 3
+                ELSE 4
+            END,
+            last_activity_at DESC
+        LIMIT ?
+        """,
+        (limit_threads,),
+    ).fetchall()
+
+    # Pending decisions
+    decisions = conn.execute(
+        """
+        SELECT * FROM wm_decisions
+        WHERE is_resolved = 0
+        ORDER BY
+            CASE urgency
+                WHEN 'immediate' THEN 1
+                WHEN 'today' THEN 2
+                WHEN 'this_week' THEN 3
+                ELSE 4
+            END,
+            created_at DESC
+        LIMIT ?
+        """,
+        (limit_decisions,),
+    ).fetchall()
+
+    # Open commitments
+    commitments = conn.execute(
+        """
+        SELECT * FROM wm_commitments
+        WHERE is_completed = 0
+        ORDER BY due_by ASC NULLS LAST
+        LIMIT 10
+        """
+    ).fetchall()
+
+    # Recent observations
+    observations = conn.execute(
+        """
+        SELECT * FROM wm_observations
+        ORDER BY observed_at DESC
+        LIMIT ?
+        """,
+        (limit_observations,),
+    ).fetchall()
+
+    conn.close()
+
+    snapshot = {
+        "active_threads": [dict(t) for t in threads],
+        "pending_decisions": [dict(d) for d in decisions],
+        "open_commitments": [dict(c) for c in commitments],
+        "recent_observations": [dict(o) for o in observations],
+        "summary": {
+            "threads_needing_reply": sum(1 for t in threads if t["needs_reply"]),
+            "urgent_threads": sum(
+                1 for t in threads if t["urgency"] in ("immediate", "today")
+            ),
+            "pending_decisions_count": len(decisions),
+            "open_commitments_count": len(commitments),
+        },
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    if human:
+        typer.echo("=== Working Memory Snapshot ===\n")
+
+        typer.echo("SUMMARY:")
+        typer.echo(f"  - {snapshot['summary']['threads_needing_reply']} threads need reply")
+        typer.echo(f"  - {snapshot['summary']['urgent_threads']} urgent threads")
+        typer.echo(f"  - {snapshot['summary']['pending_decisions_count']} pending decisions")
+        typer.echo(f"  - {snapshot['summary']['open_commitments_count']} open commitments")
+
+        if threads:
+            typer.echo(f"\nACTIVE THREADS ({len(threads)}):")
+            for t in threads:
+                urgency = (t["urgency"] or "").upper()
+                reply = " [NEEDS REPLY]" if t["needs_reply"] else ""
+                subj = (t["subject"] or "")[:50]
+                typer.echo(f"  [{urgency}] {subj}{reply}")
+
+        if decisions:
+            typer.echo(f"\nPENDING DECISIONS ({len(decisions)}):")
+            for d in decisions:
+                question = (d["question"] or "")[:60]
+                typer.echo(f"  - {question}")
+                typer.echo(f"    From: {d['requester']}")
+
+        if commitments:
+            typer.echo(f"\nOPEN COMMITMENTS ({len(commitments)}):")
+            for c in commitments:
+                due = f" (due: {c['due_by']})" if c["due_by"] else ""
+                desc = (c["description"] or "")[:60]
+                typer.echo(f"  - {desc}{due}")
+    else:
+        typer.echo(json.dumps(snapshot, default=str))
+
+
+@wm_app.command("threads")
+def wm_threads(
+    status: Optional[str] = typer.Option(None, help="Filter by status"),
+    urgency: Optional[str] = typer.Option(None, help="Filter by urgency"),
+    needs_reply: bool = typer.Option(False, "--needs-reply", help="Only threads needing reply"),
+    limit: int = typer.Option(20, help="Max results"),
+    human: bool = typer.Option(False, "--human"),
+):
+    """
+    Query active threads with optional filters.
+
+    Use this to find specific threads or get detailed thread information.
+    """
+    conn = connect_db()
+
+    query = "SELECT * FROM wm_threads WHERE 1=1"
+    params: List[Any] = []
+
+    if status:
+        query += " AND status = ?"
+        params.append(status)
+    else:
+        query += " AND status != 'resolved'"
+
+    if urgency:
+        query += " AND urgency = ?"
+        params.append(urgency)
+
+    if needs_reply:
+        query += " AND needs_reply = 1"
+
+    query += " ORDER BY last_activity_at DESC LIMIT ?"
+    params.append(limit)
+
+    threads = conn.execute(query, params).fetchall()
+    conn.close()
+
+    results = [dict(t) for t in threads]
+
+    if human:
+        if not results:
+            typer.echo("No threads found matching criteria.")
+            return
+        for t in results:
+            typer.echo(f"[{t['urgency']}] {t['subject']}")
+            typer.echo(f"  Status: {t['status']} | Messages: {t['message_count']}")
+            typer.echo(f"  Last activity: {t['last_activity_at']}")
+            if t.get("summary"):
+                summary = t["summary"][:100]
+                typer.echo(f"  Summary: {summary}...")
+            typer.echo("")
+    else:
+        typer.echo(json.dumps(results, default=str))
+
+
+@wm_app.command("contacts")
+def wm_contacts(
+    relationship: Optional[str] = typer.Option(None, help="Filter by relationship type"),
+    vip_only: bool = typer.Option(False, "--vip", help="Only VIP contacts"),
+    external_only: bool = typer.Option(False, "--external", help="Only external contacts"),
+    search: Optional[str] = typer.Option(None, help="Search by email or name"),
+    limit: int = typer.Option(20, help="Max results"),
+    human: bool = typer.Option(False, "--human"),
+):
+    """
+    Query known contacts and their interaction history.
+
+    Useful for understanding relationships and communication patterns.
+    """
+    conn = connect_db()
+
+    query = "SELECT * FROM wm_contacts WHERE 1=1"
+    params: List[Any] = []
+
+    if relationship:
+        query += " AND relationship = ?"
+        params.append(relationship)
+
+    if vip_only:
+        query += " AND is_vip = 1"
+
+    if external_only:
+        query += " AND is_internal = 0"
+
+    if search:
+        query += " AND (email LIKE ? OR name LIKE ?)"
+        params.extend([f"%{search}%", f"%{search}%"])
+
+    query += " ORDER BY total_interactions DESC LIMIT ?"
+    params.append(limit)
+
+    contacts = conn.execute(query, params).fetchall()
+    conn.close()
+
+    results = [dict(c) for c in contacts]
+
+    if human:
+        if not results:
+            typer.echo("No contacts found.")
+            return
+        for c in results:
+            vip = " [VIP]" if c["is_vip"] else ""
+            internal = " (internal)" if c["is_internal"] else " (external)"
+            name = c["name"] or c["email"]
+            typer.echo(f"{name}{vip}{internal}")
+            typer.echo(f"  Email: {c['email']}")
+            typer.echo(f"  Interactions: {c['total_interactions']} total")
+            typer.echo(f"  Relationship: {c['relationship']}")
+            typer.echo("")
+    else:
+        typer.echo(json.dumps(results, default=str))
+
+
+@wm_app.command("decisions")
+def wm_decisions(
+    include_resolved: bool = typer.Option(False, "--include-resolved"),
+    limit: int = typer.Option(10, help="Max results"),
+    human: bool = typer.Option(False, "--human"),
+):
+    """
+    Query pending decisions requiring user input.
+
+    Decisions are extracted from emails asking for choices or approvals.
+    """
+    conn = connect_db()
+
+    query = "SELECT * FROM wm_decisions"
+    params: List[Any] = []
+
+    if not include_resolved:
+        query += " WHERE is_resolved = 0"
+
+    query += " ORDER BY created_at DESC LIMIT ?"
+    params.append(limit)
+
+    decisions = conn.execute(query, params).fetchall()
+    conn.close()
+
+    results = [dict(d) for d in decisions]
+
+    if human:
+        if not results:
+            typer.echo("No pending decisions.")
+            return
+        for d in results:
+            urgency = f"[{d['urgency'].upper()}]" if d["urgency"] else ""
+            resolved = " (RESOLVED)" if d["is_resolved"] else ""
+            question = (d["question"] or "")[:60]
+            typer.echo(f"{urgency} {question}{resolved}")
+            typer.echo(f"  From: {d['requester']}")
+            if d.get("context"):
+                context = d["context"][:80]
+                typer.echo(f"  Context: {context}...")
+            if d.get("deadline"):
+                typer.echo(f"  Deadline: {d['deadline']}")
+            typer.echo("")
+    else:
+        typer.echo(json.dumps(results, default=str))
+
+
+@wm_app.command("commitments")
+def wm_commitments(
+    include_completed: bool = typer.Option(False, "--include-completed"),
+    overdue_only: bool = typer.Option(False, "--overdue"),
+    limit: int = typer.Option(10, help="Max results"),
+    human: bool = typer.Option(False, "--human"),
+):
+    """
+    Query commitments the user has made.
+
+    Commitments are tracked when the user promises to do something.
+    """
+    conn = connect_db()
+
+    query = "SELECT * FROM wm_commitments WHERE 1=1"
+    params: List[Any] = []
+
+    if not include_completed:
+        query += " AND is_completed = 0"
+
+    if overdue_only:
+        query += " AND due_by < datetime('now') AND is_completed = 0"
+
+    query += " ORDER BY due_by ASC NULLS LAST LIMIT ?"
+    params.append(limit)
+
+    commitments = conn.execute(query, params).fetchall()
+    conn.close()
+
+    results = [dict(c) for c in commitments]
+
+    if human:
+        if not results:
+            typer.echo("No commitments found.")
+            return
+        for c in results:
+            completed = " (DONE)" if c["is_completed"] else ""
+            due = f" [Due: {c['due_by']}]" if c["due_by"] else ""
+            desc = (c["description"] or "")[:60]
+            typer.echo(f"- {desc}{due}{completed}")
+            typer.echo(f"  To: {c['to_whom']}")
+            typer.echo("")
+    else:
+        typer.echo(json.dumps(results, default=str))
+
+
+@wm_app.command("observations")
+def wm_observations(
+    type_filter: Optional[str] = typer.Option(None, "--type", help="Filter by observation type"),
+    days: int = typer.Option(7, help="Look back N days"),
+    limit: int = typer.Option(20, help="Max results"),
+    human: bool = typer.Option(False, "--human"),
+):
+    """
+    Query observations from passive learning (CC emails, etc).
+
+    Observations capture context without requiring action.
+    """
+    conn = connect_db()
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+    query = "SELECT * FROM wm_observations WHERE observed_at > ?"
+    params: List[Any] = [cutoff]
+
+    if type_filter:
+        query += " AND type = ?"
+        params.append(type_filter)
+
+    query += " ORDER BY observed_at DESC LIMIT ?"
+    params.append(limit)
+
+    observations = conn.execute(query, params).fetchall()
+    conn.close()
+
+    results = [dict(o) for o in observations]
+
+    if human:
+        if not results:
+            typer.echo("No observations in the specified period.")
+            return
+        for o in results:
+            content = (o["content"] or "")[:80]
+            typer.echo(f"[{o['type']}] {content}...")
+            typer.echo(f"  Observed: {o['observed_at']}")
+            typer.echo("")
+    else:
+        typer.echo(json.dumps(results, default=str))
+
+
+@wm_app.command("projects")
+def wm_projects(
+    status: Optional[str] = typer.Option(None, help="Filter by status"),
+    limit: int = typer.Option(10, help="Max results"),
+    human: bool = typer.Option(False, "--human"),
+):
+    """
+    Query inferred projects and initiatives.
+
+    Projects are automatically detected from email patterns.
+    """
+    conn = connect_db()
+
+    query = "SELECT * FROM wm_projects WHERE 1=1"
+    params: List[Any] = []
+
+    if status:
+        query += " AND status = ?"
+        params.append(status)
+
+    query += " ORDER BY last_activity_at DESC LIMIT ?"
+    params.append(limit)
+
+    projects = conn.execute(query, params).fetchall()
+    conn.close()
+
+    results = [dict(p) for p in projects]
+
+    if human:
+        if not results:
+            typer.echo("No projects tracked.")
+            return
+        for p in results:
+            threads = json.loads(p["related_threads_json"] or "[]")
+            typer.echo(f"{p['name']} [{p['status']}]")
+            typer.echo(f"  {len(threads)} related threads")
+            typer.echo(f"  Last activity: {p['last_activity_at']}")
+            if p.get("description"):
+                desc = p["description"][:80]
+                typer.echo(f"  {desc}...")
+            typer.echo("")
+    else:
+        typer.echo(json.dumps(results, default=str))
 
 
 def run():

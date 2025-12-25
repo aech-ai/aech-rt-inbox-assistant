@@ -8,6 +8,7 @@ from .poller import GraphPoller
 from .preferences import read_preferences
 from .triggers import make_dedupe_key, write_trigger
 from .folders_config import STANDARD_FOLDERS, FOLDER_ALIASES
+from .working_memory.updater import WorkingMemoryUpdater
 
 logger = logging.getLogger(__name__)
 
@@ -308,7 +309,22 @@ class Organizer:
                     (email["id"], reply_reason, email["received_at"]),
                 )
             conn.commit()
-            
+
+            # Update Working Memory (non-blocking - failures don't affect email processing)
+            if self.user_email:
+                try:
+                    wm_updater = WorkingMemoryUpdater(self.user_email)
+                    await wm_updater.process_email(
+                        dict(email),
+                        {
+                            "category": getattr(decision, "category", ""),
+                            "requires_reply": getattr(decision, "requires_reply", False),
+                            "labels": getattr(decision, "labels", []),
+                        },
+                    )
+                except Exception as wm_err:
+                    logger.warning(f"Working memory update failed for {email['id']}: {wm_err}")
+
             # Create Trigger if Urgent - notify via Teams
             if decision.category.lower() == "urgent" or decision.action == "mark_important":
                 write_trigger(self.user_email, "urgent_email", {
