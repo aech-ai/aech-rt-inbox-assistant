@@ -159,19 +159,8 @@ def init_db(db_path: Optional[Path] = None) -> None:
     )
     """)
 
-    # Calendar events cache (for scheduling/conflict detection)
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS calendar_events (
-        event_id TEXT PRIMARY KEY,
-        starts_at DATETIME,
-        ends_at DATETIME,
-        title TEXT,
-        location TEXT,
-        organizer TEXT,
-        attendees_json TEXT,
-        priority INTEGER
-    )
-    """)
+    # NOTE: Calendar operations use direct Microsoft Graph API calls (no local sync).
+    # See src/calendar.py for CalendarClient implementation.
 
     # Internal work queue
     cursor.execute("""

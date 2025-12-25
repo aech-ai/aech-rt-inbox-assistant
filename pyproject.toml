@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aech-cli-inbox-assistant"
-version = "0.6.0"
+version = "0.7.0"
 description = "Inbox Assistant CLI for Agent Aech"
 requires-python = ">=3.10"
 dependencies = [

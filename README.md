@@ -65,6 +65,9 @@ Triggers are written to `/triggers/outbox/*.json` for the Agent Aech worker to c
 | `urgent_email` | Immediate | Email categorized as Urgent or marked important |
 | `reply_needed` | Immediate | AI detected you need to respond |
 | `availability_requested` | Immediate | Someone asking to schedule a meeting |
+| `availability_requested_enhanced` | Immediate | Availability request with real calendar data |
+| `daily_briefing` | Scheduled | Morning briefing with day's schedule and prep |
+| `meeting_prep_ready` | Before meeting | Pre-meeting prep notification |
 | `no_reply_after_n_days` | Deferred | N days passed with no reply (default: 2 days) |
 | `weekly_digest_ready` | Scheduled | Weekly summary (configurable day/time) |
 
@@ -119,6 +122,58 @@ aech-cli-inbox prefs show
 aech-cli-inbox prefs set vip_senders '["ceo@company.com"]'
 aech-cli-inbox prefs set followup_n_days 3
 ```
+
+## Calendar Integration
+
+Direct Microsoft Graph API integration for calendar operations (no local sync - always real-time):
+
+```bash
+# View schedule
+aech-cli-inbox calendar today --human
+aech-cli-inbox calendar upcoming --hours 48
+aech-cli-inbox calendar view --start 2025-01-20 --end 2025-01-27
+
+# Check availability
+aech-cli-inbox calendar free-busy --start 2025-01-20 --end 2025-01-24
+aech-cli-inbox calendar find-times --attendees "jane@example.com" --duration 60
+
+# Create events (no invites sent by default)
+aech-cli-inbox calendar create-event --subject "Team Sync" --start 2025-01-20T14:00:00 --online
+
+# Working hours
+aech-cli-inbox calendar working-hours
+```
+
+## Meeting Prep
+
+Executive assistant features for meeting preparation:
+
+```bash
+# Daily briefing with schedule overview and alerts
+aech-cli-inbox calendar briefing --human
+
+# Prep for next meeting needing attention
+aech-cli-inbox calendar prep --next --human
+
+# Prep for specific event
+aech-cli-inbox calendar prep --event-id AAMkAG...
+
+# View/configure prep rules
+aech-cli-inbox calendar prep-config --human
+```
+
+### Meeting Prep Features
+
+- **Daily Briefing**: Schedule overview, busy/free hours, back-to-back alerts, early meeting warnings
+- **Attendee Context**: Cross-references attendees with email corpus (recent emails, last subject)
+- **Configurable Rules**: Which meetings get prep based on:
+  - External attendees
+  - Meeting size (5+ attendees)
+  - Keywords in subject (interview, review, board, exec, client, partner)
+  - VIP attendee list
+  - Sender domains
+
+Configure via `prefs set meeting_prep '{"rules": [...]}'`
 
 ## Data Storage
 

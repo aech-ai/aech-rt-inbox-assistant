@@ -339,22 +339,39 @@ class Organizer:
             if getattr(decision, "availability_requested", False):
                 availability = getattr(decision, "availability", None)
                 default_timezone = str(prefs.get("timezone") or os.getenv("DEFAULT_TIMEZONE", "UTC"))
-                write_trigger(
-                    self.user_email,
-                    "availability_requested",
-                    {
-                        "message_id": email["id"],
-                        "subject": email["subject"],
-                        "requester": email["sender"],
-                        "time_window": getattr(availability, "time_window", None),
-                        "duration_minutes": getattr(availability, "duration_minutes", None) or 30,
-                        "timezone": getattr(availability, "timezone", None) or default_timezone,
-                        "constraints": getattr(availability, "constraints", None),
-                        "proposed_slots": getattr(availability, "proposed_slots", None) or [],
-                    },
-                    dedupe_key=make_dedupe_key("availability_requested", self.user_email, email["id"]),
-                    routing={"channel": "teams"},
-                )
+
+                # Build base payload
+                availability_payload = {
+                    "time_window": getattr(availability, "time_window", None),
+                    "duration_minutes": getattr(availability, "duration_minutes", None) or 30,
+                    "timezone": getattr(availability, "timezone", None) or default_timezone,
+                    "constraints": getattr(availability, "constraints", None),
+                    "proposed_slots": getattr(availability, "proposed_slots", None) or [],
+                    "requester": email["sender"],
+                }
+
+                # Try to enhance with real calendar data
+                try:
+                    from .calendar_intelligence import emit_enhanced_availability_trigger
+                    emit_enhanced_availability_trigger(
+                        self.user_email,
+                        {"id": email["id"], "subject": email["subject"], "sender": email["sender"]},
+                        availability_payload,
+                    )
+                except Exception as cal_err:
+                    logger.warning(f"Could not enhance availability trigger with calendar: {cal_err}")
+                    # Fall back to basic trigger without calendar data
+                    write_trigger(
+                        self.user_email,
+                        "availability_requested",
+                        {
+                            "message_id": email["id"],
+                            "subject": email["subject"],
+                            **availability_payload,
+                        },
+                        dedupe_key=make_dedupe_key("availability_requested", self.user_email, email["id"]),
+                        routing={"channel": "teams"},
+                    )
                 
         except Exception as e:
             conn.rollback()

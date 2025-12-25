@@ -1,7 +1,7 @@
 {
   "name": "inbox-assistant",
   "type": "cli",
-  "description": "Query Inbox Assistant state (SQLite), manage corpus, and search emails. All commands output JSON by default.",
+  "description": "Query Inbox Assistant state (SQLite), manage corpus, search emails, access calendar, and get meeting prep briefings. All commands output JSON by default.",
   "command": "aech-cli-inbox-assistant",
   "actions": [
     {
@@ -91,6 +91,103 @@
       "parameters": [
         {"name": "key", "type": "argument", "required": true, "description": "Preference key."}
       ]
+    },
+    {
+      "name": "calendar today",
+      "description": "Show today's agenda from Microsoft Graph calendar.",
+      "parameters": [
+        {"name": "tz", "type": "option", "required": false, "description": "Override timezone (IANA format like America/New_York)."},
+        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
+      ]
+    },
+    {
+      "name": "calendar upcoming",
+      "description": "Show upcoming events in the next N hours.",
+      "parameters": [
+        {"name": "hours", "type": "option", "required": false, "description": "Hours to look ahead (default: 24)."},
+        {"name": "limit", "type": "option", "required": false, "description": "Maximum events to show (default: 10)."},
+        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
+      ]
+    },
+    {
+      "name": "calendar view",
+      "description": "View calendar events in a date range.",
+      "parameters": [
+        {"name": "start", "type": "option", "required": true, "description": "Start date (YYYY-MM-DD or ISO datetime)."},
+        {"name": "end", "type": "option", "required": true, "description": "End date (YYYY-MM-DD or ISO datetime)."},
+        {"name": "limit", "type": "option", "required": false, "description": "Maximum events to return (default: 100)."},
+        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
+      ]
+    },
+    {
+      "name": "calendar free-busy",
+      "description": "Check free/busy status for one or more users via Graph API getSchedule.",
+      "parameters": [
+        {"name": "start", "type": "option", "required": true, "description": "Start datetime (YYYY-MM-DD or ISO)."},
+        {"name": "end", "type": "option", "required": true, "description": "End datetime (YYYY-MM-DD or ISO)."},
+        {"name": "emails", "type": "option", "required": false, "description": "Comma-separated emails to check (default: self)."},
+        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
+      ]
+    },
+    {
+      "name": "calendar find-times",
+      "description": "Find meeting times that work for all attendees via Graph API findMeetingTimes.",
+      "parameters": [
+        {"name": "attendees", "type": "option", "required": true, "description": "Comma-separated attendee emails."},
+        {"name": "duration", "type": "option", "required": false, "description": "Meeting duration in minutes (default: 30)."},
+        {"name": "start", "type": "option", "required": false, "description": "Start date constraint (YYYY-MM-DD)."},
+        {"name": "end", "type": "option", "required": false, "description": "End date constraint (YYYY-MM-DD)."},
+        {"name": "max-results", "type": "option", "required": false, "description": "Maximum suggestions to return (default: 10)."},
+        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
+      ]
+    },
+    {
+      "name": "calendar create-event",
+      "description": "Create a calendar event. Invitations are NOT sent by default - event is created as draft.",
+      "parameters": [
+        {"name": "subject", "type": "option", "required": true, "description": "Event subject/title."},
+        {"name": "start", "type": "option", "required": true, "description": "Start datetime (ISO format)."},
+        {"name": "duration", "type": "option", "required": false, "description": "Duration in minutes (default: 30)."},
+        {"name": "end", "type": "option", "required": false, "description": "End datetime (overrides duration)."},
+        {"name": "attendees", "type": "option", "required": false, "description": "Comma-separated attendee emails."},
+        {"name": "location", "type": "option", "required": false, "description": "Event location."},
+        {"name": "body", "type": "option", "required": false, "description": "Event body/description."},
+        {"name": "online", "type": "flag", "required": false, "description": "Create as Teams meeting."},
+        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
+      ]
+    },
+    {
+      "name": "calendar working-hours",
+      "description": "Get user's working hours from mailbox settings.",
+      "parameters": [
+        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
+      ]
+    },
+    {
+      "name": "calendar prep",
+      "description": "Generate meeting preparation briefing with attendee context from email corpus. Use --next for the next meeting or --event-id for a specific event.",
+      "parameters": [
+        {"name": "event-id", "type": "option", "required": false, "description": "Specific event ID to prepare."},
+        {"name": "next", "type": "flag", "required": false, "description": "Prepare for the next meeting that needs prep."},
+        {"name": "hours", "type": "option", "required": false, "description": "Lookahead hours when using --next (default: 8)."},
+        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
+      ]
+    },
+    {
+      "name": "calendar briefing",
+      "description": "Generate a daily briefing with schedule overview, alerts (back-to-back meetings, early starts), and meeting prep for important meetings.",
+      "parameters": [
+        {"name": "date", "type": "option", "required": false, "description": "Date for briefing (YYYY-MM-DD, default: today)."},
+        {"name": "tz", "type": "option", "required": false, "description": "Override timezone (IANA format)."},
+        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
+      ]
+    },
+    {
+      "name": "calendar prep-config",
+      "description": "Show current meeting prep configuration and rules (which meetings get prep, timing, exclusions).",
+      "parameters": [
+        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
+      ]
     }
   ],
   "documentation": {
@@ -99,10 +196,18 @@
       "aech-cli-inbox-assistant list --include-read",
       "aech-cli-inbox-assistant search 'contract renewal' --mode hybrid",
       "aech-cli-inbox-assistant stats",
-      "aech-cli-inbox-assistant stats --human",
-      "aech-cli-inbox-assistant sync-status",
       "aech-cli-inbox-assistant reply-needed",
-      "aech-cli-inbox-assistant prefs show"
+      "aech-cli-inbox-assistant calendar today",
+      "aech-cli-inbox-assistant calendar upcoming --hours 48",
+      "aech-cli-inbox-assistant calendar view --start 2025-01-20 --end 2025-01-27",
+      "aech-cli-inbox-assistant calendar free-busy --start 2025-01-20 --end 2025-01-24",
+      "aech-cli-inbox-assistant calendar find-times --attendees 'jane@example.com' --duration 60",
+      "aech-cli-inbox-assistant calendar create-event --subject 'Team Sync' --start 2025-01-20T14:00:00 --duration 30 --online",
+      "aech-cli-inbox-assistant calendar working-hours",
+      "aech-cli-inbox-assistant calendar briefing --human",
+      "aech-cli-inbox-assistant calendar prep --next --human",
+      "aech-cli-inbox-assistant calendar prep --event-id AAMkAG...",
+      "aech-cli-inbox-assistant calendar prep-config --human"
     ]
   }
 }
