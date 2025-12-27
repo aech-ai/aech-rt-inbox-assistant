@@ -129,6 +129,15 @@ def search(
                         typer.echo(f"[ATTACHMENT] {r.get('filename', 'N/A')} ({score_info})")
                         typer.echo(f"  In: {r.get('email_subject', 'N/A')}")
 
+                    # Show link for email-based results
+                    if r['source_type'] in ('email', 'virtual_email'):
+                        link = r.get('web_link')
+                        if not link and r.get('email_id'):
+                            from urllib.parse import quote
+                            link = f"https://outlook.office365.com/mail/inbox/id/{quote(r['email_id'], safe='')}"
+                        if link:
+                            typer.echo(f"  Link: {link}")
+
                     typer.echo(f"  Preview: {r['content_preview'][:100]}...")
                     typer.echo("")
             else:
@@ -149,7 +158,7 @@ def search(
         cursor.execute(
             """
             SELECT e.id, e.subject, e.body_preview, e.received_at, e.category, e.is_read,
-                   bm25(emails_fts) AS rank
+                   e.sender, e.web_link, bm25(emails_fts) AS rank
             FROM emails_fts
             JOIN emails e ON emails_fts.id = e.id
             WHERE emails_fts MATCH ?
@@ -165,7 +174,7 @@ def search(
         sql_query = f"%{query}%"
         cursor.execute(
             """
-            SELECT id, subject, body_preview, received_at, category, is_read
+            SELECT id, subject, body_preview, received_at, category, is_read, sender, web_link
             FROM emails
             WHERE subject LIKE ? OR body_preview LIKE ?
             ORDER BY received_at DESC
@@ -180,7 +189,18 @@ def search(
         if not results:
             typer.echo("No results.")
         for email in results:
-            typer.echo(f"[{email['id']}] {email['subject']} ({email.get('category')})")
+            typer.echo(f"Subject: {email['subject']}")
+            typer.echo(f"  From: {email.get('sender', 'N/A')}")
+            typer.echo(f"  Received: {email['received_at']}")
+            typer.echo(f"  Category: {email.get('category', 'N/A')}")
+            # Use web_link if available
+            link = email.get('web_link')
+            if not link and email.get('id'):
+                from urllib.parse import quote
+                link = f"https://outlook.office365.com/mail/inbox/id/{quote(email['id'], safe='')}"
+            if link:
+                typer.echo(f"  Link: {link}")
+            typer.echo()
     else:
         typer.echo(json.dumps(results, default=str))
 
@@ -377,7 +397,7 @@ def reply_needed(
     conn = connect_db()
     rows = conn.execute(
         """
-        SELECT rt.message_id, rt.reason, rt.last_activity_at, e.subject, e.sender
+        SELECT rt.message_id, rt.reason, rt.last_activity_at, e.subject, e.sender, e.web_link
         FROM reply_tracking rt
         JOIN emails e ON e.id = rt.message_id
         WHERE rt.requires_reply = 1
@@ -395,7 +415,18 @@ def reply_needed(
             typer.echo("No reply-needed items.")
             return
         for item in items:
-            typer.echo(f"[{item['message_id']}] {item['subject']} ({item['sender']}) - {item.get('reason')}")
+            typer.echo(f"Subject: {item['subject']}")
+            typer.echo(f"  From: {item['sender']}")
+            typer.echo(f"  Reason: {item.get('reason', 'N/A')}")
+            typer.echo(f"  Last activity: {item['last_activity_at']}")
+            # Use web_link if available
+            link = item.get('web_link')
+            if not link and item.get('message_id'):
+                from urllib.parse import quote
+                link = f"https://outlook.office365.com/mail/inbox/id/{quote(item['message_id'], safe='')}"
+            if link:
+                typer.echo(f"  Link: {link}")
+            typer.echo()
     else:
         typer.echo(json.dumps(items, default=str))
 
