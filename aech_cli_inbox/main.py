@@ -51,7 +51,18 @@ def list(
         if not emails:
             typer.echo("No emails found.")
         for email in emails:
-            typer.echo(f"[{email['id']}] {email['subject']} ({email['category']})")
+            typer.echo(f"Subject: {email['subject']}")
+            typer.echo(f"  From: {email['sender']}")
+            typer.echo(f"  Received: {email['received_at']}")
+            typer.echo(f"  Category: {email['category']}")
+            # Use web_link (folder-agnostic) if available, otherwise construct from id
+            link = email.get('web_link')
+            if not link and email.get('id'):
+                from urllib.parse import quote
+                link = f"https://outlook.office365.com/mail/inbox/id/{quote(email['id'], safe='')}"
+            if link:
+                typer.echo(f"  Link: {link}")
+            typer.echo()
     else:
         typer.echo(json.dumps(emails, default=str))
 
