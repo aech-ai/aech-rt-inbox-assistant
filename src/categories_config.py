@@ -20,9 +20,6 @@ from typing import Any
 NAMESPACE = "inbox_assistant"
 CATEGORIES_KEY = "categories"
 
-# Legacy key for backward compatibility
-LEGACY_CATEGORIES_KEY = "outlook_categories"
-
 # Default categories with colors and flag behavior
 DEFAULT_CATEGORIES: list[dict[str, Any]] = [
     {
@@ -100,11 +97,6 @@ def _get_namespace_prefs(prefs: dict[str, Any] | None) -> dict[str, Any]:
 def get_categories(prefs: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """Get categories from preferences or return defaults.
 
-    Looks for categories in order:
-    1. prefs["inbox_assistant"]["categories"] (new namespaced location)
-    2. prefs["outlook_categories"] (legacy location, for backward compatibility)
-    3. DEFAULT_CATEGORIES (if neither exists)
-
     Args:
         prefs: User preferences dict (from read_preferences())
 
@@ -114,14 +106,9 @@ def get_categories(prefs: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     if not prefs:
         return DEFAULT_CATEGORIES
 
-    # Check new namespaced location first
     namespace_prefs = _get_namespace_prefs(prefs)
     if CATEGORIES_KEY in namespace_prefs:
         return namespace_prefs[CATEGORIES_KEY]
-
-    # Fall back to legacy location
-    if LEGACY_CATEGORIES_KEY in prefs:
-        return prefs[LEGACY_CATEGORIES_KEY]
 
     return DEFAULT_CATEGORIES
 
@@ -180,14 +167,11 @@ def format_categories_for_prompt(prefs: dict[str, Any] | None = None) -> str:
 def ensure_categories_initialized(prefs: dict[str, Any]) -> tuple[list[dict[str, Any]], bool]:
     """Ensure categories are initialized in preferences under the namespace.
 
-    Handles migration from legacy location (outlook_categories) to new
-    namespaced location (inbox_assistant.categories).
-
     Args:
         prefs: User preferences dict (will be modified in place)
 
     Returns:
-        Tuple of (categories list, was_initialized_or_migrated bool)
+        Tuple of (categories list, was_initialized bool)
     """
     # Ensure namespace exists
     if NAMESPACE not in prefs:
@@ -195,14 +179,9 @@ def ensure_categories_initialized(prefs: dict[str, Any]) -> tuple[list[dict[str,
 
     namespace_prefs = prefs[NAMESPACE]
 
-    # Already initialized in new location
+    # Already initialized
     if CATEGORIES_KEY in namespace_prefs:
         return namespace_prefs[CATEGORIES_KEY], False
-
-    # Migrate from legacy location if exists
-    if LEGACY_CATEGORIES_KEY in prefs:
-        namespace_prefs[CATEGORIES_KEY] = prefs.pop(LEGACY_CATEGORIES_KEY)
-        return namespace_prefs[CATEGORIES_KEY], True
 
     # Initialize with defaults
     namespace_prefs[CATEGORIES_KEY] = [cat.copy() for cat in DEFAULT_CATEGORIES]
@@ -364,20 +343,9 @@ def set_inbox_assistant_pref(prefs: dict[str, Any], key: str, value: Any) -> Non
 
 
 def is_categories_mode_enabled(prefs: dict[str, Any] | None) -> bool:
-    """Check if categories mode is enabled (default: True).
-
-    Also checks legacy location for backward compatibility.
-    """
+    """Check if categories mode is enabled (default: True)."""
     if not prefs:
         return True
 
-    # Check new namespaced location first
     namespace_prefs = prefs.get(NAMESPACE, {})
-    if "use_categories_mode" in namespace_prefs:
-        return namespace_prefs["use_categories_mode"]
-
-    # Fall back to legacy location
-    if "use_outlook_categories" in prefs:
-        return prefs["use_outlook_categories"]
-
-    return True  # Default to categories mode
+    return namespace_prefs.get("use_categories_mode", True)
