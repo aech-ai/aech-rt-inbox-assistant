@@ -300,7 +300,7 @@ def metadata_sync_live(user_email: str):
 
     logger.info(f"Before: {with_weblink}/{total} emails have web_link ({100*with_weblink//total if total else 0}%)")
 
-    if with_weblink == total:
+    if total > 0 and with_weblink == total:
         logger.info("All emails already have web_link - nothing to do!")
         return
 
