@@ -2,6 +2,11 @@
   "name": "inbox-assistant",
   "type": "cli",
   "description": "Query Inbox Assistant state (SQLite), manage corpus, search emails, access calendar, and get meeting prep briefings. All commands output JSON by default.",
+  "persona": {
+    "exclusive": true,
+    "context_injection": "aech-cli-inbox-assistant wm snapshot --human",
+    "system_addendum": "You are acting as the user's Executive Assistant. You have continuous awareness of their email, calendar, commitments, and relationships through your working memory. Before taking action, consult your working memory to understand the user's current context, pending decisions, and open commitments. Use your CLI tools to query deeper details or take actions on their behalf."
+  },
   "command": "aech-cli-inbox-assistant",
   "actions": [
     {
