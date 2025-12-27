@@ -18,6 +18,9 @@ Usage:
     # Metadata sync: Fast update of webLink, conversationId, folder (no body fetch)
     DELEGATED_USER=steven@aech.ai python scripts/wm_backfill.py --metadata-sync
 
+    # Metadata sync on LIVE database (backfill web_link for existing emails)
+    DELEGATED_USER=steven@aech.ai python scripts/wm_backfill.py --metadata-sync --live
+
     # Setup: Copy live DB to eval environment (legacy - missing conversation_id)
     DELEGATED_USER=steven@aech.ai python scripts/wm_backfill.py --setup
 
@@ -82,6 +85,11 @@ def get_live_db_path(user_email: str) -> Path:
     """Get path to the live database."""
     live_data = Path(__file__).parent.parent.parent / "aech-main" / "data" / "users" / user_email / ".inbox-assistant"
     return live_data / "inbox.sqlite"
+
+
+def get_live_user_dir(user_email: str) -> Path:
+    """Get live user directory in aech-main."""
+    return Path(__file__).parent.parent.parent / "aech-main" / "data" / "users" / user_email
 
 
 def setup_eval_env(user_email: str):
@@ -261,6 +269,78 @@ def metadata_sync_eval_env(user_email: str):
     logger.info(f"\nMetadata sync complete:")
     logger.info(f"  - {total} emails updated")
     logger.info(f"  - {with_weblink} with web_link ({100*with_weblink//total if total else 0}%)")
+
+
+def metadata_sync_live(user_email: str):
+    """
+    Sync metadata for the LIVE database (not eval).
+
+    This updates webLink and other metadata for existing emails
+    in the production database at aech-main/data/users/{user}/.
+    """
+    live_db = get_live_db_path(user_email)
+
+    if not live_db.exists():
+        logger.error(f"Live database not found: {live_db}")
+        sys.exit(1)
+
+    # Set env to use live DB
+    os.environ["AECH_USER_DIR"] = str(get_live_user_dir(user_email))
+
+    # Run migrations
+    from src.database import init_db, get_db_path
+    init_db()
+    logger.info(f"Database: {get_db_path()}")
+
+    # Check current web_link coverage
+    conn = sqlite3.connect(live_db)
+    total = conn.execute("SELECT COUNT(*) FROM emails").fetchone()[0]
+    with_weblink = conn.execute("SELECT COUNT(*) FROM emails WHERE web_link IS NOT NULL").fetchone()[0]
+    conn.close()
+
+    logger.info(f"Before: {with_weblink}/{total} emails have web_link ({100*with_weblink//total if total else 0}%)")
+
+    if with_weblink == total:
+        logger.info("All emails already have web_link - nothing to do!")
+        return
+
+    # Import poller
+    from src.poller import GraphPoller
+
+    # aech_cli_msgraph sets INBOX_DB_PATH which overrides AECH_USER_DIR - fix it
+    if "INBOX_DB_PATH" in os.environ:
+        del os.environ["INBOX_DB_PATH"]
+
+    poller = GraphPoller()
+
+    # Get all folders
+    folders = poller._graph_client.get_mail_folders(user_id=user_email).get("value", [])
+    logger.info(f"Found {len(folders)} folders")
+
+    total_synced = 0
+    for folder in folders:
+        folder_id = folder.get("id")
+        folder_name = folder.get("displayName", "Unknown")
+        msg_count = folder.get("totalItemCount", 0)
+
+        if msg_count == 0:
+            logger.info(f"  Skipping {folder_name} (empty)")
+            continue
+
+        logger.info(f"  Syncing {folder_name} ({msg_count} messages)...")
+        # fetch_body=False makes this ~10x faster
+        synced = poller.full_sync_folder(folder_id, folder_name, fetch_body=False)
+        total_synced += synced
+
+    # Verify webLink coverage
+    conn = sqlite3.connect(live_db)
+    total = conn.execute("SELECT COUNT(*) FROM emails").fetchone()[0]
+    with_weblink = conn.execute("SELECT COUNT(*) FROM emails WHERE web_link IS NOT NULL").fetchone()[0]
+    conn.close()
+
+    logger.info(f"\nLive metadata sync complete:")
+    logger.info(f"  - {total_synced} emails processed")
+    logger.info(f"  - {with_weblink}/{total} emails now have web_link ({100*with_weblink//total if total else 0}%)")
 
 
 def create_checkpoint(user_email: str, name: str):
@@ -459,6 +539,7 @@ def main():
     parser.add_argument("--setup", action="store_true", help="Setup eval environment from live DB")
     parser.add_argument("--fresh-sync", action="store_true", help="Create fresh DB and sync all emails from M365")
     parser.add_argument("--metadata-sync", action="store_true", help="Fast sync: update metadata (webLink, etc) without fetching bodies")
+    parser.add_argument("--live", action="store_true", help="Target live database instead of eval (use with --metadata-sync)")
     parser.add_argument("--checkpoint", type=str, metavar="NAME", help="Create checkpoint with given name")
     parser.add_argument("--list-checkpoints", action="store_true", help="List available checkpoints")
     parser.add_argument("--restore", type=str, metavar="NAME", help="Restore from checkpoint")
@@ -488,7 +569,10 @@ def main():
         return
 
     if args.metadata_sync:
-        metadata_sync_eval_env(user_email)
+        if args.live:
+            metadata_sync_live(user_email)
+        else:
+            metadata_sync_eval_env(user_email)
         return
 
     if args.list_checkpoints:
