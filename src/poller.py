@@ -407,6 +407,7 @@ class GraphPoller:
             "is_read": msg.get("isRead", False),
             "folder_id": msg.get("parentFolderId"),
             "etag": msg.get("@odata.etag"),
+            "web_link": msg.get("webLink"),  # Folder-agnostic deep link to email
         }
 
     def _upsert_message(self, conn, msg_data: Dict[str, Any], body_text: Optional[str] = None, body_html: Optional[str] = None) -> None:
@@ -420,9 +421,9 @@ class GraphPoller:
             INSERT INTO emails (
                 id, conversation_id, internet_message_id, subject, sender,
                 to_emails, cc_emails, received_at, body_preview, has_attachments,
-                is_read, folder_id, etag, body_text, body_html, body_hash
+                is_read, folder_id, etag, body_text, body_html, body_hash, web_link
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 conversation_id=excluded.conversation_id,
                 internet_message_id=excluded.internet_message_id,
@@ -438,7 +439,8 @@ class GraphPoller:
                 etag=excluded.etag,
                 body_text=COALESCE(excluded.body_text, emails.body_text),
                 body_html=COALESCE(excluded.body_html, emails.body_html),
-                body_hash=COALESCE(excluded.body_hash, emails.body_hash)
+                body_hash=COALESCE(excluded.body_hash, emails.body_hash),
+                web_link=excluded.web_link
             """,
             (
                 msg_data["id"],
@@ -457,6 +459,7 @@ class GraphPoller:
                 body_text,
                 body_html,
                 body_hash,
+                msg_data.get("web_link"),
             ),
         )
 
@@ -493,7 +496,7 @@ class GraphPoller:
         base_path = self._graph_client._get_base_path(self.user_email)
 
         # Request messages with metadata and attachments list
-        select_fields = "id,conversationId,internetMessageId,subject,from,toRecipients,ccRecipients,receivedDateTime,bodyPreview,hasAttachments,isRead,parentFolderId,@odata.etag"
+        select_fields = "id,conversationId,internetMessageId,subject,from,toRecipients,ccRecipients,receivedDateTime,bodyPreview,hasAttachments,isRead,parentFolderId,webLink"
         url = f"{base_path}/mailFolders/{folder_id}/messages?$select={select_fields}&$top={page_size}&$expand=attachments($select=id,name,contentType,size)"
 
         messages_synced = 0

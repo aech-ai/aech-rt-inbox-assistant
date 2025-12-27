@@ -100,6 +100,7 @@ def init_db(db_path: Optional[Path] = None) -> None:
             "body_text": "TEXT",
             "body_html": "TEXT",
             "body_hash": "TEXT",
+            "web_link": "TEXT",  # Folder-agnostic Outlook Web deep link
         },
     )
     
@@ -247,10 +248,13 @@ def init_db(db_path: Optional[Path] = None) -> None:
         reply_deadline DATETIME,
         labels_json TEXT,
         project_refs_json TEXT,
+        latest_email_id TEXT,
+        latest_web_link TEXT,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
     """)
+    _ensure_columns(cursor, "wm_threads", {"latest_email_id": "TEXT", "latest_web_link": "TEXT"})
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_wm_threads_status ON wm_threads(status)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_wm_threads_urgency ON wm_threads(urgency)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_wm_threads_needs_reply ON wm_threads(needs_reply)")

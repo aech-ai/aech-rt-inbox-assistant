@@ -23,35 +23,49 @@ def _build_wm_analysis_agent() -> Agent:
 You are an executive assistant analyzing emails to update working memory.
 Your goal is to extract structured intelligence that helps maintain continuous awareness.
 
+## Email Type Classification
+First, classify the email type:
+- NEWSLETTER: Mass-sent content (digests, updates, marketing). Urgency: someday. No reply needed.
+- AUTOMATED: System notifications, receipts, password resets. Urgency: someday. No reply needed.
+- TRANSACTIONAL: Order confirmations, account alerts. Urgency: someday. No reply needed.
+- DIRECT: Personal correspondence requiring human attention.
+
+For newsletters/automated/transactional emails: extract minimal info, no projects, no decisions.
+
 ## For DIRECT emails (user is in TO):
 - Identify if a reply is needed and by when
-- Extract any decisions being requested (questions needing answers, approvals)
-- Note any commitments the user made or should track
-- Assess urgency level based on content and sender
+- Extract decisions ONLY if someone explicitly asks a question requiring user input
+- Note commitments ONLY if the user explicitly promised to do something specific
+- Assess urgency based on content and sender relationship
 
 ## For CC'd emails (user is in CC only):
 - Focus on PASSIVE LEARNING - observe but don't suggest actions
-- Extract observations about projects, people, decisions made
 - Note context that might be useful later (project updates, team dynamics)
 - Do NOT suggest the user needs to reply unless explicitly called out
 
-## Always extract:
-- Key points worth remembering from this email
-- Questions that remain unanswered/pending
-- Project or initiative references (infer project names from context)
-- Contact relationship hints (is this person a client, colleague, vendor?)
-- Any deadlines or dates mentioned
+## Project Extraction (STRICT RULES)
+Only extract as projects:
+- Explicit named initiatives the user is working on (e.g., "Agent Aech deployment", "AWS integration")
+- Business deals or partnerships being discussed
+- Internal company projects with clear ownership
 
-## Output Guidelines:
-- thread_summary_update: One sentence summarizing what this email adds to the thread
-- key_points: List of 1-3 important facts from this email
-- pending_questions: Questions asked that need answers
-- decisions_requested: Only if someone is asking the user to decide something
-- commitments_made: Only if the user (sender or replier) promised to do something
-- observations: Context learned (especially from CC emails) - project updates, decisions others made, etc.
-- project_mentions: Names of projects/initiatives mentioned or inferred
-- suggested_urgency: immediate (needs attention now), today, this_week, someday
-- needs_reply: true only if a direct response from the user is expected
+DO NOT extract as projects:
+- Products or services mentioned (Microsoft 365, Azure, OpenAI)
+- News topics from newsletters (CHIPS Act, AI regulations, market trends)
+- Vendor names or categories (Finance, Travel, Microsoft)
+- Generic activities (subscription management, password reset)
+- Conference/event names unless user is presenting or organizing
+
+## Output Guidelines
+- thread_summary_update: One sentence about what this email adds. Be concise.
+- key_points: 1-3 actionable facts (skip for newsletters/automated)
+- pending_questions: Only explicit questions awaiting user's answer
+- decisions_requested: Must include the actual question and context. Empty if none.
+- commitments_made: Must include what was promised and to whom. Empty if none.
+- observations: Brief context learned. Skip generic newsletter content.
+- project_mentions: Apply strict rules above. Return empty list for newsletters.
+- suggested_urgency: immediate/today/this_week/someday
+- needs_reply: true ONLY if human response is expected from user
 """
 
     return Agent(
@@ -189,7 +203,9 @@ BODY:
         is_cc: bool,
     ) -> None:
         """Update or create thread record."""
-        conversation_id = email.get("conversation_id")
+        # Use conversation_id if available, otherwise fall back to email id
+        # This means emails without conversation_id become single-message threads
+        conversation_id = email.get("conversation_id") or email.get("id")
         if not conversation_id:
             return
 
@@ -225,6 +241,8 @@ BODY:
                     pending_questions_json = ?,
                     needs_reply = CASE WHEN ? THEN 1 ELSE needs_reply END,
                     urgency = CASE WHEN ? != 'this_week' THEN ? ELSE urgency END,
+                    latest_email_id = ?,
+                    latest_web_link = ?,
                     updated_at = ?
                 WHERE conversation_id = ?
                 """,
@@ -237,6 +255,8 @@ BODY:
                     analysis.needs_reply,
                     analysis.suggested_urgency.value,
                     analysis.suggested_urgency.value,
+                    email.get("id"),
+                    email.get("web_link"),  # Folder-agnostic deep link from Graph API
                     now,
                     conversation_id,
                 ),
@@ -258,8 +278,8 @@ BODY:
                     status, urgency, started_at, last_activity_at,
                     summary, key_points_json, pending_questions_json,
                     message_count, user_is_cc, needs_reply,
-                    created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    latest_email_id, latest_web_link, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(uuid.uuid4()),
@@ -276,6 +296,8 @@ BODY:
                     1,
                     is_cc,
                     analysis.needs_reply,
+                    email.get("id"),
+                    email.get("web_link"),  # Folder-agnostic deep link from Graph API
                     now,
                     now,
                 ),

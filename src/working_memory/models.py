@@ -3,9 +3,43 @@
 from datetime import datetime
 from enum import Enum
 from typing import Any
+from urllib.parse import quote
 import uuid
 
 from pydantic import BaseModel, Field
+
+
+def outlook_web_link(message_id: str, link_text: str | None = None) -> str:
+    """Generate a clickable Outlook Web App link for an email.
+
+    Args:
+        message_id: The Microsoft Graph message ID (from emails.id)
+        link_text: Optional text to display (defaults to 'View Email')
+
+    Returns:
+        Markdown-formatted link that opens the email in Outlook Web
+
+    Example:
+        >>> outlook_web_link("AAMkAG...", "RE: Meeting notes")
+        '[RE: Meeting notes](https://outlook.office365.com/mail/inbox/id/AAMkAG...)'
+    """
+    encoded_id = quote(message_id, safe='')
+    url = f"https://outlook.office365.com/mail/inbox/id/{encoded_id}"
+    text = link_text or "View Email"
+    return f"[{text}]({url})"
+
+
+def outlook_web_url(message_id: str) -> str:
+    """Generate just the URL for an email in Outlook Web App.
+
+    Args:
+        message_id: The Microsoft Graph message ID (from emails.id)
+
+    Returns:
+        Direct URL to the email in Outlook Web
+    """
+    encoded_id = quote(message_id, safe='')
+    return f"https://outlook.office365.com/mail/inbox/id/{encoded_id}"
 
 
 class UrgencyLevel(str, Enum):
@@ -80,11 +114,29 @@ class ActiveThread(BaseModel):
     needs_reply: bool = False
     reply_deadline: datetime | None = None
 
+    # Latest email reference for direct linking
+    latest_email_id: str | None = None
+    latest_web_link: str | None = None  # Folder-agnostic deep link from Graph API
+
     # Metadata
     labels: list[str] = Field(default_factory=list)
     project_refs: list[str] = Field(default_factory=list)  # Project IDs
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+    def outlook_link(self) -> str | None:
+        """Generate a clickable Outlook Web link to the latest email in this thread.
+
+        Prefers the Graph API webLink (folder-agnostic) over constructing from message ID.
+        """
+        link_text = self.subject[:40] if self.subject else "View Thread"
+        # Prefer Graph API webLink (works regardless of folder)
+        if self.latest_web_link:
+            return f"[{link_text}]({self.latest_web_link})"
+        # Fallback to constructing from message ID (may not work if moved from inbox)
+        if self.latest_email_id:
+            return outlook_web_link(self.latest_email_id, link_text)
+        return None
 
 
 class Contact(BaseModel):
