@@ -293,6 +293,59 @@
         {"name": "concurrency", "type": "option", "required": false, "description": "Number of parallel move operations (default: 10)."},
         {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
       ]
+    },
+    {
+      "name": "categories list",
+      "description": "List all configured categories from your user profile. Categories are auto-populated with defaults on first use.",
+      "parameters": [
+        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
+      ]
+    },
+    {
+      "name": "categories add",
+      "description": "Add a new category to your profile. The name must match what you create in Outlook for colors to display.",
+      "parameters": [
+        {"name": "name", "type": "argument", "required": true, "description": "Category name (must match Outlook master category)."},
+        {"name": "color", "type": "option", "required": false, "description": "Color: red, orange, yellow, green, blue, purple, gray, etc."},
+        {"name": "description", "type": "option", "required": false, "description": "Description of when to use this category."},
+        {"name": "flag", "type": "option", "required": false, "description": "Auto-flag urgency: immediate, today, this_week, someday."},
+        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
+      ]
+    },
+    {
+      "name": "categories remove",
+      "description": "Remove a category from your profile. Existing tags on emails are preserved.",
+      "parameters": [
+        {"name": "name", "type": "argument", "required": true, "description": "Category name to remove."},
+        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
+      ]
+    },
+    {
+      "name": "categories edit",
+      "description": "Edit an existing category. Only specified fields are updated.",
+      "parameters": [
+        {"name": "name", "type": "argument", "required": true, "description": "Category name to edit."},
+        {"name": "new-name", "type": "option", "required": false, "description": "Rename the category."},
+        {"name": "color", "type": "option", "required": false, "description": "New color."},
+        {"name": "description", "type": "option", "required": false, "description": "New description."},
+        {"name": "flag", "type": "option", "required": false, "description": "New flag urgency (use 'none' to clear)."},
+        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
+      ]
+    },
+    {
+      "name": "categories reset",
+      "description": "Reset categories to defaults (Action Required, Follow Up, Work, FYI, Personal).",
+      "parameters": [
+        {"name": "yes", "type": "flag", "required": false, "description": "Skip confirmation prompt."},
+        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
+      ]
+    },
+    {
+      "name": "categories colors",
+      "description": "List available colors for categories.",
+      "parameters": [
+        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
+      ]
     }
   ],
   "documentation": {
@@ -326,7 +379,13 @@
       "aech-cli-inbox-assistant setup-categories --no-create-in-outlook",
       "aech-cli-inbox-assistant list-categories --human",
       "aech-cli-inbox-assistant migrate-to-categories --dry-run --human",
-      "aech-cli-inbox-assistant migrate-to-categories --prefix aa_ --human"
+      "aech-cli-inbox-assistant migrate-to-categories --prefix aa_ --human",
+      "aech-cli-inbox-assistant categories list --human",
+      "aech-cli-inbox-assistant categories add 'Urgent' --color red --flag today -d 'Time-sensitive items'",
+      "aech-cli-inbox-assistant categories edit 'Work' --color teal --flag this_week",
+      "aech-cli-inbox-assistant categories remove 'Old Category'",
+      "aech-cli-inbox-assistant categories reset --yes",
+      "aech-cli-inbox-assistant categories colors --human"
     ]
   }
 }

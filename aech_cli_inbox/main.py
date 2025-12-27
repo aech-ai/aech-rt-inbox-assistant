@@ -23,6 +23,12 @@ app = typer.Typer(
 prefs_app = typer.Typer(help="Manage `/home/agentaech/preferences.json`.", add_completion=False)
 app.add_typer(prefs_app, name="prefs")
 
+categories_app = typer.Typer(
+    help="Manage Outlook categories for email organization.",
+    add_completion=False,
+)
+app.add_typer(categories_app, name="categories")
+
 @app.command()
 def list(
     limit: int = typer.Option(20, help="Number of emails to list"),
@@ -581,6 +587,193 @@ def list_outlook_categories(
                 typer.echo(f"    {cat['description']}")
     else:
         typer.echo(json.dumps(categories, default=str))
+
+
+# =============================================================================
+# Categories Subcommand Group
+# =============================================================================
+
+@categories_app.command("list")
+def categories_list(
+    human: bool = typer.Option(False, "--human", help="Human-readable output instead of JSON"),
+):
+    """List all configured categories.
+
+    Categories are stored in your user profile and auto-populated with defaults
+    on first use. The AI uses these category names when organizing your inbox.
+    """
+    from src.categories_config import ensure_categories_initialized
+
+    prefs = read_preferences()
+    categories, was_initialized = ensure_categories_initialized(prefs)
+
+    if was_initialized:
+        write_preferences(prefs)
+
+    if human:
+        if was_initialized:
+            typer.echo("(Initialized with default categories)\n")
+        typer.echo("Your Categories:")
+        for cat in categories:
+            flag_info = f" [auto-flag: {cat.get('flag_urgency')}]" if cat.get("flag_urgency") else ""
+            typer.echo(f"  {cat['name']} ({cat.get('color', 'blue')}){flag_info}")
+            if cat.get("description"):
+                typer.echo(f"    → {cat['description']}")
+        typer.echo(f"\nProfile: {get_db_path().parent / 'preferences.json'}")
+    else:
+        typer.echo(json.dumps({"categories": categories, "initialized": was_initialized}, default=str))
+
+
+@categories_app.command("add")
+def categories_add(
+    name: str = typer.Argument(..., help="Category name (must match what you create in Outlook)"),
+    color: str = typer.Option("blue", "--color", "-c", help="Color: red, orange, yellow, green, blue, purple, gray, etc."),
+    description: str = typer.Option("", "--description", "-d", help="Description of when to use this category"),
+    flag_urgency: Optional[str] = typer.Option(None, "--flag", "-f", help="Auto-flag urgency: immediate, today, this_week, someday"),
+    human: bool = typer.Option(False, "--human", help="Human-readable output instead of JSON"),
+):
+    """Add a new category.
+
+    The category name must exactly match what you create in Outlook's master categories
+    for colors to display correctly. Names are case-sensitive.
+
+    Example:
+        aech-cli-inbox categories add "Urgent" --color red --flag today -d "Time-sensitive items"
+    """
+    from src.categories_config import add_category
+
+    prefs = read_preferences()
+
+    try:
+        new_cat = add_category(prefs, name, color, description, flag_urgency)
+        write_preferences(prefs)
+
+        if human:
+            typer.echo(f"Added category: {name} ({color})")
+            if description:
+                typer.echo(f"  → {description}")
+            if flag_urgency:
+                typer.echo(f"  Auto-flag: {flag_urgency}")
+            typer.echo(f"\nRemember to create '{name}' in Outlook with {color} color!")
+        else:
+            typer.echo(json.dumps({"added": new_cat}, default=str))
+
+    except ValueError as e:
+        typer.echo(f"Error: {e}", err=True)
+        if "already exists" in str(e):
+            typer.echo(f"Use 'categories edit \"{name}\"' to modify it.", err=True)
+        raise typer.Exit(1)
+
+
+@categories_app.command("remove")
+def categories_remove(
+    name: str = typer.Argument(..., help="Category name to remove"),
+    human: bool = typer.Option(False, "--human", help="Human-readable output instead of JSON"),
+):
+    """Remove a category.
+
+    This removes the category from your profile. Emails already tagged with this
+    category will keep the tag, but new emails won't be assigned to it.
+    """
+    from src.categories_config import remove_category
+
+    prefs = read_preferences()
+
+    try:
+        removed = remove_category(prefs, name)
+        write_preferences(prefs)
+
+        if human:
+            typer.echo(f"Removed category: {removed['name']}")
+        else:
+            typer.echo(json.dumps({"removed": removed}, default=str))
+
+    except ValueError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1)
+
+
+@categories_app.command("edit")
+def categories_edit(
+    name: str = typer.Argument(..., help="Category name to edit"),
+    new_name: Optional[str] = typer.Option(None, "--name", "-n", help="New name for the category"),
+    color: Optional[str] = typer.Option(None, "--color", "-c", help="New color"),
+    description: Optional[str] = typer.Option(None, "--description", "-d", help="New description"),
+    flag_urgency: Optional[str] = typer.Option(None, "--flag", "-f", help="New flag urgency (use 'none' to clear)"),
+    human: bool = typer.Option(False, "--human", help="Human-readable output instead of JSON"),
+):
+    """Edit an existing category.
+
+    Only specified fields will be updated. Use --flag none to remove auto-flagging.
+
+    Example:
+        aech-cli-inbox categories edit "Work" --color teal --flag this_week
+    """
+    from src.categories_config import edit_category
+
+    prefs = read_preferences()
+
+    try:
+        updated = edit_category(prefs, name, new_name, color, description, flag_urgency)
+        write_preferences(prefs)
+
+        if human:
+            display_name = new_name if new_name else name
+            typer.echo(f"Updated category: {display_name}")
+            typer.echo(f"  Color: {updated.get('color', 'blue')}")
+            if updated.get('description'):
+                typer.echo(f"  Description: {updated['description']}")
+            typer.echo(f"  Auto-flag: {updated.get('flag_urgency') or 'none'}")
+            if new_name and new_name != name:
+                typer.echo(f"\nRemember to rename '{name}' to '{new_name}' in Outlook!")
+        else:
+            typer.echo(json.dumps({"updated": updated}, default=str))
+
+    except ValueError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1)
+
+
+@categories_app.command("reset")
+def categories_reset(
+    confirm: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt"),
+    human: bool = typer.Option(False, "--human", help="Human-readable output instead of JSON"),
+):
+    """Reset categories to defaults.
+
+    This will replace all custom categories with the default set:
+    Action Required, Follow Up, Work, FYI, Personal
+    """
+    from src.categories_config import DEFAULT_CATEGORIES
+
+    if not confirm:
+        typer.confirm("Reset all categories to defaults?", abort=True)
+
+    prefs = read_preferences()
+    prefs["outlook_categories"] = DEFAULT_CATEGORIES.copy()
+    write_preferences(prefs)
+
+    if human:
+        typer.echo("Categories reset to defaults:")
+        for cat in DEFAULT_CATEGORIES:
+            typer.echo(f"  - {cat['name']} ({cat['color']})")
+    else:
+        typer.echo(json.dumps({"reset": True, "categories": DEFAULT_CATEGORIES}, default=str))
+
+
+@categories_app.command("colors")
+def categories_colors(
+    human: bool = typer.Option(False, "--human", help="Human-readable output instead of JSON"),
+):
+    """List available colors for categories."""
+    from src.categories_config import COLOR_PRESETS
+
+    if human:
+        typer.echo("Available colors:")
+        for color, preset in COLOR_PRESETS.items():
+            typer.echo(f"  {color} ({preset})")
+    else:
+        typer.echo(json.dumps(COLOR_PRESETS, default=str))
 
 
 @app.command("migrate-to-categories")

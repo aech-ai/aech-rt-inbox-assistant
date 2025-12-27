@@ -139,3 +139,144 @@ def format_categories_for_prompt(prefs: dict[str, Any] | None = None) -> str:
         desc = cat.get("description", "")
         lines.append(f"- {cat['name']}: {desc}")
     return "\n".join(lines)
+
+
+def ensure_categories_initialized(prefs: dict[str, Any]) -> tuple[list[dict[str, Any]], bool]:
+    """Ensure categories are initialized in preferences.
+
+    If outlook_categories is not set, populate with defaults.
+
+    Args:
+        prefs: User preferences dict (will be modified in place)
+
+    Returns:
+        Tuple of (categories list, was_initialized bool)
+    """
+    if "outlook_categories" not in prefs:
+        prefs["outlook_categories"] = DEFAULT_CATEGORIES.copy()
+        return prefs["outlook_categories"], True
+    return prefs["outlook_categories"], False
+
+
+def add_category(
+    prefs: dict[str, Any],
+    name: str,
+    color: str = "blue",
+    description: str = "",
+    flag_urgency: str | None = None,
+) -> dict[str, Any]:
+    """Add a new category to preferences.
+
+    Args:
+        prefs: User preferences dict (will be modified in place)
+        name: Category name
+        color: Color name (red, orange, yellow, green, blue, purple, gray, etc.)
+        description: Description of when to use this category
+        flag_urgency: Optional urgency level (immediate, today, this_week, someday)
+
+    Returns:
+        The new category dict
+
+    Raises:
+        ValueError: If category with same name already exists
+    """
+    categories, _ = ensure_categories_initialized(prefs)
+
+    # Check for duplicate
+    for cat in categories:
+        if cat["name"].lower() == name.lower():
+            raise ValueError(f"Category '{name}' already exists")
+
+    preset = COLOR_PRESETS.get(color.lower(), "preset7")
+    new_cat = {
+        "name": name,
+        "color": color.lower(),
+        "preset": preset,
+        "flag_urgency": flag_urgency,
+        "description": description,
+    }
+    categories.append(new_cat)
+    return new_cat
+
+
+def remove_category(prefs: dict[str, Any], name: str) -> dict[str, Any]:
+    """Remove a category from preferences.
+
+    Args:
+        prefs: User preferences dict (will be modified in place)
+        name: Category name to remove
+
+    Returns:
+        The removed category dict
+
+    Raises:
+        ValueError: If category not found
+    """
+    categories, _ = ensure_categories_initialized(prefs)
+
+    for i, cat in enumerate(categories):
+        if cat["name"].lower() == name.lower():
+            return categories.pop(i)
+
+    raise ValueError(f"Category '{name}' not found")
+
+
+def edit_category(
+    prefs: dict[str, Any],
+    name: str,
+    new_name: str | None = None,
+    color: str | None = None,
+    description: str | None = None,
+    flag_urgency: str | None = None,
+) -> dict[str, Any]:
+    """Edit an existing category.
+
+    Args:
+        prefs: User preferences dict (will be modified in place)
+        name: Current category name
+        new_name: New name (optional)
+        color: New color (optional)
+        description: New description (optional)
+        flag_urgency: New urgency level (optional, use "none" to clear)
+
+    Returns:
+        The updated category dict
+
+    Raises:
+        ValueError: If category not found or new name conflicts
+    """
+    categories, _ = ensure_categories_initialized(prefs)
+
+    # Find the category
+    cat = None
+    for c in categories:
+        if c["name"].lower() == name.lower():
+            cat = c
+            break
+
+    if cat is None:
+        raise ValueError(f"Category '{name}' not found")
+
+    # Check for name conflict if renaming
+    if new_name and new_name.lower() != name.lower():
+        for c in categories:
+            if c["name"].lower() == new_name.lower():
+                raise ValueError(f"Category '{new_name}' already exists")
+        cat["name"] = new_name
+
+    if color:
+        cat["color"] = color.lower()
+        cat["preset"] = COLOR_PRESETS.get(color.lower(), "preset7")
+
+    if description is not None:
+        cat["description"] = description
+
+    if flag_urgency is not None:
+        cat["flag_urgency"] = None if flag_urgency.lower() == "none" else flag_urgency
+
+    return cat
+
+
+def get_available_colors() -> list[str]:
+    """Get list of available color names."""
+    return list(COLOR_PRESETS.keys())
