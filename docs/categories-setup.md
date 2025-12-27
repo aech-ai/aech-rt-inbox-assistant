@@ -89,22 +89,27 @@ Categories are stored in your user profile (`preferences.json`) and auto-populat
 
 ## Customizing Categories (Manual)
 
-You can also customize categories by editing your `preferences.json` directly:
+You can also customize categories by editing your `preferences.json` directly. Categories are stored under the `inbox_assistant` namespace:
 
 ```json
 {
-  "outlook_categories": [
-    {
-      "name": "Action Required",
-      "color": "red",
-      "preset": "preset0",
-      "flag_urgency": "today",
-      "description": "Needs your response, decision, or action"
-    },
-    ...
-  ]
+  "inbox_assistant": {
+    "categories": [
+      {
+        "name": "Action Required",
+        "color": "red",
+        "preset": "preset0",
+        "flag_urgency": "today",
+        "description": "Needs your response, decision, or action"
+      },
+      ...
+    ],
+    "use_categories_mode": true
+  }
 }
 ```
+
+Set `use_categories_mode` to `false` to use the legacy folder-based organization instead.
 
 ## Why Manual Setup?
 
