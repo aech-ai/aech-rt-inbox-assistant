@@ -1,9 +1,13 @@
+import asyncio
 import logging
 import os
 import subprocess
 from typing import Optional
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
+
+# Default concurrency for parallel email processing
+DEFAULT_CONCURRENCY = 5
 from .database import get_connection
 from .poller import GraphPoller
 from .preferences import read_preferences
@@ -331,8 +335,12 @@ class Organizer:
             self.categories_agent = _build_categories_agent(prefs)
         return self.categories_agent
 
-    async def organize_emails(self):
-        """Iterate over unprocessed emails and organize them."""
+    async def organize_emails(self, concurrency: int = DEFAULT_CONCURRENCY):
+        """Iterate over unprocessed emails and organize them in parallel.
+
+        Args:
+            concurrency: Number of emails to process in parallel (default: 5)
+        """
         prefs = read_preferences()
 
         # Check if we should use the new categories mode (default: True)
@@ -353,8 +361,23 @@ class Organizer:
         emails = cursor.fetchall()
         conn.close()
 
-        for email in emails:
-            await self._process_email(email, available_folders, prefs)
+        if not emails:
+            logger.info("No unprocessed emails found")
+            return
+
+        logger.info(f"Processing {len(emails)} emails with concurrency={concurrency}")
+
+        # Process emails in parallel with semaphore
+        semaphore = asyncio.Semaphore(concurrency)
+
+        async def process_with_semaphore(email):
+            async with semaphore:
+                await self._process_email(email, available_folders, prefs)
+
+        tasks = [process_with_semaphore(email) for email in emails]
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+        logger.info(f"Finished processing {len(emails)} emails")
 
         self._emit_followup_triggers(prefs)
         self._emit_weekly_digest_trigger(prefs)

@@ -16,7 +16,7 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-def service_loop(user_email: str, poll_interval: int, run_once: bool, reprocess: bool, reprocess_only: bool):
+def service_loop(user_email: str, poll_interval: int, run_once: bool, reprocess: bool, reprocess_only: bool, concurrency: int = 5):
     logger.info("Initializing database...")
     init_db()
 
@@ -40,12 +40,13 @@ def service_loop(user_email: str, poll_interval: int, run_once: bool, reprocess:
     logger.info("Starting Inbox Assistant Service")
     logger.info(f"User: {user_email}")
     logger.info(f"Poll Interval: {poll_interval}s")
+    logger.info(f"Concurrency: {concurrency}")
     logger.info(f"Working Memory Engine Interval: {wm_engine_interval}s")
 
     while True:
         try:
             poller.poll_inbox()
-            asyncio.run(organizer.organize_emails())
+            asyncio.run(organizer.organize_emails(concurrency=concurrency))
 
             # Run working memory engine periodically
             now = time.time()
@@ -92,6 +93,12 @@ def run(argv=None):
         default=None,
         help="Override poll interval seconds (defaults to POLL_INTERVAL env or 5).",
     )
+    parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=5,
+        help="Number of emails to process in parallel (default: 5).",
+    )
     args = parser.parse_args(argv)
 
     if args.reprocess_only and not args.reprocess:
@@ -104,6 +111,7 @@ def run(argv=None):
         run_once=args.once,
         reprocess=args.reprocess,
         reprocess_only=args.reprocess_only,
+        concurrency=args.concurrency,
     )
 
 
