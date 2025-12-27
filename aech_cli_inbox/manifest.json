@@ -263,6 +263,36 @@
         {"name": "limit", "type": "option", "required": false, "description": "Max results (default: 20)."},
         {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
       ]
+    },
+    {
+      "name": "setup-categories",
+      "description": "Setup Outlook categories for email organization. Creates master categories in Outlook with correct colors and initializes preferences.",
+      "parameters": [
+        {"name": "create-in-outlook", "type": "flag", "required": false, "description": "Create master categories in Outlook via msgraph CLI (default: true)."},
+        {"name": "no-create-in-outlook", "type": "flag", "required": false, "description": "Skip creating categories in Outlook."},
+        {"name": "reset-defaults", "type": "flag", "required": false, "description": "Reset categories to defaults in preferences.json."},
+        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
+      ]
+    },
+    {
+      "name": "list-categories",
+      "description": "List configured Outlook categories from preferences.",
+      "parameters": [
+        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
+      ]
+    },
+    {
+      "name": "migrate-to-categories",
+      "description": "Migrate emails from folder-based organization (aa_* folders) back to Inbox for recategorization. Uses parallel processing for speed.",
+      "parameters": [
+        {"name": "prefix", "type": "option", "required": false, "description": "Folder prefix to migrate from (default: aa_)."},
+        {"name": "dry-run", "type": "flag", "required": false, "description": "Show what would be done without making changes."},
+        {"name": "recategorize", "type": "flag", "required": false, "description": "Recategorize emails after moving (default: true)."},
+        {"name": "no-recategorize", "type": "flag", "required": false, "description": "Skip recategorization after moving."},
+        {"name": "batch-size", "type": "option", "required": false, "description": "Number of emails to fetch per API call (default: 100)."},
+        {"name": "concurrency", "type": "option", "required": false, "description": "Number of parallel move operations (default: 10)."},
+        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
+      ]
     }
   ],
   "documentation": {
@@ -291,7 +321,12 @@
       "aech-cli-inbox-assistant wm decisions",
       "aech-cli-inbox-assistant wm commitments --overdue",
       "aech-cli-inbox-assistant wm observations --days 7",
-      "aech-cli-inbox-assistant wm projects"
+      "aech-cli-inbox-assistant wm projects",
+      "aech-cli-inbox-assistant setup-categories --human",
+      "aech-cli-inbox-assistant setup-categories --no-create-in-outlook",
+      "aech-cli-inbox-assistant list-categories --human",
+      "aech-cli-inbox-assistant migrate-to-categories --dry-run --human",
+      "aech-cli-inbox-assistant migrate-to-categories --prefix aa_ --human"
     ]
   }
 }

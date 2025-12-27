@@ -462,6 +462,383 @@ def prefs_unset(
 
 
 # =============================================================================
+# Category Setup Commands
+# =============================================================================
+
+@app.command("setup-categories")
+def setup_categories(
+    create_in_outlook: bool = typer.Option(
+        True, "--create-in-outlook/--no-create-in-outlook",
+        help="Create master categories in Outlook via msgraph CLI"
+    ),
+    reset_defaults: bool = typer.Option(
+        False, "--reset-defaults",
+        help="Reset categories to defaults in preferences.json"
+    ),
+    human: bool = typer.Option(False, "--human", help="Human-readable output instead of JSON"),
+):
+    """Setup Outlook categories for email organization.
+
+    This command:
+    1. Ensures default categories are in preferences.json (if not already set)
+    2. Optionally creates master categories in Outlook with correct colors
+
+    Categories keep emails in your Inbox while applying color-coded labels.
+    """
+    import subprocess
+    from src.categories_config import DEFAULT_CATEGORIES, get_categories, COLOR_PRESETS
+
+    prefs = read_preferences()
+
+    # Reset or initialize categories in preferences
+    if reset_defaults or "outlook_categories" not in prefs:
+        prefs["outlook_categories"] = DEFAULT_CATEGORIES
+        write_preferences(prefs)
+        if human:
+            typer.echo("Initialized default categories in preferences.json")
+
+    categories = get_categories(prefs)
+
+    # Optionally create categories in Outlook
+    created = []
+    failed = []
+
+    if create_in_outlook:
+        for cat in categories:
+            name = cat["name"]
+            color = cat.get("preset") or COLOR_PRESETS.get(cat.get("color", "blue"), "preset7")
+
+            try:
+                result = subprocess.run(
+                    ["aech-cli-msgraph", "create-category", name, "--color", color, "--json"],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                if result.returncode == 0:
+                    created.append(name)
+                else:
+                    # Category might already exist - that's OK
+                    if "already exists" in result.stderr.lower() or "conflict" in result.stderr.lower():
+                        created.append(f"{name} (exists)")
+                    else:
+                        failed.append({"name": name, "error": result.stderr or result.stdout})
+            except FileNotFoundError:
+                if human:
+                    typer.echo(
+                        "Warning: aech-cli-msgraph not found. "
+                        "Install msgraph CLI to create categories in Outlook.",
+                        err=True
+                    )
+                failed.append({"name": name, "error": "msgraph CLI not found"})
+                break
+            except Exception as e:
+                failed.append({"name": name, "error": str(e)})
+
+    result_data = {
+        "categories": categories,
+        "created_in_outlook": created,
+        "failed": failed,
+        "preferences_path": str(get_db_path().parent / "preferences.json"),
+    }
+
+    if human:
+        typer.echo("\nConfigured Categories:")
+        for cat in categories:
+            flag_info = f" (auto-flag: {cat.get('flag_urgency')})" if cat.get("flag_urgency") else ""
+            typer.echo(f"  - {cat['name']} ({cat.get('color', 'blue')}){flag_info}")
+            typer.echo(f"    {cat.get('description', '')}")
+
+        if created:
+            typer.echo(f"\nCreated in Outlook: {', '.join(created)}")
+        if failed:
+            typer.echo("\nFailed to create:")
+            for f in failed:
+                typer.echo(f"  - {f['name']}: {f['error']}")
+
+        typer.echo(f"\nCategories mode: {'enabled' if prefs.get('use_outlook_categories', True) else 'disabled'}")
+        typer.echo("Set 'use_outlook_categories' to false in preferences to use legacy folder mode.")
+    else:
+        typer.echo(json.dumps(result_data, default=str))
+
+
+@app.command("list-categories")
+def list_outlook_categories(
+    human: bool = typer.Option(False, "--human", help="Human-readable output instead of JSON"),
+):
+    """List configured Outlook categories from preferences."""
+    from src.categories_config import get_categories
+
+    prefs = read_preferences()
+    categories = get_categories(prefs)
+
+    if human:
+        typer.echo("Configured Categories:")
+        for cat in categories:
+            flag_info = f" (auto-flag: {cat.get('flag_urgency')})" if cat.get("flag_urgency") else ""
+            typer.echo(f"  - {cat['name']} ({cat.get('color', 'blue')}){flag_info}")
+            if cat.get("description"):
+                typer.echo(f"    {cat['description']}")
+    else:
+        typer.echo(json.dumps(categories, default=str))
+
+
+@app.command("migrate-to-categories")
+def migrate_to_categories(
+    folder_prefix: str = typer.Option("aa_", "--prefix", help="Folder prefix to migrate from"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be done without making changes"),
+    recategorize: bool = typer.Option(True, "--recategorize/--no-recategorize", help="Recategorize emails after moving"),
+    batch_size: int = typer.Option(100, "--batch-size", help="Number of emails to fetch per API call"),
+    concurrency: int = typer.Option(10, "--concurrency", help="Number of parallel move operations"),
+    human: bool = typer.Option(False, "--human", help="Human-readable output instead of JSON"),
+):
+    """Migrate emails from folder-based organization to categories.
+
+    This command:
+    1. Finds all folders matching the prefix (e.g., aa_Work, aa_Finance)
+    2. Moves all emails from those folders back to Inbox (in parallel)
+    3. Optionally recategorizes them using the new categories system
+
+    Use --dry-run to see what would be done without making changes.
+    Use --concurrency to control parallel API calls (default: 10).
+    """
+    import asyncio
+    import subprocess
+    import os
+    import threading
+
+    user_email = os.environ.get("DELEGATED_USER")
+    if not user_email:
+        typer.echo("Error: DELEGATED_USER environment variable not set", err=True)
+        raise typer.Exit(1)
+
+    results = {
+        "folders_found": [],
+        "emails_moved": 0,
+        "emails_failed": 0,
+        "dry_run": dry_run,
+        "errors": [],
+    }
+
+    # Step 1: List all mail folders
+    if human:
+        typer.echo(f"Finding folders with prefix '{folder_prefix}'...")
+
+    try:
+        list_result = subprocess.run(
+            ["aech-cli-msgraph", "list-folders", "--user", user_email, "--json"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if list_result.returncode != 0:
+            typer.echo(f"Error listing folders: {list_result.stderr}", err=True)
+            raise typer.Exit(1)
+
+        folders_data = json.loads(list_result.stdout)
+        # Handle both direct list and {"value": [...]} format
+        folders = folders_data.get("value", folders_data) if isinstance(folders_data, dict) else folders_data
+
+    except FileNotFoundError:
+        typer.echo("Error: aech-cli-msgraph not found. Install msgraph CLI first.", err=True)
+        raise typer.Exit(1)
+    except json.JSONDecodeError as e:
+        typer.echo(f"Error parsing folder list: {e}", err=True)
+        raise typer.Exit(1)
+
+    # Find folders matching prefix
+    matching_folders = []
+    for folder in folders:
+        name = folder.get("displayName", "")
+        if name.startswith(folder_prefix):
+            matching_folders.append({
+                "id": folder.get("id"),
+                "name": name,
+                "total_count": folder.get("totalItemCount", 0),
+                "unread_count": folder.get("unreadItemCount", 0),
+            })
+
+    results["folders_found"] = matching_folders
+
+    if not matching_folders:
+        if human:
+            typer.echo(f"No folders found with prefix '{folder_prefix}'")
+        else:
+            typer.echo(json.dumps(results, default=str))
+        return
+
+    total_expected = sum(f["total_count"] for f in matching_folders)
+
+    if human:
+        typer.echo(f"Found {len(matching_folders)} folders with {total_expected} total emails:")
+        for f in matching_folders:
+            typer.echo(f"  - {f['name']}: {f['total_count']} emails")
+
+    if dry_run:
+        if human:
+            typer.echo(f"\n[DRY RUN] Would move {total_expected} emails to Inbox")
+            typer.echo(f"[DRY RUN] Using concurrency={concurrency}")
+            if recategorize:
+                typer.echo("[DRY RUN] Would recategorize emails after moving")
+        else:
+            typer.echo(json.dumps(results, default=str))
+        return
+
+    # Step 2: Get Inbox folder ID
+    inbox_id = None
+    for folder in folders:
+        if folder.get("displayName", "").lower() == "inbox":
+            inbox_id = folder.get("id")
+            break
+
+    if not inbox_id:
+        typer.echo("Error: Could not find Inbox folder", err=True)
+        raise typer.Exit(1)
+
+    # Step 3: Collect all messages from all folders first
+    if human:
+        typer.echo(f"\nCollecting messages from {len(matching_folders)} folders...")
+
+    all_messages = []  # List of (folder_name, msg_id, subject)
+
+    for folder_info in matching_folders:
+        folder_name = folder_info["name"]
+        folder_count = folder_info["total_count"]
+
+        if folder_count == 0:
+            continue
+
+        if human:
+            typer.echo(f"  Listing {folder_name}...", nl=False)
+
+        # Fetch all messages from folder (use folder name, not ID)
+        # Note: list-messages uses --folder (name) and --count (max messages)
+        try:
+            messages_result = subprocess.run(
+                [
+                    "aech-cli-msgraph", "list-messages",
+                    "--folder", folder_name,
+                    "--user", user_email,
+                    "--count", str(max(folder_count + 10, batch_size)),  # Fetch all + buffer
+                    "--json",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=300,  # Longer timeout for large folders
+            )
+
+            if messages_result.returncode != 0:
+                results["errors"].append(f"Failed to list messages in {folder_name}: {messages_result.stderr}")
+                if human:
+                    typer.echo(f" ERROR")
+                continue
+
+            messages_data = json.loads(messages_result.stdout)
+            messages = messages_data.get("value", messages_data) if isinstance(messages_data, dict) else messages_data
+
+            for msg in messages:
+                all_messages.append({
+                    "folder": folder_name,
+                    "id": msg.get("id"),
+                    "subject": msg.get("subject", "")[:50],
+                })
+
+            if human:
+                typer.echo(f" {len(messages)} messages")
+
+        except Exception as e:
+            results["errors"].append(f"Error listing messages in {folder_name}: {e}")
+            if human:
+                typer.echo(f" ERROR: {e}")
+
+    if not all_messages:
+        if human:
+            typer.echo("No messages to migrate.")
+        else:
+            typer.echo(json.dumps(results, default=str))
+        return
+
+    if human:
+        typer.echo(f"\nMoving {len(all_messages)} emails with concurrency={concurrency}...")
+
+    # Step 4: Move all messages in parallel
+    lock = threading.Lock()
+    counters = {"moved": 0, "failed": 0, "completed": 0}
+    total = len(all_messages)
+    errors_list: List[str] = []
+
+    async def move_one(msg_info: dict, semaphore: asyncio.Semaphore):
+        async with semaphore:
+            msg_id = msg_info["id"]
+            subject = msg_info["subject"]
+            folder = msg_info["folder"]
+
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    "aech-cli-msgraph", "move-email",
+                    msg_id,
+                    "Inbox",  # folder name, not ID
+                    "--user", user_email,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+
+                with lock:
+                    counters["completed"] += 1
+                    if proc.returncode == 0:
+                        counters["moved"] += 1
+                    else:
+                        counters["failed"] += 1
+                        errors_list.append(f"Failed to move '{subject}' from {folder}")
+
+                    # Progress update every 50 or at the end
+                    completed = counters["completed"]
+                    if completed % 50 == 0 or completed == total:
+                        pct = int(completed / total * 100)
+                        if human:
+                            typer.echo(f"  [{pct:3d}%] {completed}/{total} moved...")
+
+            except asyncio.TimeoutError:
+                with lock:
+                    counters["completed"] += 1
+                    counters["failed"] += 1
+                    errors_list.append(f"Timeout moving '{subject}'")
+            except Exception as e:
+                with lock:
+                    counters["completed"] += 1
+                    counters["failed"] += 1
+                    errors_list.append(f"Error moving '{subject}': {e}")
+
+    async def run_parallel():
+        semaphore = asyncio.Semaphore(concurrency)
+        tasks = [move_one(msg, semaphore) for msg in all_messages]
+        await asyncio.gather(*tasks)
+
+    asyncio.run(run_parallel())
+
+    results["emails_moved"] = counters["moved"]
+    results["emails_failed"] = counters["failed"]
+    results["errors"] = errors_list[:100]  # Limit stored errors
+
+    # Summary
+    if human:
+        typer.echo(f"\n=== Migration Complete ===")
+        typer.echo(f"Emails moved: {results['emails_moved']}")
+        typer.echo(f"Emails failed: {results['emails_failed']}")
+        if errors_list:
+            typer.echo(f"\nErrors ({len(errors_list)}):")
+            for err in errors_list[:10]:
+                typer.echo(f"  - {err}")
+
+        if recategorize and results["emails_moved"] > 0:
+            typer.echo("\nTo recategorize moved emails, run:")
+            typer.echo("  python -m src.main --process-inbox-once")
+    else:
+        typer.echo(json.dumps(results, default=str))
+
+
+# =============================================================================
 # Calendar Commands (Graph API - no local sync)
 # =============================================================================
 

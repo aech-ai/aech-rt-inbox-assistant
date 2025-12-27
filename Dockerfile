@@ -12,8 +12,8 @@ COPY aech-rt-inbox-assistant/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Install aech-cli-msgraph (required for all Graph interactions)
-COPY aech-cli-msgraph/dist/aech_cli_msgraph-0.1.22-py3-none-any.whl /tmp/aech_cli_msgraph-0.1.22-py3-none-any.whl
-RUN pip install uv && uv pip install --system /tmp/aech_cli_msgraph-0.1.22-py3-none-any.whl
+COPY aech-cli-msgraph/dist/aech_cli_msgraph-0.1.28-py3-none-any.whl /tmp/aech_cli_msgraph-0.1.28-py3-none-any.whl
+RUN pip install uv && uv pip install --system /tmp/aech_cli_msgraph-0.1.28-py3-none-any.whl
 
 # App source
 COPY aech-rt-inbox-assistant/src/ src/

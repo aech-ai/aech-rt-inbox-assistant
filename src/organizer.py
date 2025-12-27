@@ -1,5 +1,6 @@
 import logging
 import os
+import subprocess
 from typing import Optional
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
@@ -8,6 +9,13 @@ from .poller import GraphPoller
 from .preferences import read_preferences
 from .triggers import make_dedupe_key, write_trigger
 from .folders_config import STANDARD_FOLDERS, FOLDER_ALIASES
+from .categories_config import (
+    get_categories,
+    get_category_names,
+    get_category_config,
+    get_flag_settings,
+    format_categories_for_prompt,
+)
 from .working_memory.updater import WorkingMemoryUpdater
 
 logger = logging.getLogger(__name__)
@@ -38,7 +46,20 @@ class EmailCategory(BaseModel):
     category: str = Field(description="Must be one of the standard folder categories")
     reason: str = Field(description="The reason for this categorization")
     action: str = Field(description="Recommended action: 'move', 'delete', 'mark_important', 'none'")
-    destination_folder: Optional[str] = Field(description="Name of the folder to move to, if action is 'move'")
+    destination_folder: Optional[str] = Field(
+        default=None,
+        description="Name of the folder to move to, if action is 'move' (legacy folder mode)"
+    )
+
+    # New category-based fields
+    outlook_categories: list[str] = Field(
+        default_factory=list,
+        description="Outlook categories to apply (e.g., 'Action Required', 'Work', 'FYI'). Can be multiple."
+    )
+    urgency: str = Field(
+        default="someday",
+        description="Urgency level: 'immediate', 'today', 'this_week', 'someday'. Determines flag due date."
+    )
 
     labels: list[str] = Field(
         default_factory=list,
@@ -169,12 +190,97 @@ You are an expert executive assistant. Your goal is to deeply understand the INT
         system_prompt=system_prompt,
     )
 
+
+def _build_categories_agent(prefs: dict) -> Agent:
+    """Create the AI agent that uses Outlook categories instead of folders.
+
+    This is the new categorization system that keeps emails in Inbox
+    and applies color-coded Outlook categories + flags for urgency.
+    """
+    model_name = os.getenv("MODEL_NAME", "openai-responses:gpt-5-mini")
+    cleanup_strategy = os.getenv("CLEANUP_STRATEGY", "medium").lower()
+
+    # Get configured categories
+    category_names = get_category_names(prefs)
+    categories_description = format_categories_for_prompt(prefs)
+
+    system_prompt = f"""
+You are an expert executive assistant. Your goal is to deeply understand the INTENT of each email and categorize it using Outlook categories that stay in the user's Inbox.
+
+### 1. Intent Analysis (CRITICAL)
+- **Do not rely on keywords alone.** Look at the Subject, Sender, and Body together to determine the *primary purpose* of the email.
+- **Analyze the underlying message**: Is this actionable? Informational? A notification?
+- **Sender matters**: Who is sending this? Is it a service, a colleague, or a friend?
+
+### 2. Available Categories
+Choose from these Outlook categories (you can apply multiple):
+{categories_description}
+
+### 3. Category Selection Logic
+Think step-by-step:
+
+1. **Is this spam/phishing?** → category: "FYI", urgency: "someday", action: "delete" (move to Should Delete)
+
+2. **Does it require MY action?**
+   - Direct question to me → "Action Required" + urgency based on deadline
+   - Approval/decision needed → "Action Required" + urgency "today" or "this_week"
+   - Task assigned to me → "Action Required"
+
+3. **Am I waiting on someone else?**
+   - I sent and am awaiting reply → "Follow Up"
+   - Someone promised to get back to me → "Follow Up"
+
+4. **Is it work-related but informational?**
+   - Status updates, meeting notes → "Work"
+   - Internal announcements → "Work" or "FYI"
+
+5. **Is it a newsletter/notification/update?**
+   - Automated notifications → "FYI"
+   - Newsletters, digests → "FYI"
+   - Marketing/promotions → "FYI" (or delete if cleanup strategy suggests)
+
+6. **Is it personal?**
+   - Non-work correspondence → "Personal"
+
+### 4. Urgency Levels (determines flag due date)
+- **immediate**: Needs attention NOW (rare - only for critical time-sensitive items)
+- **today**: Should handle today (deadlines today, urgent requests)
+- **this_week**: Can wait a few days but shouldn't be forgotten
+- **someday**: Low priority, FYI, no action needed
+
+### 5. Cleanup Strategy (Current Level: {cleanup_strategy.upper()})
+- **Low**: Only suggest delete for obvious spam/phishing
+- **Medium**: Also suggest delete for old/irrelevant newsletters (> 3 months)
+- **Aggressive**: Also delete cold outreach, old promos
+
+### 6. Output Fields
+- **category**: Primary category name (one of: {", ".join(category_names)})
+- **outlook_categories**: List of category names to apply (can be multiple)
+- **urgency**: One of: immediate, today, this_week, someday
+- **action**: "none" (categories stay in inbox), "delete" (move to Should Delete), or "mark_important"
+- **reason**: Brief explanation of your decision
+
+### 7. Executive Assistant Signals
+- **requires_reply**: true if user should respond to this email
+- **reply_reason**: short reason (direct_question, asks_for_decision, approval_needed)
+- **availability_requested**: true if scheduling a meeting
+- **labels**: additional labels like vip, billing, marketing, newsletter, pitch, security
+"""
+    return Agent(
+        model_name,
+        output_type=EmailCategory,
+        system_prompt=system_prompt,
+    )
+
+
 class Organizer:
     def __init__(self, poller: GraphPoller):
         self.poller = poller
         self.user_email = poller.user_email
         self.agent: Optional[Agent] = None
+        self.categories_agent: Optional[Agent] = None
         self.current_folders: list[str] = []
+        self.use_categories_mode: bool = False  # Set per-run based on preferences
 
     def _canonicalize_folders(self, folders: list[str]) -> list[str]:
         """
@@ -217,11 +323,26 @@ class Organizer:
             self.current_folders = sorted_folders
         return self.agent
 
+    def _get_categories_agent(self, prefs: dict) -> Agent:
+        """Get the categories-based agent, building if needed."""
+        if self.categories_agent is None:
+            logger.info("Building categories-based agent")
+            self.categories_agent = _build_categories_agent(prefs)
+        return self.categories_agent
+
     async def organize_emails(self):
         """Iterate over unprocessed emails and organize them."""
         prefs = read_preferences()
 
-        # Fetch current folders from mailbox
+        # Check if we should use the new categories mode (default: True)
+        # Set to False to use legacy folder-based system
+        self.use_categories_mode = prefs.get("use_outlook_categories", True)
+        if self.use_categories_mode:
+            logger.info("Using Outlook categories mode (emails stay in Inbox)")
+        else:
+            logger.info("Using legacy folder mode (emails moved to folders)")
+
+        # Fetch current folders from mailbox (still needed for legacy mode and delete folder)
         user_folders = self.poller.get_user_folders()
         available_folders = self._canonicalize_folders(user_folders)
 
@@ -250,10 +371,13 @@ class Organizer:
         )
         
         try:
-            # Run AI Agent
-            result = await self._get_agent(folders).run(email_content)
+            # Run AI Agent - use categories or folder mode based on preference
+            if self.use_categories_mode:
+                result = await self._get_categories_agent(prefs).run(email_content)
+            else:
+                result = await self._get_agent(folders).run(email_content)
             decision = result.output
-            
+
             logger.info(f"AI Decision for {email['id']}: {decision}")
 
             # Enrich labels deterministically
@@ -643,6 +767,15 @@ class Organizer:
         return None
 
     def _execute_action(self, message_id: str, decision: EmailCategory):
+        # Categories mode: apply Outlook categories and flags, keep in Inbox
+        if self.use_categories_mode:
+            self._apply_categories_and_flags(message_id, decision)
+            # Handle delete action (still moves to Should Delete folder)
+            if decision.action == 'delete':
+                self.poller.move_email(message_id, "Should Delete")
+            return
+
+        # Legacy folder mode: move emails to folders
         if decision.action == 'move' and decision.destination_folder:
             # Normalize folder name
             normalized_folder = self._normalize_folder_name(decision.destination_folder)
@@ -652,3 +785,62 @@ class Organizer:
             self.poller.move_email(message_id, normalized_folder)
         elif decision.action == 'delete':
             self.poller.delete_email(message_id)
+
+    def _apply_categories_and_flags(self, message_id: str, decision: EmailCategory):
+        """Apply Outlook categories and flags via msgraph CLI.
+
+        This keeps emails in the Inbox while applying color-coded categories
+        and urgency-based flags for follow-up.
+        """
+        categories = getattr(decision, "outlook_categories", []) or []
+        urgency = getattr(decision, "urgency", "someday") or "someday"
+
+        if not categories and urgency == "someday":
+            logger.debug(f"No categories or flags to apply for {message_id}")
+            return
+
+        # Build the msgraph CLI command
+        # Format: aech-cli-msgraph update-message <message_id> [options]
+        cmd = ["aech-cli-msgraph", "update-message", message_id]
+
+        # Add categories if any
+        if categories:
+            cmd.extend(["--categories", ",".join(categories)])
+
+        # Add flag based on urgency
+        flag_settings = get_flag_settings(urgency)
+        if flag_settings:
+            if "flag_status" in flag_settings:
+                cmd.extend(["--flag", flag_settings["flag_status"]])
+            if "flag_due" in flag_settings:
+                cmd.extend(["--flag-due", flag_settings["flag_due"]])
+
+        # Add delegated user context if available
+        if self.user_email:
+            cmd.extend(["--user", self.user_email])
+
+        # Execute the command
+        try:
+            logger.info(f"Applying categories/flags: {' '.join(cmd)}")
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if result.returncode != 0:
+                logger.warning(
+                    f"Failed to apply categories/flags for {message_id}: "
+                    f"{result.stderr or result.stdout}"
+                )
+            else:
+                logger.debug(f"Successfully applied categories/flags for {message_id}")
+        except FileNotFoundError:
+            logger.warning(
+                f"aech-cli-msgraph not found - categories/flags not applied for {message_id}. "
+                "Install msgraph CLI to enable category support."
+            )
+        except subprocess.TimeoutExpired:
+            logger.warning(f"Timeout applying categories/flags for {message_id}")
+        except Exception as e:
+            logger.warning(f"Error applying categories/flags for {message_id}: {e}")
