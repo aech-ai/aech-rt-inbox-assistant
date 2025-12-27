@@ -4,7 +4,7 @@ import logging
 import os
 import time
 
-from src.database import init_db, get_connection
+from src.database import init_db
 from src.poller import GraphPoller
 from src.organizer import Organizer
 from src.working_memory.engine import run_memory_engine_cycle
@@ -16,20 +16,13 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-def service_loop(user_email: str, poll_interval: int, run_once: bool, reprocess: bool, reprocess_only: bool, concurrency: int = 5, backfill: bool = False):
+
+def service_loop(user_email: str, poll_interval: int, run_once: bool, concurrency: int = 5, backfill: bool = False):
     logger.info("Initializing database...")
     init_db()
 
     logger.info("Initializing poller...")
     poller = GraphPoller()
-    poller.ensure_standard_folders()
-
-    if reprocess:
-        logger.info("Starting full reprocessing of all folders...")
-        poller.reprocess_all_folders()
-        logger.info("Reprocessing complete.")
-        if reprocess_only:
-            return
 
     organizer = Organizer(poller, backfill=backfill)
 
@@ -71,23 +64,13 @@ def service_loop(user_email: str, poll_interval: int, run_once: bool, reprocess:
 def run(argv=None):
     user_email = os.environ.get("DELEGATED_USER")
     if not user_email:
-        raise ValueError("DELEGATED_USER environment variable must be set") 
-    
+        raise ValueError("DELEGATED_USER environment variable must be set")
+
     parser = argparse.ArgumentParser(description="Aech Inbox Assistant service runner")
     parser.add_argument(
         "--once",
         action="store_true",
         help="Run a single poll/organize cycle and exit.",
-    )
-    parser.add_argument(
-        "--reprocess",
-        action="store_true",
-        help="Scan all folders and reset email status for reprocessing.",
-    )
-    parser.add_argument(
-        "--reprocess-only",
-        action="store_true",
-        help="Reprocess folders and exit without running an organize cycle.",
     )
     parser.add_argument(
         "--poll-interval",
@@ -108,16 +91,11 @@ def run(argv=None):
     )
     args = parser.parse_args(argv)
 
-    if args.reprocess_only and not args.reprocess:
-        parser.error("--reprocess-only must be used together with --reprocess")
-
     poll_interval = args.poll_interval or int(os.environ.get("POLL_INTERVAL", 5))
     service_loop(
         user_email,
         poll_interval,
         run_once=args.once,
-        reprocess=args.reprocess,
-        reprocess_only=args.reprocess_only,
         concurrency=args.concurrency,
         backfill=args.backfill,
     )

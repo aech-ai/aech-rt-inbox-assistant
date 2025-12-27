@@ -3,18 +3,16 @@ import json
 import subprocess
 import os
 import hashlib
-from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
 
 import requests
 from aech_cli_msgraph.graph import GraphClient
 from .database import get_connection
-from .folders_config import STANDARD_FOLDERS
 
 logger = logging.getLogger(__name__)
 
-# Graph API base URL
 GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0"
+
 
 class GraphPoller:
     """
@@ -25,10 +23,9 @@ class GraphPoller:
     def __init__(self):
         self.user_email = os.getenv("DELEGATED_USER")
         if not self.user_email:
-            raise ValueError("DELEGATED_USER environment variable must be set") 
-        
+            raise ValueError("DELEGATED_USER environment variable must be set")
+
         self._graph_client = GraphClient()
-        self.folder_prefix = os.getenv("FOLDER_PREFIX", "aa_")
 
     def _run_cli(self, args: List[str]) -> str:
         """Run aech-cli-msgraph with the delegated user and return stdout."""
@@ -49,14 +46,13 @@ class GraphPoller:
             )
             raise RuntimeError(f"Command failed (code {result.returncode}): {stderr or stdout or 'unknown error'}")
 
-        # Trace successes at debug to reduce noise
         logger.debug(
             "CLI command succeeded: %s", " ".join(cmd), extra={"stdout": stdout, "stderr": stderr}
         )
         return stdout
 
     def poll_inbox(self) -> List[Dict[str, Any]]:
-        """Poll the delegated inbox for unread messages via aech-cli-msgraph."""
+        """Poll the delegated inbox for messages via aech-cli-msgraph."""
         logger.debug(f"Polling inbox for {self.user_email}")
         try:
             stdout = self._run_cli(["poll-inbox", "--json", "--count", "50", "--all-senders", "--include-read"])
@@ -84,19 +80,9 @@ class GraphPoller:
                 conn.execute(
                     """
                     INSERT INTO emails (
-                        id,
-                        conversation_id,
-                        internet_message_id,
-                        subject,
-                        sender,
-                        to_emails,
-                        cc_emails,
-                        received_at,
-                        body_preview,
-                        has_attachments,
-                        is_read,
-                        folder_id,
-                        etag
+                        id, conversation_id, internet_message_id, subject, sender,
+                        to_emails, cc_emails, received_at, body_preview, has_attachments,
+                        is_read, etag, web_link
                     )
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
@@ -110,8 +96,8 @@ class GraphPoller:
                         body_preview=excluded.body_preview,
                         has_attachments=excluded.has_attachments,
                         is_read=excluded.is_read,
-                        folder_id=excluded.folder_id,
-                        etag=excluded.etag
+                        etag=excluded.etag,
+                        web_link=excluded.web_link
                     """,
                     (
                         msg.get("id"),
@@ -125,8 +111,8 @@ class GraphPoller:
                         msg.get("bodyPreview", ""),
                         bool(msg.get("hasAttachments")) if msg.get("hasAttachments") is not None else None,
                         msg.get("isRead", False),
-                        msg.get("parentFolderId"),
                         etag,
+                        msg.get("webLink"),
                     ),
                 )
             conn.commit()
@@ -136,31 +122,6 @@ class GraphPoller:
         except Exception as e:
             logger.error(f"Error polling inbox: {e}")
             return []
-
-    def move_email(self, message_id: str, destination_folder: str):
-        """Move an email to a folder by name using the CLI."""
-        # Prepend prefix to destination folder
-        prefixed_folder = f"{self.folder_prefix}{destination_folder}"
-        
-        try:
-            stdout = self._run_cli(["move-email", "--json", message_id, prefixed_folder])
-            if not stdout:
-                logger.warning(f"Move-email returned empty output for {message_id}")
-                return
-
-            try:
-                data = json.loads(stdout)
-            except json.JSONDecodeError:
-                logger.warning(f"Move-email returned non-JSON output for {message_id}: {stdout}")
-                return
-
-            if isinstance(data, dict) and data.get("error"):
-                logger.error(f"Move-email Graph error for {message_id}: {data}")
-                return
-
-            logger.info(f"Moved email {message_id} to folder '{prefixed_folder}'", extra={"cli_stdout": data})
-        except Exception as e:
-            logger.error(f"Error moving email {message_id}: {e}")
 
     def delete_email(self, message_id: str):
         """Delete an email (move to Deleted Items) in the delegated mailbox."""
@@ -176,132 +137,6 @@ class GraphPoller:
             logger.info(f"Deleted email {message_id}", extra={"cli_stdout": data})
         except Exception as e:
             logger.error(f"Error deleting email {message_id}: {e}")
-
-    def ensure_standard_folders(self):
-        """
-        Ensure all standard folders exist in the delegated mailbox.
-        Uses aech-cli-msgraph's GraphClient for folder operations.
-        """
-        try:
-            existing = self._graph_client.get_mail_folders(user_id=self.user_email).get("value", [])
-            existing_lower = {f.get("displayName", "").lower() for f in existing}
-            base_path = self._graph_client._get_base_path(self.user_email)
-            headers = self._graph_client._get_headers()
-
-            created = []
-            for name in STANDARD_FOLDERS:
-                # Prepend prefix for creation/checking
-                prefixed_name = f"{self.folder_prefix}{name}"
-                
-                if prefixed_name.lower() in existing_lower:
-                    continue
-                resp = requests.post(
-                    f"{base_path}/mailFolders",
-                    json={"displayName": prefixed_name},
-                    headers=headers,
-                )
-                if resp.ok:
-                    created.append(prefixed_name)
-                else:
-                    logger.warning(
-                        "Failed to create folder",
-                        extra={"folder": prefixed_name, "status": resp.status_code, "body": resp.text},
-                    )
-            if created:
-                logger.info(f"Created missing folders: {created}")
-        except Exception as e:
-            logger.warning(f"Could not ensure standard folders: {e}")
-
-    def get_user_folders(self) -> List[str]:
-        """
-        Fetch the current list of folders from the mailbox using the CLI.
-        """
-        try:
-            stdout = self._run_cli(["list-folders", "--json"])
-            if not stdout:
-                return []
-                
-            folders_data = json.loads(stdout)
-            if not isinstance(folders_data, list):
-                logger.warning(f"list-folders returned non-list: {type(folders_data)}")
-                return []
-
-            # System folders to exclude
-            system_folders = {
-                "inbox", "sent items", "drafts", "deleted items", 
-                "junk email", "outbox", "archive", "conversation history",
-                "sync issues", "conflicts", "local failures", "server failures"
-            }
-            
-            user_folders = []
-            for f in folders_data:
-                name = f.get("displayName", "")
-                if name and name.lower() not in system_folders:
-                    user_folders.append(name)
-            
-            return user_folders
-        except Exception as e:
-            logger.error(f"Error fetching user folders: {e}")
-            return []
-
-    def reprocess_all_folders(self):
-        """
-        Scan all folders (Inbox + user folders), fetch messages, and reset their status in DB.
-        """
-        logger.info("Reprocessing: Fetching all folders...")
-        try:
-            # 1. Get all folders
-            folders = self.get_user_folders()
-            # Add Inbox explicitly as it's excluded from get_user_folders
-            folders.append("Inbox")
-
-            logger.info(f"Found {len(folders)} folders to scan: {folders}")
-
-            conn = get_connection()
-            cursor = conn.cursor()
-
-            # 2. Scan each folder
-            for folder_name in folders:
-                logger.info(f"Scanning folder: {folder_name}")
-                try:
-                    # Fetch messages (limit to 100 for now as CLI pagination might be tricky)
-                    stdout = self._run_cli(["list-messages", "--folder", folder_name, "--json", "--count", "100"])
-                    if not stdout:
-                        continue
-
-                    messages = json.loads(stdout)
-                    if not isinstance(messages, list):
-                        logger.warning(f"list-messages returned non-list for {folder_name}")
-                        continue
-
-                    for msg in messages:
-                        # Upsert and reset processed_at
-                        sender = msg.get("from", {}).get("emailAddress", {}).get("address", "unknown")
-                        cursor.execute("""
-                            INSERT INTO emails (id, subject, sender, body_preview, received_at, processed_at)
-                            VALUES (?, ?, ?, ?, ?, NULL)
-                            ON CONFLICT(id) DO UPDATE SET
-                                subject=excluded.subject,
-                                sender=excluded.sender,
-                                body_preview=excluded.body_preview,
-                                received_at=excluded.received_at,
-                                processed_at=NULL
-                        """, (
-                            msg["id"],
-                            msg.get("subject", ""),
-                            sender,
-                            msg.get("bodyPreview", ""),
-                            msg.get("receivedDateTime", "")
-                        ))
-                    conn.commit()
-                except Exception as e:
-                    logger.error(f"Error scanning folder {folder_name}: {e}")
-
-            conn.close()
-            logger.info("Reprocessing complete. All emails reset.")
-
-        except Exception as e:
-            logger.error(f"Error during reprocessing: {e}")
 
     # =========================================================================
     # Full Mailbox Sync Methods (for Email Corpus Intelligence)
@@ -363,7 +198,6 @@ class GraphPoller:
                 content_type = body.get("contentType", "text")
 
                 if content_type == "html":
-                    # Store HTML and extract plain text
                     from html import unescape
                     import re
                     text = re.sub(r'<[^>]+>', ' ', content)
@@ -405,9 +239,8 @@ class GraphPoller:
             "body_preview": msg.get("bodyPreview", ""),
             "has_attachments": bool(msg.get("hasAttachments")),
             "is_read": msg.get("isRead", False),
-            "folder_id": msg.get("parentFolderId"),
             "etag": msg.get("@odata.etag"),
-            "web_link": msg.get("webLink"),  # Folder-agnostic deep link to email
+            "web_link": msg.get("webLink"),
         }
 
     def _upsert_message(self, conn, msg_data: Dict[str, Any], body_text: Optional[str] = None, body_html: Optional[str] = None) -> None:
@@ -421,9 +254,9 @@ class GraphPoller:
             INSERT INTO emails (
                 id, conversation_id, internet_message_id, subject, sender,
                 to_emails, cc_emails, received_at, body_preview, has_attachments,
-                is_read, folder_id, etag, body_text, body_html, body_hash, web_link
+                is_read, etag, body_text, body_html, body_hash, web_link
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 conversation_id=excluded.conversation_id,
                 internet_message_id=excluded.internet_message_id,
@@ -435,7 +268,6 @@ class GraphPoller:
                 body_preview=excluded.body_preview,
                 has_attachments=excluded.has_attachments,
                 is_read=excluded.is_read,
-                folder_id=excluded.folder_id,
                 etag=excluded.etag,
                 body_text=COALESCE(excluded.body_text, emails.body_text),
                 body_html=COALESCE(excluded.body_html, emails.body_html),
@@ -454,7 +286,6 @@ class GraphPoller:
                 msg_data["body_preview"],
                 msg_data["has_attachments"],
                 msg_data["is_read"],
-                msg_data["folder_id"],
                 msg_data["etag"],
                 body_text,
                 body_html,
@@ -495,8 +326,7 @@ class GraphPoller:
         headers = self._graph_client._get_headers()
         base_path = self._graph_client._get_base_path(self.user_email)
 
-        # Request messages with metadata and attachments list
-        select_fields = "id,conversationId,internetMessageId,subject,from,toRecipients,ccRecipients,receivedDateTime,bodyPreview,hasAttachments,isRead,parentFolderId,webLink"
+        select_fields = "id,conversationId,internetMessageId,subject,from,toRecipients,ccRecipients,receivedDateTime,bodyPreview,hasAttachments,isRead,webLink"
         url = f"{base_path}/mailFolders/{folder_id}/messages?$select={select_fields}&$top={page_size}&$expand=attachments($select=id,name,contentType,size)"
 
         messages_synced = 0
@@ -515,14 +345,12 @@ class GraphPoller:
                 for msg in messages:
                     msg_data = self._extract_message_data(msg)
 
-                    # Fetch full body if requested
                     body_text, body_html = None, None
                     if fetch_body:
                         body_text, body_html = self._get_message_body(msg["id"])
 
                     self._upsert_message(conn, msg_data, body_text, body_html)
 
-                    # Store attachment metadata
                     if msg.get("attachments"):
                         self._upsert_attachments_metadata(conn, msg["id"], msg["attachments"])
 
@@ -531,10 +359,8 @@ class GraphPoller:
                 conn.commit()
                 logger.debug(f"Synced {messages_synced} messages so far from {folder_name}")
 
-                # Get next page
                 url = data.get("@odata.nextLink")
 
-            # Get delta link for future incremental syncs
             delta_url = f"{base_path}/mailFolders/{folder_id}/messages/delta?$select={select_fields}"
             delta_resp = requests.get(delta_url, headers=headers)
             if delta_resp.ok:
@@ -577,7 +403,7 @@ class GraphPoller:
             while url:
                 resp = requests.get(url, headers=headers)
                 if not resp.ok:
-                    if resp.status_code == 410:  # Delta token expired
+                    if resp.status_code == 410:
                         logger.warning(f"Delta token expired for {folder_name}, doing full sync")
                         conn.close()
                         count = self.full_sync_folder(folder_id, folder_name, fetch_body)
@@ -589,7 +415,6 @@ class GraphPoller:
                 messages = data.get("value", [])
 
                 for msg in messages:
-                    # Check if this is a deletion
                     if msg.get("@removed"):
                         conn.execute("DELETE FROM emails WHERE id = ?", (msg["id"],))
                         messages_deleted += 1
@@ -605,7 +430,6 @@ class GraphPoller:
 
                 conn.commit()
 
-                # Check for next page or final delta link
                 if "@odata.nextLink" in data:
                     url = data["@odata.nextLink"]
                 elif "@odata.deltaLink" in data:
@@ -649,7 +473,6 @@ class GraphPoller:
             sync_state = self.get_sync_state(folder_id)
 
             if sync_state and sync_state[0]:
-                # Delta sync
                 updated, deleted = self.delta_sync_folder(folder_id, folder_name, fetch_body)
                 results["folder_details"].append({
                     "name": folder_name,
@@ -660,7 +483,6 @@ class GraphPoller:
                 results["total_messages"] += updated
                 results["total_deleted"] += deleted
             else:
-                # Full sync
                 count = self.full_sync_folder(folder_id, folder_name, fetch_body)
                 results["folder_details"].append({
                     "name": folder_name,
@@ -680,11 +502,9 @@ class GraphPoller:
         conn = get_connection()
         cursor = conn.cursor()
 
-        # Get all folders
         folders = self.get_all_folders()
         folder_map = {f["id"]: f["displayName"] for f in folders}
 
-        # Get sync state
         rows = cursor.execute(
             "SELECT folder_id, delta_link, last_sync_at, sync_type, messages_synced FROM sync_state"
         ).fetchall()

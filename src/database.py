@@ -67,7 +67,7 @@ def init_db(db_path: Optional[Path] = None) -> None:
     cursor.execute("PRAGMA journal_mode=WAL;")
     cursor.execute("PRAGMA foreign_keys=ON;")
     
-    # Emails table
+    # Emails table - categories mode (no folders)
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS emails (
         id TEXT PRIMARY KEY,
@@ -79,50 +79,30 @@ def init_db(db_path: Optional[Path] = None) -> None:
         cc_emails TEXT, -- JSON array
         received_at DATETIME,
         body_preview TEXT,
+        body_text TEXT,
+        body_html TEXT,
+        body_hash TEXT,
         has_attachments BOOLEAN,
         is_read BOOLEAN,
-        folder_id TEXT,
         etag TEXT,
-        category TEXT,
+        web_link TEXT,
+        -- Categories mode fields
+        outlook_categories TEXT, -- JSON array of applied Outlook categories
+        urgency TEXT DEFAULT 'someday', -- immediate/today/this_week/someday
         processed_at DATETIME
     )
     """)
-    _ensure_columns(
-        cursor,
-        "emails",
-        {
-            "conversation_id": "TEXT",
-            "internet_message_id": "TEXT",
-            "to_emails": "TEXT",
-            "cc_emails": "TEXT",
-            "has_attachments": "BOOLEAN",
-            "etag": "TEXT",
-            "body_text": "TEXT",
-            "body_html": "TEXT",
-            "body_hash": "TEXT",
-            "web_link": "TEXT",  # Folder-agnostic Outlook Web deep link
-        },
-    )
     
-    # Triage Log table
+    # Triage Log table - categories mode
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS triage_log (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         email_id TEXT,
-        action TEXT,
-        destination_folder TEXT,
+        outlook_categories TEXT, -- JSON array of applied categories
+        urgency TEXT,
         reason TEXT,
         timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY(email_id) REFERENCES emails(id)
-    )
-    """)
-    
-    # Folders cache
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS folders (
-        id TEXT PRIMARY KEY,
-        display_name TEXT,
-        parent_folder_id TEXT
     )
     """)
 
@@ -490,46 +470,43 @@ def setup_query_library(db_path: Path) -> None:
     """
     queries_dir = db_path.parent / "queries"
     queries_dir.mkdir(exist_ok=True)
-    
-    # Define starter query templates
+
+    # Define starter query templates - categories mode
     templates = {
-        "urgent_emails_last_24h.sql": """-- Get urgent emails from the last 24 hours
-SELECT 
+        "urgent_emails.sql": """-- Get urgent emails (immediate or today urgency)
+SELECT
     id,
     subject,
     sender,
     received_at,
     body_preview,
-    category
+    outlook_categories,
+    urgency
 FROM emails
-WHERE category = 'Urgent'
+WHERE urgency IN ('immediate', 'today')
   AND datetime(received_at) > datetime('now', '-24 hours')
-ORDER BY received_at DESC;""",
-        
-        "newsletters_last_week.sql": """-- Get newsletters from the last week
-SELECT 
-    id,
-    subject,
-    sender,
-    received_at,
-    body_preview
-FROM emails
-WHERE category = 'Newsletters'
-  AND datetime(received_at) > datetime('now', '-7 days')
-ORDER BY received_at DESC;""",
-        
-        "emails_by_category.sql": """-- Count emails by category
-SELECT 
-    category,
+ORDER BY
+    CASE urgency WHEN 'immediate' THEN 1 WHEN 'today' THEN 2 END,
+    received_at DESC;""",
+
+        "emails_by_urgency.sql": """-- Count emails by urgency level
+SELECT
+    urgency,
     COUNT(*) as count,
     COUNT(CASE WHEN is_read = 0 THEN 1 END) as unread_count
 FROM emails
-WHERE category IS NOT NULL
-GROUP BY category
-ORDER BY count DESC;""",
-        
+WHERE processed_at IS NOT NULL
+GROUP BY urgency
+ORDER BY
+    CASE urgency
+        WHEN 'immediate' THEN 1
+        WHEN 'today' THEN 2
+        WHEN 'this_week' THEN 3
+        ELSE 4
+    END;""",
+
         "unprocessed_emails.sql": """-- Get unprocessed emails
-SELECT 
+SELECT
     id,
     subject,
     sender,
@@ -539,23 +516,37 @@ SELECT
 FROM emails
 WHERE processed_at IS NULL
 ORDER BY received_at DESC;""",
-        
+
         "recent_triage_decisions.sql": """-- Get recent triage decisions
-SELECT 
+SELECT
     t.timestamp,
-    t.action,
-    t.destination_folder,
+    t.outlook_categories,
+    t.urgency,
     e.subject,
     e.sender,
     t.reason
 FROM triage_log t
 JOIN emails e ON t.email_id = e.id
 ORDER BY t.timestamp DESC
-LIMIT 20;"""
+LIMIT 20;""",
+
+        "action_required.sql": """-- Emails needing action
+SELECT
+    id,
+    subject,
+    sender,
+    received_at,
+    urgency,
+    web_link
+FROM emails
+WHERE outlook_categories LIKE '%Action Required%'
+  AND processed_at IS NOT NULL
+ORDER BY
+    CASE urgency WHEN 'immediate' THEN 1 WHEN 'today' THEN 2 WHEN 'this_week' THEN 3 ELSE 4 END,
+    received_at DESC;"""
     }
-    
-    # Write templates to files (only if they don't exist)
+
+    # Write templates to files (overwrite to update with new schema)
     for filename, content in templates.items():
         filepath = queries_dir / filename
-        if not filepath.exists():
-            filepath.write_text(content)
+        filepath.write_text(content)

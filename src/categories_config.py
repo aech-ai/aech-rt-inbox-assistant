@@ -8,8 +8,7 @@ Outlook labels (staying in Inbox) rather than moving to folders.
 Preferences are stored under the "inbox_assistant" namespace:
 {
     "inbox_assistant": {
-        "categories": [...],
-        "use_categories_mode": true
+        "categories": [...]
     }
 }
 """
@@ -342,10 +341,3 @@ def set_inbox_assistant_pref(prefs: dict[str, Any], key: str, value: Any) -> Non
     prefs[NAMESPACE][key] = value
 
 
-def is_categories_mode_enabled(prefs: dict[str, Any] | None) -> bool:
-    """Check if categories mode is enabled (default: True)."""
-    if not prefs:
-        return True
-
-    namespace_prefs = prefs.get(NAMESPACE, {})
-    return namespace_prefs.get("use_categories_mode", True)
