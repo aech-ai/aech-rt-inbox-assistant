@@ -61,9 +61,35 @@ Create these categories in your Outlook with the specified colors:
   - `this_week` → Flag due this week
   - `someday` → No flag
 
-## Customizing Categories
+## Managing Categories via CLI
 
-You can customize the categories by editing your `preferences.json`:
+Use the `categories` subcommand to manage your category profile:
+
+```bash
+# List your categories (auto-populates defaults on first use)
+aech-cli-inbox categories list --human
+
+# Add a new category
+aech-cli-inbox categories add "Urgent" --color red --flag today -d "Time-sensitive items"
+
+# Edit an existing category
+aech-cli-inbox categories edit "Work" --color teal --flag this_week
+
+# Remove a category
+aech-cli-inbox categories remove "Old Category"
+
+# Reset to defaults
+aech-cli-inbox categories reset --yes
+
+# List available colors
+aech-cli-inbox categories colors --human
+```
+
+Categories are stored in your user profile (`preferences.json`) and auto-populated with defaults on first access.
+
+## Customizing Categories (Manual)
+
+You can also customize categories by editing your `preferences.json` directly:
 
 ```json
 {
@@ -79,8 +105,6 @@ You can customize the categories by editing your `preferences.json`:
   ]
 }
 ```
-
-Run `aech-cli-inbox setup-categories --reset-defaults` to reset to default categories.
 
 ## Why Manual Setup?
 
