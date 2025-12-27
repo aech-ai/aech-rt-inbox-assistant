@@ -492,16 +492,28 @@ def setup_categories(
     Categories keep emails in your Inbox while applying color-coded labels.
     """
     import subprocess
-    from src.categories_config import DEFAULT_CATEGORIES, get_categories, COLOR_PRESETS
+    from src.categories_config import (
+        DEFAULT_CATEGORIES, get_categories, COLOR_PRESETS,
+        ensure_categories_initialized, is_categories_mode_enabled, NAMESPACE
+    )
 
     prefs = read_preferences()
 
-    # Reset or initialize categories in preferences
-    if reset_defaults or "outlook_categories" not in prefs:
-        prefs["outlook_categories"] = DEFAULT_CATEGORIES
+    # Reset categories if requested
+    if reset_defaults:
+        if NAMESPACE not in prefs:
+            prefs[NAMESPACE] = {}
+        prefs[NAMESPACE]["categories"] = [cat.copy() for cat in DEFAULT_CATEGORIES]
         write_preferences(prefs)
         if human:
-            typer.echo("Initialized default categories in preferences.json")
+            typer.echo("Reset categories to defaults in preferences.json")
+    else:
+        # Ensure categories are initialized (handles migration from legacy location)
+        categories, was_initialized = ensure_categories_initialized(prefs)
+        if was_initialized:
+            write_preferences(prefs)
+            if human:
+                typer.echo("Initialized categories in preferences.json")
 
     categories = get_categories(prefs)
 
@@ -562,8 +574,8 @@ def setup_categories(
             for f in failed:
                 typer.echo(f"  - {f['name']}: {f['error']}")
 
-        typer.echo(f"\nCategories mode: {'enabled' if prefs.get('use_outlook_categories', True) else 'disabled'}")
-        typer.echo("Set 'use_outlook_categories' to false in preferences to use legacy folder mode.")
+        typer.echo(f"\nCategories mode: {'enabled' if is_categories_mode_enabled(prefs) else 'disabled'}")
+        typer.echo("Set 'inbox_assistant.use_categories_mode' to false in preferences to use legacy folder mode.")
     else:
         typer.echo(json.dumps(result_data, default=str))
 
@@ -599,10 +611,11 @@ def categories_list(
 ):
     """List all configured categories.
 
-    Categories are stored in your user profile and auto-populated with defaults
-    on first use. The AI uses these category names when organizing your inbox.
+    Categories are stored in your user profile (preferences.json) under the
+    'inbox_assistant' namespace and auto-populated with defaults on first use.
     """
-    from src.categories_config import ensure_categories_initialized
+    from src.categories_config import ensure_categories_initialized, NAMESPACE
+    from .state import get_preferences_path
 
     prefs = read_preferences()
     categories, was_initialized = ensure_categories_initialized(prefs)
@@ -613,15 +626,20 @@ def categories_list(
     if human:
         if was_initialized:
             typer.echo("(Initialized with default categories)\n")
-        typer.echo("Your Categories:")
+        typer.echo("Your Categories (inbox_assistant.categories):")
         for cat in categories:
             flag_info = f" [auto-flag: {cat.get('flag_urgency')}]" if cat.get("flag_urgency") else ""
             typer.echo(f"  {cat['name']} ({cat.get('color', 'blue')}){flag_info}")
             if cat.get("description"):
                 typer.echo(f"    → {cat['description']}")
-        typer.echo(f"\nProfile: {get_db_path().parent / 'preferences.json'}")
+        typer.echo(f"\nProfile: {get_preferences_path()}")
     else:
-        typer.echo(json.dumps({"categories": categories, "initialized": was_initialized}, default=str))
+        typer.echo(json.dumps({
+            "namespace": NAMESPACE,
+            "categories": categories,
+            "initialized": was_initialized,
+            "profile_path": str(get_preferences_path()),
+        }, default=str))
 
 
 @categories_app.command("add")

@@ -15,6 +15,7 @@ from .categories_config import (
     get_category_config,
     get_flag_settings,
     format_categories_for_prompt,
+    is_categories_mode_enabled,
 )
 from .working_memory.updater import WorkingMemoryUpdater
 
@@ -336,7 +337,7 @@ class Organizer:
 
         # Check if we should use the new categories mode (default: True)
         # Set to False to use legacy folder-based system
-        self.use_categories_mode = prefs.get("use_outlook_categories", True)
+        self.use_categories_mode = is_categories_mode_enabled(prefs)
         if self.use_categories_mode:
             logger.info("Using Outlook categories mode (emails stay in Inbox)")
         else:
