@@ -193,6 +193,76 @@
       "parameters": [
         {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
       ]
+    },
+    {
+      "name": "wm snapshot",
+      "description": "Get complete working memory state: active threads, pending decisions, commitments, and observations. Primary tool for understanding current context.",
+      "parameters": [
+        {"name": "limit-threads", "type": "option", "required": false, "description": "Max active threads to include (default: 10)."},
+        {"name": "limit-decisions", "type": "option", "required": false, "description": "Max pending decisions (default: 5)."},
+        {"name": "limit-observations", "type": "option", "required": false, "description": "Max recent observations (default: 10)."},
+        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
+      ]
+    },
+    {
+      "name": "wm threads",
+      "description": "Query active email threads with optional filters.",
+      "parameters": [
+        {"name": "status", "type": "option", "required": false, "description": "Filter by status (active/stale/resolved)."},
+        {"name": "urgency", "type": "option", "required": false, "description": "Filter by urgency (immediate/today/this_week/someday)."},
+        {"name": "needs-reply", "type": "flag", "required": false, "description": "Only threads needing reply."},
+        {"name": "limit", "type": "option", "required": false, "description": "Max results (default: 20)."},
+        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
+      ]
+    },
+    {
+      "name": "wm contacts",
+      "description": "Query known contacts and relationship context.",
+      "parameters": [
+        {"name": "relationship", "type": "option", "required": false, "description": "Filter by relationship type."},
+        {"name": "vip", "type": "flag", "required": false, "description": "Only VIP contacts."},
+        {"name": "external", "type": "flag", "required": false, "description": "Only external contacts."},
+        {"name": "search", "type": "option", "required": false, "description": "Search by name or email."},
+        {"name": "limit", "type": "option", "required": false, "description": "Max results (default: 20)."},
+        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
+      ]
+    },
+    {
+      "name": "wm decisions",
+      "description": "List pending decisions awaiting user response.",
+      "parameters": [
+        {"name": "urgency", "type": "option", "required": false, "description": "Filter by urgency."},
+        {"name": "limit", "type": "option", "required": false, "description": "Max results (default: 20)."},
+        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
+      ]
+    },
+    {
+      "name": "wm commitments",
+      "description": "List open commitments the user made to others.",
+      "parameters": [
+        {"name": "overdue", "type": "flag", "required": false, "description": "Only overdue commitments."},
+        {"name": "limit", "type": "option", "required": false, "description": "Max results (default: 20)."},
+        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
+      ]
+    },
+    {
+      "name": "wm observations",
+      "description": "View passive learnings from emails (especially CC'd emails).",
+      "parameters": [
+        {"name": "type", "type": "option", "required": false, "description": "Filter by observation type."},
+        {"name": "days", "type": "option", "required": false, "description": "Only observations from last N days."},
+        {"name": "limit", "type": "option", "required": false, "description": "Max results (default: 20)."},
+        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
+      ]
+    },
+    {
+      "name": "wm projects",
+      "description": "View inferred projects and initiatives from email patterns.",
+      "parameters": [
+        {"name": "status", "type": "option", "required": false, "description": "Filter by status (active/on_hold/completed)."},
+        {"name": "limit", "type": "option", "required": false, "description": "Max results (default: 20)."},
+        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
+      ]
     }
   ],
   "documentation": {
@@ -212,7 +282,16 @@
       "aech-cli-inbox-assistant calendar briefing --human",
       "aech-cli-inbox-assistant calendar prep --next --human",
       "aech-cli-inbox-assistant calendar prep --event-id AAMkAG...",
-      "aech-cli-inbox-assistant calendar prep-config --human"
+      "aech-cli-inbox-assistant calendar prep-config --human",
+      "aech-cli-inbox-assistant wm snapshot --human",
+      "aech-cli-inbox-assistant wm threads --needs-reply",
+      "aech-cli-inbox-assistant wm threads --urgency today",
+      "aech-cli-inbox-assistant wm contacts --external",
+      "aech-cli-inbox-assistant wm contacts --search 'acme'",
+      "aech-cli-inbox-assistant wm decisions",
+      "aech-cli-inbox-assistant wm commitments --overdue",
+      "aech-cli-inbox-assistant wm observations --days 7",
+      "aech-cli-inbox-assistant wm projects"
     ]
   }
 }
