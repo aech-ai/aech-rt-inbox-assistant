@@ -16,7 +16,7 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-def service_loop(user_email: str, poll_interval: int, run_once: bool, reprocess: bool, reprocess_only: bool, concurrency: int = 5):
+def service_loop(user_email: str, poll_interval: int, run_once: bool, reprocess: bool, reprocess_only: bool, concurrency: int = 5, backfill: bool = False):
     logger.info("Initializing database...")
     init_db()
 
@@ -31,7 +31,7 @@ def service_loop(user_email: str, poll_interval: int, run_once: bool, reprocess:
         if reprocess_only:
             return
 
-    organizer = Organizer(poller)
+    organizer = Organizer(poller, backfill=backfill)
 
     # Working memory engine configuration
     wm_engine_interval = int(os.environ.get("WM_ENGINE_INTERVAL", 300))  # Default 5 minutes
@@ -42,6 +42,8 @@ def service_loop(user_email: str, poll_interval: int, run_once: bool, reprocess:
     logger.info(f"Poll Interval: {poll_interval}s")
     logger.info(f"Concurrency: {concurrency}")
     logger.info(f"Working Memory Engine Interval: {wm_engine_interval}s")
+    if backfill:
+        logger.info("Backfill mode: triggers suppressed (no Teams notifications)")
 
     while True:
         try:
@@ -99,6 +101,11 @@ def run(argv=None):
         default=5,
         help="Number of emails to process in parallel (default: 5).",
     )
+    parser.add_argument(
+        "--backfill",
+        action="store_true",
+        help="Backfill mode: suppress triggers (no Teams notifications). Use for onboarding new accounts.",
+    )
     args = parser.parse_args(argv)
 
     if args.reprocess_only and not args.reprocess:
@@ -112,6 +119,7 @@ def run(argv=None):
         reprocess=args.reprocess,
         reprocess_only=args.reprocess_only,
         concurrency=args.concurrency,
+        backfill=args.backfill,
     )
 
 
