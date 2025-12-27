@@ -1075,6 +1075,13 @@ def wm_snapshot(
                 reply = " [NEEDS REPLY]" if t["needs_reply"] else ""
                 subj = (t["subject"] or "")[:50]
                 typer.echo(f"  [{urgency}] {subj}{reply}")
+                # Include link (use latest_web_link if available)
+                link = t.get('latest_web_link')
+                if not link and t.get('latest_email_id'):
+                    from urllib.parse import quote
+                    link = f"https://outlook.office365.com/mail/inbox/id/{quote(t['latest_email_id'], safe='')}"
+                if link:
+                    typer.echo(f"    Link: {link}")
 
         if decisions:
             typer.echo(f"\nPENDING DECISIONS ({len(decisions)}):")
@@ -1143,6 +1150,13 @@ def wm_threads(
             if t.get("summary"):
                 summary = t["summary"][:100]
                 typer.echo(f"  Summary: {summary}...")
+            # Use latest_web_link (folder-agnostic) if available
+            link = t.get('latest_web_link')
+            if not link and t.get('latest_email_id'):
+                from urllib.parse import quote
+                link = f"https://outlook.office365.com/mail/inbox/id/{quote(t['latest_email_id'], safe='')}"
+            if link:
+                typer.echo(f"  Link: {link}")
             typer.echo("")
     else:
         typer.echo(json.dumps(results, default=str))
