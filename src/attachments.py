@@ -36,10 +36,14 @@ EXTRACTABLE_TYPES = {
     "text/csv",
     "text/html",
     "text/markdown",
-    # Images (if OCR is available)
-    "image/png",
-    "image/jpeg",
-    "image/tiff",
+    # NOTE: Images excluded for now - most are email signatures (noise).
+    # Future: add image description extraction via vision model.
+}
+
+# Filename patterns to skip (email signatures, logos, etc.)
+SKIP_FILENAME_PATTERNS = {
+    "image001", "image002", "image003", "image004", "image005",
+    "signature", "logo", "banner", "footer", "header",
 }
 
 
@@ -217,6 +221,16 @@ class AttachmentProcessor:
         content_type = attachment["content_type"] or ""
 
         logger.info(f"Processing attachment: {filename} ({content_type})")
+
+        # Skip common noise files (email signatures, logos)
+        filename_lower = filename.lower()
+        filename_stem = Path(filename).stem.lower()
+        if any(pattern in filename_stem for pattern in SKIP_FILENAME_PATTERNS):
+            self._update_attachment_status(
+                att_id, "skipped", error=f"Filename matches skip pattern: {filename}"
+            )
+            logger.debug(f"Skipping {filename} - matches skip pattern")
+            return False
 
         # Check if we can extract from this type
         if content_type not in EXTRACTABLE_TYPES:

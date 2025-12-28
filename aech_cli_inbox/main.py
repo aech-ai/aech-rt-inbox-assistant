@@ -154,17 +154,18 @@ def search(
             typer.echo(f"Hybrid search not available: {e}", err=True)
             typer.echo("Falling back to FTS search.", err=True)
 
-    # FTS-only search (original behavior)
+    # FTS-only search (original behavior) - search both emails and attachments
     conn = connect_db()
     cursor = conn.cursor()
-    results = []
+    email_results = []
+    attachment_results = []
 
-    # Prefer FTS if available
+    # Search emails via FTS
     try:
         cursor.execute(
             """
             SELECT e.id, e.subject, e.body_preview, e.received_at, e.category, e.is_read,
-                   e.sender, e.web_link, bm25(emails_fts) AS rank
+                   e.sender, e.web_link, bm25(emails_fts) AS rank, 'email' as result_type
             FROM emails_fts
             JOIN emails e ON emails_fts.id = e.id
             WHERE emails_fts MATCH ?
@@ -173,14 +174,14 @@ def search(
             """,
             (query, limit),
         )
-        rows = cursor.fetchall()
-        results = [dict(row) for row in rows]
+        email_results = [dict(row) for row in cursor.fetchall()]
     except sqlite3.Error:
-        # Fallback to LIKE search
+        # Fallback to LIKE search for emails
         sql_query = f"%{query}%"
         cursor.execute(
             """
-            SELECT id, subject, body_preview, received_at, category, is_read, sender, web_link
+            SELECT id, subject, body_preview, received_at, category, is_read, sender, web_link,
+                   0 as rank, 'email' as result_type
             FROM emails
             WHERE subject LIKE ? OR body_preview LIKE ?
             ORDER BY received_at DESC
@@ -188,18 +189,37 @@ def search(
             """,
             (sql_query, sql_query, limit),
         )
-        rows = cursor.fetchall()
-        results = [dict(row) for row in rows]
+        email_results = [dict(row) for row in cursor.fetchall()]
+
+    # Also search attachment extracted_text
+    sql_query = f"%{query}%"
+    try:
+        cursor.execute(
+            """
+            SELECT a.id, a.filename, a.extracted_text, e.id as email_id, e.subject as email_subject,
+                   e.sender, e.received_at, e.web_link, 'attachment' as result_type
+            FROM attachments a
+            JOIN emails e ON a.email_id = e.id
+            WHERE a.extracted_text LIKE ?
+            LIMIT ?
+            """,
+            (sql_query, limit),
+        )
+        attachment_results = [dict(row) for row in cursor.fetchall()]
+    except sqlite3.Error:
+        pass  # Attachment search failed, continue with email results only
+
+    conn.close()
 
     if human:
-        if not results:
+        if not email_results and not attachment_results:
             typer.echo("No results.")
-        for email in results:
-            typer.echo(f"Subject: {email['subject']}")
+
+        for email in email_results:
+            typer.echo(f"[EMAIL] {email['subject']}")
             typer.echo(f"  From: {email.get('sender', 'N/A')}")
             typer.echo(f"  Received: {email['received_at']}")
             typer.echo(f"  Category: {email.get('category', 'N/A')}")
-            # Use web_link if available
             link = email.get('web_link')
             if not link and email.get('id'):
                 from urllib.parse import quote
@@ -207,13 +227,119 @@ def search(
             if link:
                 typer.echo(f"  Link: {link}")
             typer.echo()
+
+        for att in attachment_results:
+            typer.echo(f"[ATTACHMENT] {att['filename']}")
+            typer.echo(f"  In email: {att.get('email_subject', 'N/A')}")
+            typer.echo(f"  From: {att.get('sender', 'N/A')}")
+            typer.echo(f"  Date: {att.get('received_at', 'N/A')}")
+            # Show preview of extracted text
+            text_preview = (att.get('extracted_text') or '')[:200].replace('\n', ' ')
+            if text_preview:
+                typer.echo(f"  Preview: {text_preview}...")
+            link = att.get('web_link')
+            if not link and att.get('email_id'):
+                from urllib.parse import quote
+                link = f"https://outlook.office365.com/mail/inbox/id/{quote(att['email_id'], safe='')}"
+            if link:
+                typer.echo(f"  Link: {link}")
+            typer.echo()
     else:
-        typer.echo(json.dumps(results, default=str))
+        typer.echo(json.dumps({"emails": email_results, "attachments": attachment_results}, default=str))
 
 @app.command()
 def dbpath():
     """Get the absolute path to the user's database."""
     typer.echo(get_db_path())
+
+
+@app.command("backfill-bodies")
+def backfill_bodies(
+    limit: int = typer.Option(100, help="Number of emails to backfill"),
+    human: bool = typer.Option(False, "--human", help="Human-readable output instead of JSON"),
+):
+    """
+    Backfill missing email bodies from Graph API.
+
+    Fetches full body content for emails where body_text is NULL.
+    This is needed if emails were synced before body fetching was enabled.
+    """
+    try:
+        from src.poller import InboxPoller
+    except ImportError:
+        typer.echo("Error: InboxPoller not available. Run from inbox-assistant repo.", err=True)
+        raise typer.Exit(1)
+
+    conn = connect_db()
+
+    # Find emails with missing bodies
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, subject FROM emails
+        WHERE body_text IS NULL OR body_text = ''
+        ORDER BY received_at DESC
+        LIMIT ?
+    """, (limit,))
+    emails_to_backfill = cursor.fetchall()
+
+    if not emails_to_backfill:
+        if human:
+            typer.echo("All emails already have body content.")
+        else:
+            typer.echo(json.dumps({"backfilled": 0, "failed": 0}))
+        conn.close()
+        return
+
+    if human:
+        typer.echo(f"Backfilling {len(emails_to_backfill)} emails...")
+
+    poller = InboxPoller()
+    results = {"backfilled": 0, "failed": 0}
+
+    for email_id, subject in emails_to_backfill:
+        try:
+            body_text, body_html = poller._get_message_body(email_id)
+            if body_text:
+                import hashlib
+                body_hash = hashlib.sha256(body_text.encode()).hexdigest()[:16]
+                conn.execute("""
+                    UPDATE emails SET body_text = ?, body_html = ?, body_hash = ?
+                    WHERE id = ?
+                """, (body_text, body_html, body_hash, email_id))
+                results["backfilled"] += 1
+                if human:
+                    typer.echo(f"  ✓ {subject[:50]}...")
+            else:
+                results["failed"] += 1
+                if human:
+                    typer.echo(f"  ✗ {subject[:50]}... (no body returned)")
+        except Exception as e:
+            results["failed"] += 1
+            if human:
+                typer.echo(f"  ✗ {subject[:50]}... ({e})")
+
+    conn.commit()
+
+    # Also update FTS index
+    if human:
+        typer.echo("\nUpdating FTS index...")
+
+    try:
+        # Rebuild FTS for updated emails
+        conn.execute("INSERT INTO emails_fts(emails_fts) VALUES('rebuild')")
+        conn.commit()
+    except Exception as e:
+        if human:
+            typer.echo(f"FTS rebuild failed: {e}")
+
+    conn.close()
+
+    if human:
+        typer.echo(f"\nResults:")
+        typer.echo(f"  Backfilled: {results['backfilled']}")
+        typer.echo(f"  Failed:     {results['failed']}")
+    else:
+        typer.echo(json.dumps(results))
 
 
 @app.command("sync-status")
@@ -373,6 +499,85 @@ def attachment_status(
             typer.echo("")
     else:
         typer.echo(json.dumps(attachments, default=str))
+
+
+@app.command("extract-attachments")
+def extract_attachments(
+    limit: int = typer.Option(50, help="Number of attachments to process"),
+    human: bool = typer.Option(False, "--human", help="Human-readable output instead of JSON"),
+):
+    """
+    Extract text from pending attachments.
+
+    Downloads attachments from Graph API and extracts text using aech-cli-documents.
+    Extracted text is stored in the database for full-text search.
+    """
+    try:
+        from src.attachments import AttachmentProcessor
+    except ImportError:
+        typer.echo("Error: AttachmentProcessor not available. Run from inbox-assistant repo.", err=True)
+        raise typer.Exit(1)
+
+    processor = AttachmentProcessor()
+
+    if human:
+        typer.echo(f"Processing up to {limit} pending attachments...")
+
+    results = processor.process_pending_attachments(limit=limit)
+
+    if human:
+        typer.echo(f"\nResults:")
+        typer.echo(f"  Success:     {results['success']}")
+        typer.echo(f"  Failed:      {results['failed']}")
+        typer.echo(f"  Unsupported: {results['unsupported']}")
+    else:
+        typer.echo(json.dumps(results))
+
+
+@app.command("index")
+def index_content(
+    limit: int = typer.Option(500, help="Number of items to process per type"),
+    human: bool = typer.Option(False, "--human", help="Human-readable output instead of JSON"),
+):
+    """
+    Index emails and attachments for full-text search.
+
+    Creates searchable chunks from unindexed emails and attachment text.
+    Run this after extract-attachments to make content searchable.
+    """
+    try:
+        from src.chunker import process_unindexed_emails, process_unindexed_attachments
+    except ImportError:
+        typer.echo("Error: Chunker not available. Run from inbox-assistant repo.", err=True)
+        raise typer.Exit(1)
+
+    if human:
+        typer.echo(f"Indexing up to {limit} items per type...")
+
+    email_results = process_unindexed_emails(limit=limit)
+    attachment_results = process_unindexed_attachments(limit=limit)
+
+    combined = {
+        "emails_processed": email_results["processed"],
+        "emails_skipped": email_results["skipped"],
+        "email_chunks": email_results["chunks_created"],
+        "virtual_emails": email_results.get("virtual_emails", 0),
+        "attachments_processed": attachment_results["processed"],
+        "attachment_chunks": attachment_results["chunks_created"],
+    }
+
+    if human:
+        typer.echo(f"\nEmail indexing:")
+        typer.echo(f"  Processed: {combined['emails_processed']}")
+        typer.echo(f"  Skipped:   {combined['emails_skipped']}")
+        typer.echo(f"  Chunks:    {combined['email_chunks']}")
+        typer.echo(f"  Virtual:   {combined['virtual_emails']} (from forwards)")
+        typer.echo(f"\nAttachment indexing:")
+        typer.echo(f"  Processed: {combined['attachments_processed']}")
+        typer.echo(f"  Chunks:    {combined['attachment_chunks']}")
+    else:
+        typer.echo(json.dumps(combined))
+
 
 @app.command()
 def schema():
@@ -1673,6 +1878,21 @@ def _format_snapshot_llm(snapshot: dict) -> str:
     return "\n".join(lines)
 
 
+def _output_wm_error(llm: bool, human: bool, message: str):
+    """Output a graceful error message when working memory is unavailable."""
+    if llm:
+        typer.echo(f"""# Working Memory Unavailable
+
+{message}
+
+**Alternative**: Use `aech-cli-inbox-assistant search 'query'` to find specific emails.
+""")
+    elif human:
+        typer.echo(f"=== Working Memory Unavailable ===\n{message}")
+    else:
+        typer.echo(json.dumps({"error": message, "working_memory_available": False}))
+
+
 @wm_app.command("snapshot")
 def wm_snapshot(
     limit_threads: int = typer.Option(10, help="Max active threads to include"),
@@ -1687,7 +1907,27 @@ def wm_snapshot(
     This is the primary tool for understanding "what's going on" across
     all tracked threads, decisions, commitments, and observations.
     """
-    conn = connect_db()
+    import sqlite3 as sqlite3_module
+
+    try:
+        conn = connect_db()
+    except FileNotFoundError as e:
+        # Database doesn't exist yet - return minimal context
+        _output_wm_error(llm, human, f"Inbox not synced yet: {e}")
+        return
+
+    try:
+        conn_check = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='wm_threads'"
+        ).fetchone()
+        if not conn_check:
+            conn.close()
+            _output_wm_error(llm, human, "Working memory not initialized. Use 'aech-cli-inbox-assistant search' to query emails directly.")
+            return
+    except sqlite3_module.OperationalError as e:
+        conn.close()
+        _output_wm_error(llm, human, f"Database error checking tables: {e}")
+        return
 
     # Active threads
     threads = conn.execute(
