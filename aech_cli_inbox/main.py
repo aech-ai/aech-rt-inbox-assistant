@@ -1558,12 +1558,128 @@ wm_app = typer.Typer(
 app.add_typer(wm_app, name="wm")
 
 
+def _format_snapshot_llm(snapshot: dict) -> str:
+    """Format snapshot as LLM-optimized markdown."""
+    lines = ["# Working Memory Snapshot", ""]
+
+    # Summary with actionable framing
+    s = snapshot["summary"]
+    lines.append("## Summary")
+    if s["threads_needing_reply"] > 0:
+        lines.append(f"- **{s['threads_needing_reply']} threads need your reply**")
+    if s["urgent_threads"] > 0:
+        lines.append(f"- {s['urgent_threads']} urgent threads (immediate/today priority)")
+    if s["pending_decisions_count"] > 0:
+        lines.append(f"- **{s['pending_decisions_count']} pending decisions** awaiting your response")
+    if s["open_commitments_count"] > 0:
+        lines.append(f"- **{s['open_commitments_count']} open commitments** you made to others")
+    if all(v == 0 for v in s.values()):
+        lines.append("- All clear - no urgent items or pending actions")
+    lines.append("")
+
+    # Threads needing reply first (most actionable)
+    threads = snapshot["active_threads"]
+    reply_threads = [t for t in threads if t.get("needs_reply")]
+    other_threads = [t for t in threads if not t.get("needs_reply")]
+
+    if reply_threads:
+        lines.append(f"## Threads Needing Reply ({len(reply_threads)})")
+        for i, t in enumerate(reply_threads, 1):
+            urgency = (t.get("urgency") or "someday").upper()
+            status = t.get("status") or "active"
+            subject = t.get("subject") or "(no subject)"
+            summary = t.get("summary") or ""
+            participants = t.get("participants_json") or "[]"
+            last_activity = (t.get("last_activity_at") or "")[:10]  # Just date
+
+            lines.append(f"### {i}. [{urgency}] {subject}")
+            if status == "stale":
+                lines.append("- **Status**: STALE (no activity for 3+ days)")
+            if summary:
+                lines.append(f"- **Summary**: {summary}")
+            lines.append(f"- **Participants**: {participants}")
+            if last_activity:
+                lines.append(f"- **Last activity**: {last_activity}")
+            # Include link
+            link = t.get("latest_web_link")
+            if not link and t.get("latest_email_id"):
+                from urllib.parse import quote
+                link = f"https://outlook.office365.com/mail/inbox/id/{quote(t['latest_email_id'], safe='')}"
+            if link:
+                lines.append(f"- **Link**: {link}")
+            lines.append("")
+
+    if other_threads:
+        lines.append(f"## Other Active Threads ({len(other_threads)})")
+        for t in other_threads:
+            urgency = (t.get("urgency") or "someday").upper()
+            subject = t.get("subject") or "(no subject)"
+            summary = t.get("summary") or ""
+            lines.append(f"- [{urgency}] **{subject}**")
+            if summary:
+                lines.append(f"  - {summary[:150]}")
+        lines.append("")
+
+    # Pending decisions
+    decisions = snapshot["pending_decisions"]
+    if decisions:
+        lines.append(f"## Pending Decisions ({len(decisions)})")
+        for i, d in enumerate(decisions, 1):
+            urgency = (d.get("urgency") or "someday").upper()
+            question = d.get("question") or "(unknown question)"
+            requester = d.get("requester") or "unknown"
+            context = d.get("context") or ""
+            created = (d.get("created_at") or "")[:10]
+
+            lines.append(f"### {i}. [{urgency}] {question[:80]}")
+            lines.append(f"- **From**: {requester}")
+            if context:
+                lines.append(f"- **Context**: {context}")
+            if created:
+                lines.append(f"- **Received**: {created}")
+            lines.append("")
+    else:
+        lines.append("## Pending Decisions")
+        lines.append("No pending decisions.")
+        lines.append("")
+
+    # Open commitments
+    commitments = snapshot["open_commitments"]
+    if commitments:
+        lines.append(f"## Open Commitments ({len(commitments)})")
+        for c in commitments:
+            desc = c.get("description") or "(no description)"
+            to_whom = c.get("to_whom") or "unknown"
+            due = c.get("due_by")
+            due_str = f" **DUE: {due[:10]}**" if due else ""
+            lines.append(f"- {desc} (to {to_whom}){due_str}")
+        lines.append("")
+    else:
+        lines.append("## Open Commitments")
+        lines.append("No open commitments.")
+        lines.append("")
+
+    # Recent observations (condensed)
+    observations = snapshot["recent_observations"]
+    if observations:
+        lines.append(f"## Recent Observations ({len(observations)})")
+        for o in observations:
+            obs_type = o.get("type") or "context_learned"
+            content = o.get("content") or ""
+            if content:
+                lines.append(f"- [{obs_type}] {content[:100]}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
 @wm_app.command("snapshot")
 def wm_snapshot(
     limit_threads: int = typer.Option(10, help="Max active threads to include"),
     limit_decisions: int = typer.Option(5, help="Max pending decisions"),
     limit_observations: int = typer.Option(10, help="Max recent observations"),
-    human: bool = typer.Option(False, "--human", help="Human-readable output"),
+    human: bool = typer.Option(False, "--human", help="Human-readable terminal output"),
+    llm: bool = typer.Option(False, "--llm", help="LLM-optimized markdown output"),
 ):
     """
     Get a complete snapshot of current working memory state.
@@ -1647,7 +1763,9 @@ def wm_snapshot(
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
 
-    if human:
+    if llm:
+        typer.echo(_format_snapshot_llm(snapshot))
+    elif human:
         typer.echo("=== Working Memory Snapshot ===\n")
 
         typer.echo("SUMMARY:")
@@ -1664,8 +1782,8 @@ def wm_snapshot(
                 subj = (t["subject"] or "")[:50]
                 typer.echo(f"  [{urgency}] {subj}{reply}")
                 # Include link (use latest_web_link if available)
-                link = t.get('latest_web_link')
-                if not link and t.get('latest_email_id'):
+                link = dict(t).get('latest_web_link')
+                if not link and dict(t).get('latest_email_id'):
                     from urllib.parse import quote
                     link = f"https://outlook.office365.com/mail/inbox/id/{quote(t['latest_email_id'], safe='')}"
                 if link:
