@@ -5,6 +5,7 @@ openai
 msal
 pysqlite3
 markitdown[all]
+markdownify
 sentence-transformers
 aech-cli-msgraph
 aech-cli-documents

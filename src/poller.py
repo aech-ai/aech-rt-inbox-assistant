@@ -9,6 +9,7 @@ from typing import List, Dict, Any, Optional, Tuple
 import requests
 from aech_cli_msgraph.graph import GraphClient
 from .database import get_connection
+from .body_parser import parse_email_body
 
 logger = logging.getLogger(__name__)
 
@@ -191,8 +192,8 @@ class GraphPoller:
         conn.commit()
         conn.close()
 
-    def _get_message_body(self, message_id: str) -> Tuple[Optional[str], Optional[str]]:
-        """Fetch the full body of a message (text and HTML)."""
+    def _get_message_body(self, message_id: str) -> Optional[str]:
+        """Fetch the full HTML body of a message."""
         try:
             assert self.user_email is not None
             headers = self._graph_client._get_headers()
@@ -206,20 +207,16 @@ class GraphPoller:
                 content_type = body.get("contentType", "text")
 
                 if content_type == "html":
-                    from html import unescape
-                    import re
-                    text = re.sub(r'<[^>]+>', ' ', content)
-                    text = unescape(text)
-                    text = re.sub(r'\s+', ' ', text).strip()
-                    return (text, content)
+                    return content
                 else:
-                    return (content, None)
+                    # Plain text - wrap in simple HTML for consistent processing
+                    return f"<pre>{content}</pre>"
             else:
                 logger.warning(f"Failed to fetch body for {message_id}: {resp.status_code}")
-                return (None, None)
+                return None
         except Exception as e:
             logger.error(f"Error fetching message body: {e}")
-            return (None, None)
+            return None
 
     def _extract_message_data(self, msg: Dict[str, Any]) -> Dict[str, Any]:
         """Extract and normalize message data from Graph API response."""
@@ -259,11 +256,18 @@ class GraphPoller:
             "processed_at": processed_at,
         }
 
-    def _upsert_message(self, conn, msg_data: Dict[str, Any], body_text: Optional[str] = None, body_html: Optional[str] = None) -> None:
+    def _upsert_message(self, conn, msg_data: Dict[str, Any], body_html: Optional[str] = None) -> None:
         """Upsert a message into the database."""
+        # Parse HTML body into structured markdown
+        body_markdown = None
+        signature_block = None
         body_hash = None
-        if body_text:
-            body_hash = hashlib.sha256(body_text.encode()).hexdigest()[:16]
+
+        if body_html:
+            parsed = parse_email_body(body_html)
+            body_markdown = parsed.main_content
+            signature_block = parsed.signature_block
+            body_hash = hashlib.sha256(body_html.encode()).hexdigest()[:16]
 
         categories_value = msg_data.get("outlook_categories")
         processed_at_value = msg_data.get("processed_at")
@@ -273,10 +277,10 @@ class GraphPoller:
             INSERT INTO emails (
                 id, conversation_id, internet_message_id, subject, sender,
                 to_emails, cc_emails, received_at, body_preview, has_attachments,
-                is_read, etag, body_text, body_html, body_hash, web_link,
+                is_read, etag, body_html, body_markdown, signature_block, body_hash, web_link,
                 outlook_categories, processed_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 conversation_id=excluded.conversation_id,
                 internet_message_id=excluded.internet_message_id,
@@ -289,8 +293,9 @@ class GraphPoller:
                 has_attachments=excluded.has_attachments,
                 is_read=excluded.is_read,
                 etag=excluded.etag,
-                body_text=COALESCE(excluded.body_text, emails.body_text),
                 body_html=COALESCE(excluded.body_html, emails.body_html),
+                body_markdown=COALESCE(excluded.body_markdown, emails.body_markdown),
+                signature_block=COALESCE(excluded.signature_block, emails.signature_block),
                 body_hash=COALESCE(excluded.body_hash, emails.body_hash),
                 web_link=excluded.web_link,
                 outlook_categories=COALESCE(excluded.outlook_categories, emails.outlook_categories),
@@ -309,8 +314,9 @@ class GraphPoller:
                 msg_data["has_attachments"],
                 msg_data["is_read"],
                 msg_data["etag"],
-                body_text,
                 body_html,
+                body_markdown,
+                signature_block,
                 body_hash,
                 msg_data.get("web_link"),
                 categories_value or json.dumps([]),
@@ -369,11 +375,11 @@ class GraphPoller:
                 for msg in messages:
                     msg_data = self._extract_message_data(msg)
 
-                    body_text, body_html = None, None
+                    body_html = None
                     if fetch_body:
-                        body_text, body_html = self._get_message_body(msg["id"])
+                        body_html = self._get_message_body(msg["id"])
 
-                    self._upsert_message(conn, msg_data, body_text, body_html)
+                    self._upsert_message(conn, msg_data, body_html)
 
                     if msg.get("attachments"):
                         self._upsert_attachments_metadata(conn, msg["id"], msg["attachments"])
@@ -445,11 +451,11 @@ class GraphPoller:
                     else:
                         msg_data = self._extract_message_data(msg)
 
-                        body_text, body_html = None, None
+                        body_html = None
                         if fetch_body:
-                            body_text, body_html = self._get_message_body(msg["id"])
+                            body_html = self._get_message_body(msg["id"])
 
-                        self._upsert_message(conn, msg_data, body_text, body_html)
+                        self._upsert_message(conn, msg_data, body_html)
                         messages_updated += 1
 
                 conn.commit()

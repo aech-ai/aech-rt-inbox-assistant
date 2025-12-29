@@ -318,6 +318,37 @@ class EmailAnalysis(BaseModel):
         ),
     )
 
+    # Thread summary for conversation context
+    thread_summary: str | None = Field(
+        default=None,
+        description=(
+            "A 1-3 sentence summary of the conversation thread so far. "
+            "Provides context for understanding this email's place in the thread."
+        ),
+    )
+
+    # Sender signature extraction
+    signature_block: str | None = Field(
+        default=None,
+        description=(
+            "The sender's email signature if present. Include name, title, "
+            "company, phone, and other contact info. Return empty string if none."
+        ),
+    )
+
+    # Suggested action for inbox cleanup
+    suggested_action: str = Field(
+        default="keep",
+        description=(
+            "Suggested action: 'keep', 'archive', or 'delete'. "
+            "'delete' for: calendar accepts/declines/tentative, delivery receipts, "
+            "out-of-office auto-replies, unsubscribe confirmations, expired auth codes "
+            "(check expiry time in email). "
+            "'archive' for: read newsletters, FYI notifications. "
+            "'keep' for: real conversations, actionable items."
+        ),
+    )
+
 
 # === Aggregate Views ===
 

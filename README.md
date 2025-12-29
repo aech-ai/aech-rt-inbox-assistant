@@ -86,6 +86,27 @@ docker compose up -d
 DELEGATED_USER=user@example.com python -m src.main
 ```
 
+### Docker Tools
+
+One-shot tools are available via docker compose profiles:
+
+```bash
+# Test the full pipeline on 10 emails (non-destructive, uses temp DB)
+docker compose run --rm test-pipeline
+
+# Full backfill (sync, extract content, chunk, embed)
+docker compose run --rm backfill
+
+# Fresh start (delete DB and rebuild from scratch)
+docker compose run --rm pipeline
+
+# Interactive CLI shell
+docker compose run --rm cli aech-cli-inbox-assistant --help
+
+# GPU-accelerated backfill (for Nvidia hosts)
+docker compose run --rm backfill-gpu
+```
+
 ### Environment Variables
 
 | Variable | Default | Description |
@@ -117,11 +138,27 @@ aech-cli-inbox stats
 # View emails needing reply
 aech-cli-inbox reply-needed
 
+# Inbox cleanup (LLM-classified)
+aech-cli-inbox cleanup              # Show summary of delete/archive suggestions
+aech-cli-inbox cleanup delete       # Delete calendar accepts, delivery receipts, etc.
+aech-cli-inbox cleanup archive      # Archive read newsletters, FYI notifications
+aech-cli-inbox cleanup delete --dry-run  # Preview without executing
+
 # View/set preferences
 aech-cli-inbox prefs show
 aech-cli-inbox prefs set vip_senders '["ceo@company.com"]'
 aech-cli-inbox prefs set followup_n_days 3
 ```
+
+### Inbox Cleanup
+
+The LLM automatically classifies emails for cleanup during processing:
+
+| Action | Email Types |
+|--------|-------------|
+| `delete` | Calendar accepts/declines/tentative, delivery receipts, read receipts, out-of-office auto-replies, unsubscribe confirmations, expired auth codes |
+| `archive` | Read newsletters, FYI-only notifications, automated reports |
+| `keep` | Real conversations, actionable items, unexpired auth codes |
 
 ## Calendar Integration
 
@@ -259,6 +296,32 @@ The memory engine generates nudges for:
 - Overdue commitments (past due date)
 - Stale urgent threads (no activity for 24h)
 - Pending decisions (waiting > 3 days)
+
+## Content Processing Pipeline
+
+Emails are processed through a multi-stage pipeline:
+
+1. **HTML → Markdown** (`body_parser.py`): Converts HTML email bodies to semantic markdown, stripping CSS, comments, and tracking pixels
+2. **LLM Extraction** (`updater.py`): Extracts structured content:
+   - `thread_summary`: 1-3 sentence conversation summary
+   - `signature_block`: Sender's contact info from signature
+   - `extracted_new_content`: Just the new content (no quoted replies)
+   - `suggested_action`: Cleanup classification (keep/archive/delete)
+3. **Chunking** (`chunker.py`): Splits content into searchable chunks
+4. **Embedding** (`embeddings.py`): Generates vector embeddings (bge-m3) for semantic search
+
+### Search Modes
+
+```bash
+# Full-text search (FTS5 with BM25 ranking)
+aech-cli-inbox search "contract" --mode fts
+
+# Semantic similarity search (vector embeddings)
+aech-cli-inbox search "legal agreement terms" --mode vector
+
+# Hybrid search (RRF fusion of FTS + vector)
+aech-cli-inbox search "contract renewal" --mode hybrid
+```
 
 ## Data Storage
 

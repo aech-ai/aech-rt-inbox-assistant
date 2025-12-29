@@ -298,14 +298,14 @@ def process_email_for_indexing(email_id: str) -> Optional[ProcessedEmail]:
     """
     Process an email for search indexing.
 
-    Requires LLM-extracted content (extracted_body).
-    Returns None if email not found or not yet processed by LLM extraction.
+    Requires body_markdown (parsed from HTML during ingestion).
+    Returns None if email not found or has no body_markdown.
     """
     conn = get_connection()
     row = conn.execute(
         """
         SELECT id, conversation_id, subject, sender, received_at,
-               extracted_body, body_text, body_preview
+               body_markdown, body_preview
         FROM emails WHERE id = ?
         """,
         (email_id,),
@@ -315,17 +315,16 @@ def process_email_for_indexing(email_id: str) -> Optional[ProcessedEmail]:
     if not row:
         return None
 
-    # Require LLM-extracted content - no regex fallback
-    if not row["extracted_body"]:
-        logger.debug(f"Email {email_id} has no extracted_body - skipping (run extract-content first)")
+    # Use body_markdown (parsed from HTML)
+    clean_body = row["body_markdown"]
+    if not clean_body:
+        logger.debug(f"Email {email_id} has no body_markdown - skipping")
         return None
 
-    clean_body = row["extracted_body"]
-    original_body = row["body_text"] or row["body_preview"] or ""
     subject = row["subject"] or ""
 
     if len(clean_body) < MIN_CHUNK_LENGTH:
-        logger.debug(f"Email {email_id} has insufficient extracted content")
+        logger.debug(f"Email {email_id} has insufficient content")
         return None
 
     return ProcessedEmail(
@@ -335,10 +334,10 @@ def process_email_for_indexing(email_id: str) -> Optional[ProcessedEmail]:
         sender=row["sender"],
         received_at=row["received_at"],
         clean_body=clean_body,
-        original_length=len(original_body),
+        original_length=len(row["body_preview"] or ""),
         clean_length=len(clean_body),
-        is_forward=False,  # LLM extracts only new content
-        virtual_emails=[],  # LLM handles forwards by extracting new content only
+        is_forward=False,
+        virtual_emails=[],
     )
 
 
@@ -514,11 +513,11 @@ def process_unindexed_emails(limit: int = 100) -> Dict[str, int]:
     """
     conn = get_connection()
 
-    # Find emails with body text that don't have chunks yet
+    # Find emails with body_markdown that don't have chunks yet
     rows = conn.execute(
         """
         SELECT e.id FROM emails e
-        WHERE (e.body_text IS NOT NULL OR e.body_preview IS NOT NULL)
+        WHERE e.body_markdown IS NOT NULL
           AND NOT EXISTS (
               SELECT 1 FROM chunks c WHERE c.source_type = 'email' AND c.source_id = e.id
           )

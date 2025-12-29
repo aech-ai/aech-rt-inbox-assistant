@@ -2724,6 +2724,235 @@ def wm_projects(
         typer.echo(json.dumps(results, default=str))
 
 
+@app.command()
+def convert_bodies(
+    limit: int = typer.Option(0, help="Max emails to process (0 = all)"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be processed"),
+):
+    """
+    Backfill body_markdown and signature_block for existing emails.
+
+    Processes emails that have body_html but no body_markdown.
+    """
+    from src.body_parser import parse_email_body
+
+    conn = connect_db()
+    cursor = conn.cursor()
+
+    # Find emails needing conversion
+    query = """
+        SELECT id, subject, body_html
+        FROM emails
+        WHERE body_html IS NOT NULL AND body_markdown IS NULL
+    """
+    if limit > 0:
+        query += f" LIMIT {limit}"
+
+    cursor.execute(query)
+    rows = cursor.fetchall()
+
+    if not rows:
+        typer.echo("No emails need body conversion.")
+        return
+
+    typer.echo(f"Found {len(rows)} emails to convert.")
+
+    if dry_run:
+        for row in rows[:10]:
+            typer.echo(f"  Would convert: {row['subject'][:60]}...")
+        if len(rows) > 10:
+            typer.echo(f"  ... and {len(rows) - 10} more")
+        return
+
+    converted = 0
+    errors = 0
+
+    for row in rows:
+        try:
+            parsed = parse_email_body(row["body_html"])
+            cursor.execute(
+                """
+                UPDATE emails
+                SET body_markdown = ?, signature_block = ?
+                WHERE id = ?
+                """,
+                (parsed.main_content, parsed.signature_block, row["id"]),
+            )
+            converted += 1
+
+            if converted % 100 == 0:
+                conn.commit()
+                typer.echo(f"  Converted {converted} emails...")
+        except Exception as e:
+            errors += 1
+            logger.error(f"Error converting {row['id']}: {e}")
+
+    conn.commit()
+    conn.close()
+
+    typer.echo(f"Done: {converted} converted, {errors} errors.")
+
+
+@app.command("cleanup")
+def cleanup_inbox(
+    action: str = typer.Argument(
+        None,
+        help="Action to take: 'delete' (move to Deleted Items), 'archive', or omit to just show summary"
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be done without making changes"),
+    limit: int = typer.Option(100, "--limit", help="Maximum number of emails to process"),
+    concurrency: int = typer.Option(10, "--concurrency", help="Number of parallel API calls"),
+    human: bool = typer.Option(False, "--human", help="Human-readable output instead of JSON"),
+):
+    """Clean up inbox based on LLM-suggested actions.
+
+    After running 'extract-content', emails are classified with suggested_action:
+    - 'delete': calendar accepts, delivery receipts, expired auth codes
+    - 'archive': read newsletters, FYI notifications
+    - 'keep': real conversations, actionable items
+
+    Examples:
+        aech-cli-inbox-assistant cleanup --human           # Show summary
+        aech-cli-inbox-assistant cleanup delete --dry-run  # Preview deletions
+        aech-cli-inbox-assistant cleanup delete            # Move to Deleted Items
+    """
+    import subprocess
+    import concurrent.futures
+
+    conn = connect_db()
+    cursor = conn.cursor()
+
+    # Get summary by suggested_action
+    cursor.execute("""
+        SELECT suggested_action, COUNT(*) as count
+        FROM emails
+        WHERE suggested_action IS NOT NULL
+        GROUP BY suggested_action
+    """)
+    summary = {row["suggested_action"]: row["count"] for row in cursor.fetchall()}
+
+    if action is None:
+        # Just show summary
+        if human:
+            typer.echo("=== Inbox Cleanup Summary ===")
+            typer.echo(f"  Keep:    {summary.get('keep', 0):,} emails")
+            typer.echo(f"  Archive: {summary.get('archive', 0):,} emails")
+            typer.echo(f"  Delete:  {summary.get('delete', 0):,} emails")
+            typer.echo("")
+            typer.echo("To clean up, run extract-content first, then:")
+            typer.echo("  aech-cli-inbox-assistant cleanup delete --dry-run")
+        else:
+            typer.echo(json.dumps(summary))
+        conn.close()
+        return
+
+    if action not in ("delete", "archive"):
+        typer.echo(f"Error: action must be 'delete' or 'archive', got '{action}'", err=True)
+        raise typer.Exit(1)
+
+    # Get emails to process
+    cursor.execute("""
+        SELECT id, subject, sender, received_at
+        FROM emails
+        WHERE suggested_action = ?
+        ORDER BY received_at DESC
+        LIMIT ?
+    """, (action, limit))
+    rows = cursor.fetchall()
+    conn.close()
+
+    if not rows:
+        if human:
+            typer.echo(f"No emails with suggested_action='{action}' found.")
+            typer.echo("Run 'extract-content' first to classify emails.")
+        else:
+            typer.echo(json.dumps({"action": action, "found": 0, "processed": 0}))
+        return
+
+    if human:
+        typer.echo(f"Found {len(rows)} emails to {action}")
+
+    if dry_run:
+        if human:
+            typer.echo(f"\n[DRY RUN] Would {action} {len(rows)} emails:")
+            for row in rows[:20]:
+                typer.echo(f"  - {row['subject'][:60]}...")
+                typer.echo(f"    From: {row['sender']}")
+            if len(rows) > 20:
+                typer.echo(f"  ... and {len(rows) - 20} more")
+        else:
+            typer.echo(json.dumps({
+                "dry_run": True,
+                "action": action,
+                "found": len(rows),
+                "emails": [dict(r) for r in rows[:20]]
+            }, default=str))
+        return
+
+    # Get user email for Graph API
+    user_email = os.environ.get("DELEGATED_USER")
+    if not user_email:
+        typer.echo("Error: DELEGATED_USER environment variable not set", err=True)
+        raise typer.Exit(1)
+
+    # Determine destination folder
+    dest_folder = "deleteditems" if action == "delete" else "archive"
+
+    results = {"processed": 0, "failed": 0, "errors": []}
+
+    def move_email(email_id: str, subject: str) -> bool:
+        try:
+            cmd = [
+                "aech-cli-msgraph", "move-email",
+                email_id,
+                dest_folder,
+                "--user", user_email,
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            return result.returncode == 0
+        except Exception as e:
+            results["errors"].append(f"{subject[:40]}: {e}")
+            return False
+
+    if human:
+        typer.echo(f"\nMoving emails to {dest_folder}...")
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:
+        futures = {
+            executor.submit(move_email, row["id"], row["subject"]): row
+            for row in rows
+        }
+
+        for future in concurrent.futures.as_completed(futures):
+            row = futures[future]
+            if future.result():
+                results["processed"] += 1
+                # Update local DB to reflect the move
+                conn = connect_db()
+                if action == "delete":
+                    conn.execute("DELETE FROM emails WHERE id = ?", (row["id"],))
+                else:
+                    conn.execute("UPDATE emails SET suggested_action = 'archived' WHERE id = ?", (row["id"],))
+                conn.commit()
+                conn.close()
+            else:
+                results["failed"] += 1
+
+            if human and (results["processed"] + results["failed"]) % 25 == 0:
+                typer.echo(f"  Progress: {results['processed'] + results['failed']}/{len(rows)}")
+
+    if human:
+        typer.echo(f"\nResults:")
+        typer.echo(f"  Processed: {results['processed']}")
+        typer.echo(f"  Failed:    {results['failed']}")
+        if results["errors"]:
+            typer.echo(f"\nFirst few errors:")
+            for err in results["errors"][:5]:
+                typer.echo(f"  - {err}")
+    else:
+        typer.echo(json.dumps(results, default=str))
+
+
 def run():
     import sys
     from pathlib import Path

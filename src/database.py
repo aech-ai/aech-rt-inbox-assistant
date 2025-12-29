@@ -79,8 +79,10 @@ def init_db(db_path: Optional[Path] = None) -> None:
         cc_emails TEXT NOT NULL DEFAULT '[]', -- JSON array
         received_at DATETIME NOT NULL,
         body_preview TEXT,
-        body_text TEXT,
         body_html TEXT,
+        body_markdown TEXT,        -- Semantic markdown main content
+        signature_block TEXT,      -- Preserved sender signature
+        thread_summary TEXT,       -- LLM-generated thread summary
         body_hash TEXT,
         has_attachments BOOLEAN DEFAULT 0,
         is_read BOOLEAN DEFAULT 0,
@@ -89,6 +91,7 @@ def init_db(db_path: Optional[Path] = None) -> None:
         -- Categories mode fields
         outlook_categories TEXT NOT NULL DEFAULT '[]', -- JSON array of applied Outlook categories
         urgency TEXT DEFAULT 'someday' CHECK(urgency IN ('immediate', 'today', 'this_week', 'someday')),
+        suggested_action TEXT DEFAULT 'keep' CHECK(suggested_action IN ('keep', 'archive', 'delete')),
         processed_at DATETIME,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
@@ -99,9 +102,6 @@ def init_db(db_path: Optional[Path] = None) -> None:
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_emails_received ON emails(received_at)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_emails_urgency ON emails(urgency)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_emails_processed ON emails(processed_at)")
-
-    # Migration: Add extracted_body column for LLM-extracted clean content
-    _ensure_columns(cursor, "emails", {"extracted_body": "TEXT"})
 
     # Triage Log table - categories mode
     cursor.execute("""
@@ -404,45 +404,23 @@ def _ensure_fts(cursor: sqlite3.Cursor) -> None:
     Create FTS5 indexes over email subject/body and chunks for search.
     This is idempotent and safe to call at startup.
     """
-    # Check current emails_fts schema to see if we need to migrate
-    fts_info = cursor.execute(
-        "SELECT sql FROM sqlite_master WHERE type='table' AND name='emails_fts'"
-    ).fetchone()
-
-    # If old FTS exists with body_preview, drop and recreate with body_text
-    if fts_info and "body_preview" in (fts_info[0] or ""):
-        cursor.execute("DROP TRIGGER IF EXISTS emails_ai_fts")
-        cursor.execute("DROP TRIGGER IF EXISTS emails_ad_fts")
-        cursor.execute("DROP TRIGGER IF EXISTS emails_au_fts")
-        cursor.execute("DROP TABLE IF EXISTS emails_fts")
-        fts_info = None
-
-    existed = fts_info is not None
-
-    # Create FTS5 index for emails with full body_text
+    # Create FTS5 index for emails
     cursor.execute("""
     CREATE VIRTUAL TABLE IF NOT EXISTS emails_fts
     USING fts5(
         id UNINDEXED,
         subject,
-        body_text,
+        body_markdown,
         sender,
         tokenize = 'porter'
     )
     """)
 
-    if not existed:
-        # Populate from existing data - use body_text if available, fallback to body_preview
-        cursor.execute("""
-            INSERT INTO emails_fts(id, subject, body_text, sender)
-            SELECT id, subject, COALESCE(body_text, body_preview), sender FROM emails
-        """)
-
     cursor.execute("""
     CREATE TRIGGER IF NOT EXISTS emails_ai_fts
     AFTER INSERT ON emails BEGIN
-        INSERT OR REPLACE INTO emails_fts(id, subject, body_text, sender)
-        VALUES (new.id, new.subject, COALESCE(new.body_text, new.body_preview), new.sender);
+        INSERT OR REPLACE INTO emails_fts(id, subject, body_markdown, sender)
+        VALUES (new.id, new.subject, COALESCE(new.body_markdown, new.body_preview), new.sender);
     END;
     """)
 
@@ -457,8 +435,8 @@ def _ensure_fts(cursor: sqlite3.Cursor) -> None:
     CREATE TRIGGER IF NOT EXISTS emails_au_fts
     AFTER UPDATE ON emails BEGIN
         DELETE FROM emails_fts WHERE id = old.id;
-        INSERT OR REPLACE INTO emails_fts(id, subject, body_text, sender)
-        VALUES (new.id, new.subject, COALESCE(new.body_text, new.body_preview), new.sender);
+        INSERT OR REPLACE INTO emails_fts(id, subject, body_markdown, sender)
+        VALUES (new.id, new.subject, COALESCE(new.body_markdown, new.body_preview), new.sender);
     END;
     """)
 

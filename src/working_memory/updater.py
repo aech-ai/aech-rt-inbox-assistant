@@ -81,6 +81,28 @@ DO NOT extract as projects:
   - "Sent from my iPhone/Android" footers
   - Forwarded message headers (From:, To:, Subject:, Date: blocks)
   Return ONLY the fresh content the sender actually wrote. This is used for search indexing.
+
+## Thread Summary
+- thread_summary: Generate a 1-3 sentence summary of the conversation thread.
+  This should capture:
+  - What the thread is about
+  - Key participants and their roles
+  - Current state (waiting on someone, decision made, etc.)
+  Keep it concise - this provides context for understanding individual emails.
+
+## Signature Extraction
+- signature_block: Extract the sender's email signature if present.
+  Include: name, job title, company, phone numbers, addresses, social links.
+  Return empty string if no signature is found.
+  This is valuable context about who the sender is.
+
+## Inbox Cleanup Action
+- suggested_action: Recommend 'keep', 'archive', or 'delete'.
+  DELETE: calendar accepts/declines/tentative, delivery receipts, read receipts,
+          out-of-office auto-replies, unsubscribe confirmations,
+          expired auth/verification codes (check expiry time vs current time).
+  ARCHIVE: newsletters already read, FYI-only notifications, automated reports.
+  KEEP: real conversations, actionable items, unexpired auth codes.
 """
 
     return Agent(
@@ -179,12 +201,17 @@ class WorkingMemoryUpdater:
             # Update projects
             self._update_projects(conn, email, analysis)
 
-            # Store extracted content for search indexing
-            if analysis.extracted_new_content:
-                conn.execute(
-                    "UPDATE emails SET extracted_body = ? WHERE id = ?",
-                    (analysis.extracted_new_content, email.get("id")),
-                )
+            # Store LLM-extracted content
+            conn.execute(
+                """UPDATE emails
+                   SET body_markdown = COALESCE(?, body_markdown),
+                       thread_summary = ?,
+                       signature_block = COALESCE(?, signature_block),
+                       suggested_action = ?
+                   WHERE id = ?""",
+                (analysis.extracted_new_content, analysis.thread_summary,
+                 analysis.signature_block, analysis.suggested_action, email.get("id")),
+            )
 
             conn.commit()
             logger.debug(
