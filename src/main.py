@@ -41,15 +41,17 @@ async def process_pending_content():
         conn.close()
 
         if emails_needing_body:
+            from src.body_parser import html_to_markdown
             fetched = 0
             for row in emails_needing_body:
                 email_id = row["id"]
-                body_text, body_html = poller._get_message_body(email_id)
-                if body_text:
+                body_html = poller._get_message_body(email_id)
+                if body_html:
+                    body_markdown = html_to_markdown(body_html)
                     conn = get_connection()
                     conn.execute(
                         "UPDATE emails SET body_markdown = ?, body_html = ? WHERE id = ?",
-                        (body_text, body_html, email_id)
+                        (body_markdown, body_html, email_id)
                     )
                     conn.commit()
                     conn.close()

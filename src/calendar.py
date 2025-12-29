@@ -184,10 +184,14 @@ class CalendarClient:
         if end.tzinfo is None:
             end = end.replace(tzinfo=dt_timezone.utc)
 
+        # Use Z suffix for UTC to avoid URL encoding issues with +00:00
+        start_str = start.strftime("%Y-%m-%dT%H:%M:%SZ") if start.tzinfo == dt_timezone.utc else start.isoformat()
+        end_str = end.strftime("%Y-%m-%dT%H:%M:%SZ") if end.tzinfo == dt_timezone.utc else end.isoformat()
+
         url = (
             f"{base_path}/calendarView"
-            f"?startDateTime={start.isoformat()}"
-            f"&endDateTime={end.isoformat()}"
+            f"?startDateTime={start_str}"
+            f"&endDateTime={end_str}"
             f"&$top={max_results}"
             f"&$orderby=start/dateTime"
             f"&$select=id,subject,start,end,isAllDay,location,organizer,attendees,"
