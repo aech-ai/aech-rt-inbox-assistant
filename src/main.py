@@ -81,22 +81,28 @@ async def process_pending_content():
         if pending_emails:
             user_email = os.environ.get("DELEGATED_USER", "")
             updater = WorkingMemoryUpdater(user_email)
-            extracted = 0
-            for row in pending_emails:
-                email = dict(row)
-                try:
-                    await updater.process_email(email)
-                    # Mark as processed by setting extracted_body
-                    conn = get_connection()
-                    conn.execute(
-                        "UPDATE emails SET extracted_body = COALESCE(body_markdown, body_preview, '') WHERE id = ?",
-                        (email["id"],)
-                    )
-                    conn.commit()
-                    conn.close()
-                    extracted += 1
-                except Exception as e:
-                    logger.warning(f"Content extraction failed for {email['id']}: {e}")
+            wm_concurrency = 10
+            semaphore = asyncio.Semaphore(wm_concurrency)
+
+            async def process_one(email: dict) -> bool:
+                async with semaphore:
+                    try:
+                        await updater.process_email(email)
+                        conn = get_connection()
+                        conn.execute(
+                            "UPDATE emails SET extracted_body = COALESCE(body_markdown, body_preview, '') WHERE id = ?",
+                            (email["id"],)
+                        )
+                        conn.commit()
+                        conn.close()
+                        return True
+                    except Exception as e:
+                        logger.warning(f"Content extraction failed for {email['id']}: {e}")
+                        return False
+
+            logger.info(f"Processing {len(pending_emails)} emails for working memory (concurrency={wm_concurrency})")
+            results = await asyncio.gather(*[process_one(dict(row)) for row in pending_emails])
+            extracted = sum(1 for r in results if r)
             if extracted > 0:
                 logger.info(f"Extracted content from {extracted} emails")
 
