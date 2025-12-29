@@ -30,7 +30,7 @@ def get_db_path() -> Path:
     configured = os.environ.get("INBOX_DB_PATH")
     if configured:
         return Path(configured).expanduser().resolve()
-    return get_state_dir() / "inbox.sqlite"
+    return get_state_dir() / "assistant.sqlite"
 
 
 def get_preferences_path() -> Path:

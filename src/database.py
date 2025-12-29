@@ -52,11 +52,11 @@ def get_db_path() -> Path:
     db_path_str = os.environ.get("INBOX_DB_PATH")
     if db_path_str:
         return Path(db_path_str).expanduser().resolve()
-    return get_state_dir() / "inbox.sqlite"
+    return get_state_dir() / "assistant.sqlite"
 
 
 def init_db(db_path: Optional[Path] = None) -> None:
-    """Initialize (or migrate) the database schema."""
+    """Initialize the database schema."""
     db_path = (db_path or get_db_path()).expanduser().resolve()
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -150,8 +150,8 @@ def init_db(db_path: Optional[Path] = None) -> None:
     )
     """)
 
-    # NOTE: Calendar operations use direct Microsoft Graph API calls (no local sync).
-    # See src/calendar.py for CalendarClient implementation.
+    # NOTE: Calendar events are synced to calendar_events table by RT service.
+    # See src/calendar_sync.py for sync implementation.
 
     # Internal work queue
     cursor.execute("""
@@ -241,7 +241,7 @@ def init_db(db_path: Optional[Path] = None) -> None:
         conversation_id TEXT NOT NULL UNIQUE,
         subject TEXT,
         participants_json TEXT NOT NULL DEFAULT '[]',
-        status TEXT DEFAULT 'active' CHECK(status IN ('active', 'resolved', 'archived')),
+        status TEXT DEFAULT 'active' CHECK(status IN ('active', 'awaiting_reply', 'awaiting_action', 'stale', 'resolved', 'archived')),
         urgency TEXT DEFAULT 'this_week' CHECK(urgency IN ('immediate', 'today', 'this_week', 'someday')),
         started_at DATETIME,
         last_activity_at DATETIME,
@@ -375,6 +375,53 @@ def init_db(db_path: Optional[Path] = None) -> None:
     """)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_wm_commitments_completed ON wm_commitments(is_completed)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_wm_commitments_due ON wm_commitments(due_by)")
+
+    # === Calendar Events Table ===
+    # Synced from Microsoft Graph API for offline access by CLI
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS calendar_events (
+        id TEXT PRIMARY KEY,
+        subject TEXT,
+        start_at TEXT,
+        end_at TEXT,
+        is_all_day INTEGER DEFAULT 0,
+        location TEXT,
+        is_online_meeting INTEGER DEFAULT 0,
+        online_meeting_url TEXT,
+        organizer_email TEXT,
+        organizer_name TEXT,
+        attendees_json TEXT NOT NULL DEFAULT '[]',
+        body_preview TEXT,
+        response_status TEXT,
+        sensitivity TEXT,
+        show_as TEXT,
+        importance TEXT,
+        is_cancelled INTEGER DEFAULT 0,
+        web_link TEXT,
+        last_modified_at TEXT,
+        synced_at TEXT
+    )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_calendar_events_start ON calendar_events(start_at)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_calendar_events_end ON calendar_events(end_at)")
+
+    # === Actions Table ===
+    # Queue for CLI-initiated actions executed by RT service
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS actions (
+        id TEXT PRIMARY KEY,
+        item_type TEXT NOT NULL,
+        item_id TEXT,
+        action_type TEXT NOT NULL,
+        payload_json TEXT,
+        status TEXT NOT NULL DEFAULT 'proposed',
+        proposed_at TEXT,
+        executed_at TEXT,
+        result_json TEXT,
+        error TEXT
+    )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_actions_status ON actions(status)")
 
     conn.commit()
     _ensure_fts(cursor)

@@ -7,7 +7,7 @@ A real-time email management capability for Agent Aech. This service runs as a b
 The system has two components:
 
 1. **RT Service** (`src/main.py`) - Background service that polls M365, runs AI categorization, and emits triggers
-2. **CLI** (`aech-cli-inbox`) - Public interface for querying state, installed in Agent Aech's worker environment
+2. **CLI** (`aech-cli-inbox-assistant`) - Public interface for querying state, installed in Agent Aech's worker environment
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -118,36 +118,36 @@ docker compose run --rm backfill-gpu
 | `CLEANUP_STRATEGY` | `medium` | `low`, `medium`, or `aggressive` |
 | `FOLLOWUP_N_DAYS` | `2` | Days before follow-up reminder |
 
-## CLI Usage (aech-cli-inbox)
+## CLI Usage (aech-cli-inbox-assistant)
 
 The CLI is the public interface for querying inbox state:
 
 ```bash
 # List recent emails
-aech-cli-inbox list --limit 20
+aech-cli-inbox-assistant list --limit 20
 
 # Search emails (FTS, vector, or hybrid)
-aech-cli-inbox search "contract renewal" --mode hybrid
+aech-cli-inbox-assistant search "contract renewal" --mode hybrid
 
 # Check sync status
-aech-cli-inbox sync-status
+aech-cli-inbox-assistant sync-status
 
 # View corpus statistics
-aech-cli-inbox stats
+aech-cli-inbox-assistant stats
 
 # View emails needing reply
-aech-cli-inbox reply-needed
+aech-cli-inbox-assistant reply-needed
 
 # Inbox cleanup (LLM-classified)
-aech-cli-inbox cleanup              # Show summary of delete/archive suggestions
-aech-cli-inbox cleanup delete       # Delete calendar accepts, delivery receipts, etc.
-aech-cli-inbox cleanup archive      # Archive read newsletters, FYI notifications
-aech-cli-inbox cleanup delete --dry-run  # Preview without executing
+aech-cli-inbox-assistant cleanup              # Show summary of delete/archive suggestions
+aech-cli-inbox-assistant cleanup delete       # Delete calendar accepts, delivery receipts, etc.
+aech-cli-inbox-assistant cleanup archive      # Archive read newsletters, FYI notifications
+aech-cli-inbox-assistant cleanup delete --dry-run  # Preview without executing
 
 # View/set preferences
-aech-cli-inbox prefs show
-aech-cli-inbox prefs set vip_senders '["ceo@company.com"]'
-aech-cli-inbox prefs set followup_n_days 3
+aech-cli-inbox-assistant prefs show
+aech-cli-inbox-assistant prefs set vip_senders '["ceo@company.com"]'
+aech-cli-inbox-assistant prefs set followup_n_days 3
 ```
 
 ### Inbox Cleanup
@@ -166,19 +166,19 @@ Direct Microsoft Graph API integration for calendar operations (no local sync - 
 
 ```bash
 # View schedule
-aech-cli-inbox calendar today --human
-aech-cli-inbox calendar upcoming --hours 48
-aech-cli-inbox calendar view --start 2025-01-20 --end 2025-01-27
+aech-cli-inbox-assistant calendar today --human
+aech-cli-inbox-assistant calendar upcoming --hours 48
+aech-cli-inbox-assistant calendar view --start 2025-01-20 --end 2025-01-27
 
 # Check availability
-aech-cli-inbox calendar free-busy --start 2025-01-20 --end 2025-01-24
-aech-cli-inbox calendar find-times --attendees "jane@example.com" --duration 60
+aech-cli-inbox-assistant calendar free-busy --start 2025-01-20 --end 2025-01-24
+aech-cli-inbox-assistant calendar find-times --attendees "jane@example.com" --duration 60
 
 # Create events (no invites sent by default)
-aech-cli-inbox calendar create-event --subject "Team Sync" --start 2025-01-20T14:00:00 --online
+aech-cli-inbox-assistant calendar create-event --subject "Team Sync" --start 2025-01-20T14:00:00 --online
 
 # Working hours
-aech-cli-inbox calendar working-hours
+aech-cli-inbox-assistant calendar working-hours
 ```
 
 ## Meeting Prep
@@ -187,16 +187,16 @@ Executive assistant features for meeting preparation:
 
 ```bash
 # Daily briefing with schedule overview and alerts
-aech-cli-inbox calendar briefing --human
+aech-cli-inbox-assistant calendar briefing --human
 
 # Prep for next meeting needing attention
-aech-cli-inbox calendar prep --next --human
+aech-cli-inbox-assistant calendar prep --next --human
 
 # Prep for specific event
-aech-cli-inbox calendar prep --event-id AAMkAG...
+aech-cli-inbox-assistant calendar prep --event-id AAMkAG...
 
 # View/configure prep rules
-aech-cli-inbox calendar prep-config --human
+aech-cli-inbox-assistant calendar prep-config --human
 ```
 
 ### Meeting Prep Features
@@ -257,27 +257,27 @@ When the user is CC'd on an email (not in TO), the EA:
 
 ```bash
 # Complete state snapshot
-aech-cli-inbox wm snapshot --human
+aech-cli-inbox-assistant wm snapshot --human
 
 # Query active threads
-aech-cli-inbox wm threads --needs-reply
-aech-cli-inbox wm threads --urgency today
+aech-cli-inbox-assistant wm threads --needs-reply
+aech-cli-inbox-assistant wm threads --urgency today
 
 # Query contacts
-aech-cli-inbox wm contacts --external
-aech-cli-inbox wm contacts --search "acme"
+aech-cli-inbox-assistant wm contacts --external
+aech-cli-inbox-assistant wm contacts --search "acme"
 
 # Pending decisions
-aech-cli-inbox wm decisions
+aech-cli-inbox-assistant wm decisions
 
 # Open commitments
-aech-cli-inbox wm commitments --overdue
+aech-cli-inbox-assistant wm commitments --overdue
 
 # Passive observations
-aech-cli-inbox wm observations --days 7
+aech-cli-inbox-assistant wm observations --days 7
 
 # Inferred projects
-aech-cli-inbox wm projects
+aech-cli-inbox-assistant wm projects
 ```
 
 ### Configuration
@@ -314,13 +314,13 @@ Emails are processed through a multi-stage pipeline:
 
 ```bash
 # Full-text search (FTS5 with BM25 ranking)
-aech-cli-inbox search "contract" --mode fts
+aech-cli-inbox-assistant search "contract" --mode fts
 
 # Semantic similarity search (vector embeddings)
-aech-cli-inbox search "legal agreement terms" --mode vector
+aech-cli-inbox-assistant search "legal agreement terms" --mode vector
 
 # Hybrid search (RRF fusion of FTS + vector)
-aech-cli-inbox search "contract renewal" --mode hybrid
+aech-cli-inbox-assistant search "contract renewal" --mode hybrid
 ```
 
 ## Data Storage

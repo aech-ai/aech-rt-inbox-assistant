@@ -12,6 +12,8 @@ from src.working_memory.updater import WorkingMemoryUpdater
 from src.attachments import AttachmentProcessor
 from src.chunker import process_unindexed_emails, process_unindexed_attachments
 from src.embeddings import embed_pending_chunks
+from src.calendar_sync import sync_calendar, needs_sync
+from src.action_executor import poll_and_execute_actions, has_pending_actions
 
 logging.basicConfig(
     level=logging.INFO,
@@ -33,7 +35,7 @@ async def process_pending_content():
         conn = get_connection()
         emails_needing_body = conn.execute("""
             SELECT id FROM emails
-            WHERE (body_text IS NULL OR body_text = '')
+            WHERE (body_markdown IS NULL OR body_markdown = '')
             LIMIT 20
         """).fetchall()
         conn.close()
@@ -46,7 +48,7 @@ async def process_pending_content():
                 if body_text:
                     conn = get_connection()
                     conn.execute(
-                        "UPDATE emails SET body_text = ?, body_html = ? WHERE id = ?",
+                        "UPDATE emails SET body_markdown = ?, body_html = ? WHERE id = ?",
                         (body_text, body_html, email_id)
                     )
                     conn.commit()
@@ -65,10 +67,10 @@ async def process_pending_content():
         conn = get_connection()
         pending_emails = conn.execute("""
             SELECT id, conversation_id, subject, sender, received_at,
-                   body_text, body_preview, to_emails, cc_emails
+                   body_markdown, body_preview, to_emails, cc_emails
             FROM emails
             WHERE extracted_body IS NULL
-              AND (body_text IS NOT NULL OR body_preview IS NOT NULL)
+              AND (body_markdown IS NOT NULL OR body_preview IS NOT NULL)
             LIMIT 50
         """).fetchall()
         conn.close()
@@ -115,11 +117,15 @@ def service_loop(user_email: str, poll_interval: int, run_once: bool, concurrenc
     wm_engine_interval = int(os.environ.get("WM_ENGINE_INTERVAL", 300))  # Default 5 minutes
     last_wm_engine_run = 0.0
 
+    # Calendar sync configuration
+    calendar_sync_interval = int(os.environ.get("CALENDAR_SYNC_INTERVAL", 300))  # Default 5 minutes
+
     logger.info("Starting Inbox Assistant Service")
     logger.info(f"User: {user_email}")
     logger.info(f"Poll Interval: {poll_interval}s")
     logger.info(f"Concurrency: {concurrency}")
     logger.info(f"Working Memory Engine Interval: {wm_engine_interval}s")
+    logger.info(f"Calendar Sync Interval: {calendar_sync_interval}s")
     if backfill:
         logger.info("Backfill mode: triggers suppressed (no Teams notifications)")
 
@@ -139,6 +145,22 @@ def service_loop(user_email: str, poll_interval: int, run_once: bool, concurrenc
                     last_wm_engine_run = now
                 except Exception as wm_err:
                     logger.warning(f"Working memory engine error: {wm_err}")
+
+            # Sync calendar periodically
+            if needs_sync(calendar_sync_interval):
+                try:
+                    sync_calendar()
+                except Exception as cal_err:
+                    logger.warning(f"Calendar sync error: {cal_err}")
+
+            # Execute pending actions (from CLI)
+            if has_pending_actions():
+                try:
+                    results = poll_and_execute_actions()
+                    if results["executed"] > 0 or results["failed"] > 0:
+                        logger.info(f"Actions: {results['executed']} executed, {results['failed']} failed")
+                except Exception as action_err:
+                    logger.warning(f"Action executor error: {action_err}")
         except Exception as e:
             logger.error(f"Error in main loop: {e}")
 

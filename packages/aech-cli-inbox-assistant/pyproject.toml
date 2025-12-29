@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aech-cli-inbox-assistant"
+version = "0.13.0"
+description = "CLI for Agent Aech to query and manage Inbox Assistant state"
+requires-python = ">=3.10"
+dependencies = [
+    "typer",
+]
+
+[project.scripts]
+aech-cli-inbox-assistant = "aech_cli_inbox_assistant.main:run"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+aech_cli_inbox_assistant = ["manifest.json"]

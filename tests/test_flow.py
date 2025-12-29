@@ -25,9 +25,9 @@ sys.modules["aech_cli_msgraph"] = MagicMock()
 sys.modules["aech_cli_msgraph.graph"] = MagicMock()
 sys.modules["aech_cli_msgraph.graph"].GraphClient = MagicMock()
 
-from src.database import init_db, get_connection
-from src.organizer import Organizer
-from src.poller import GraphPoller
+from aech_cli_inbox_assistant.database import init_db, get_connection
+from aech_cli_inbox_assistant.organizer import Organizer
+from aech_cli_inbox_assistant.poller import GraphPoller
 
 class TestInboxAssistant(unittest.TestCase):
     def setUp(self):

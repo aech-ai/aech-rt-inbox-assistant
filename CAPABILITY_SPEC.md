@@ -471,7 +471,7 @@ if __name__ == "__main__":
 ├── aech-main/
 │   └── capabilities/
 │       └── clis/
-│           ├── aech_cli_inbox-*.whl
+│           ├── aech_cli_inbox_assistant-*.whl
 │           └── aech_cli_helpdesk-*.whl
 ├── aech-rt-inbox-assistant/
 │   ├── docker-compose.yml
@@ -564,9 +564,9 @@ aech-cli-documents extract input.docx --output-dir ./outputs --format markdown
 # RT-service monitors inbox, creates drafts, writes to SQLite
 # Agent uses CLI to interact:
 
-aech-cli-inbox list-drafts --json
-aech-cli-inbox approve draft-123
-aech-cli-inbox search "project update" --json
+aech-cli-inbox-assistant list-drafts --json
+aech-cli-inbox-assistant approve draft-123
+aech-cli-inbox-assistant search "project update" --json
 ```
 
 ### API-Based RT: Helpdesk

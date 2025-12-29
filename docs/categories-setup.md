@@ -67,22 +67,22 @@ Use the `categories` subcommand to manage your category profile:
 
 ```bash
 # List your categories (auto-populates defaults on first use)
-aech-cli-inbox categories list --human
+aech-cli-inbox-assistant categories list --human
 
 # Add a new category
-aech-cli-inbox categories add "Urgent" --color red --flag today -d "Time-sensitive items"
+aech-cli-inbox-assistant categories add "Urgent" --color red --flag today -d "Time-sensitive items"
 
 # Edit an existing category
-aech-cli-inbox categories edit "Work" --color teal --flag this_week
+aech-cli-inbox-assistant categories edit "Work" --color teal --flag this_week
 
 # Remove a category
-aech-cli-inbox categories remove "Old Category"
+aech-cli-inbox-assistant categories remove "Old Category"
 
 # Reset to defaults
-aech-cli-inbox categories reset --yes
+aech-cli-inbox-assistant categories reset --yes
 
 # List available colors
-aech-cli-inbox categories colors --human
+aech-cli-inbox-assistant categories colors --human
 ```
 
 Categories are stored in your user profile (`preferences.json`) and auto-populated with defaults on first access.
