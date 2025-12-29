@@ -55,11 +55,11 @@ echo "=============================================="
 aech-cli-inbox-assistant sync --human
 echo ""
 
-# Step 3: Convert bodies to markdown (if any missed)
+# Step 3: Backfill bodies to markdown (if any missed during sync)
 echo "=============================================="
-echo "Step 3: Convert Bodies to Markdown"
+echo "Step 3: Backfill Bodies to Markdown"
 echo "=============================================="
-aech-cli-inbox-assistant convert-bodies
+aech-cli-inbox-assistant backfill-bodies --limit 5000
 echo ""
 
 # Step 4: Extract attachments
