@@ -65,7 +65,7 @@ async def process_pending_content():
         if att_results["completed"] > 0:
             logger.info(f"Extracted {att_results['completed']} attachments")
 
-        # 3. LLM content extraction (quote/signature removal)
+        # 3. Working memory analysis (recent emails only - older ones use search)
         conn = get_connection()
         pending_emails = conn.execute("""
             SELECT id, conversation_id, subject, sender, received_at,
@@ -73,6 +73,7 @@ async def process_pending_content():
             FROM emails
             WHERE extracted_body IS NULL
               AND (body_markdown IS NOT NULL OR body_preview IS NOT NULL)
+              AND datetime(received_at) > datetime('now', '-30 days')
             LIMIT 50
         """).fetchall()
         conn.close()
