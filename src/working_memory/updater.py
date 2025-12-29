@@ -201,13 +201,14 @@ class WorkingMemoryUpdater:
             # Update projects
             self._update_projects(conn, email, analysis)
 
-            # Store LLM-extracted content
+            # Store LLM-extracted content and mark as processed
             conn.execute(
                 """UPDATE emails
                    SET body_markdown = COALESCE(?, body_markdown),
                        thread_summary = ?,
                        signature_block = COALESCE(?, signature_block),
-                       suggested_action = ?
+                       suggested_action = ?,
+                       processed_at = COALESCE(processed_at, datetime('now'))
                    WHERE id = ?""",
                 (analysis.extracted_new_content, analysis.thread_summary,
                  analysis.signature_block, analysis.suggested_action, email.get("id")),
