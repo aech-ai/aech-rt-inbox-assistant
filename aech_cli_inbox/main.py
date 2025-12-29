@@ -433,6 +433,7 @@ def sync_emails(
     human: bool = typer.Option(False, "--human", help="Human-readable output instead of JSON"),
     no_bodies: bool = typer.Option(False, "--no-bodies", help="Skip fetching full bodies during sync (metadata only)"),
     full: bool = typer.Option(False, "--full", help="Force full sync instead of delta"),
+    since: Optional[str] = typer.Option(None, "--since", help="Only sync emails from this date (YYYY-MM-DD)"),
 ):
     """
     Sync emails from Microsoft Graph.
@@ -440,6 +441,7 @@ def sync_emails(
     Uses delta sync to efficiently fetch only changes since last sync.
     Handles new emails, updates, and deletions.
     Use --full to force a complete resync.
+    Use --since to limit initial sync to emails from a specific date.
     """
     try:
         from src.poller import GraphPoller
@@ -449,8 +451,20 @@ def sync_emails(
 
     poller = GraphPoller()
 
+    # Parse since date if provided
+    since_date = None
+    if since:
+        try:
+            since_date = datetime.fromisoformat(since).replace(tzinfo=timezone.utc)
+        except ValueError:
+            typer.echo(f"Error: Invalid date format '{since}'. Use YYYY-MM-DD.", err=True)
+            raise typer.Exit(1)
+
     if human:
-        typer.echo("Syncing emails from Microsoft Graph...")
+        if since_date:
+            typer.echo(f"Syncing emails from Microsoft Graph (since {since_date.date()})...")
+        else:
+            typer.echo("Syncing emails from Microsoft Graph...")
 
     if full:
         # Reset sync state to force full sync
@@ -484,6 +498,7 @@ def sync_emails(
         fetch_body=not no_bodies,
         progress_callback=progress if human else None,
         message_callback=message_progress if human else None,
+        since_date=since_date,
     )
 
     if human:

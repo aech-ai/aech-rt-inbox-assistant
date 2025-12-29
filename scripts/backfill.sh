@@ -10,12 +10,16 @@ BODY_LIMIT=${BODY_LIMIT:-2000}
 ATTACHMENT_LIMIT=${ATTACHMENT_LIMIT:-1000}
 EXTRACT_LIMIT=${EXTRACT_LIMIT:-500}
 INDEX_LIMIT=${INDEX_LIMIT:-2000}
+SYNC_SINCE=${SYNC_SINCE:-}
 
 echo "=============================================="
 echo "  Inbox Assistant Backfill"
 echo "=============================================="
 echo ""
 echo "User: ${DELEGATED_USER:-unknown}"
+if [ -n "$SYNC_SINCE" ]; then
+    echo "Since: $SYNC_SINCE"
+fi
 echo "Body limit: $BODY_LIMIT"
 echo "Attachment limit: $ATTACHMENT_LIMIT"
 echo "Extract limit: $EXTRACT_LIMIT"
@@ -34,7 +38,11 @@ echo "=============================================="
 echo "Step 1/6: Syncing with Microsoft Graph"
 echo "=============================================="
 # Skip fetching bodies during sync; backfill step will fetch only missing ones
-aech-cli-inbox-assistant sync --human --no-bodies
+if [ -n "$SYNC_SINCE" ]; then
+    aech-cli-inbox-assistant sync --human --no-bodies --since "$SYNC_SINCE"
+else
+    aech-cli-inbox-assistant sync --human --no-bodies
+fi
 echo ""
 
 # Step 2: Backfill email bodies

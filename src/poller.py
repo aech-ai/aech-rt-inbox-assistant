@@ -374,6 +374,7 @@ class GraphPoller:
         page_size: int = 50,
         message_callback: Optional[Callable[[int, str], None]] = None,
         body_concurrency: int = 5,
+        since_date: Optional[datetime] = None,
     ) -> int:
         """
         Perform a full sync of a folder using pagination.
@@ -382,8 +383,12 @@ class GraphPoller:
         Args:
             message_callback: Optional callback(count, subject) for per-message progress
             body_concurrency: Number of concurrent body fetches (default 5, conservative for Graph API limits)
+            since_date: Optional date to filter emails (only sync emails received on or after this date)
         """
-        logger.info(f"Starting full sync for folder: {folder_name} ({folder_id})")
+        if since_date:
+            logger.info(f"Starting full sync for folder: {folder_name} (since {since_date.date()})")
+        else:
+            logger.info(f"Starting full sync for folder: {folder_name} ({folder_id})")
 
         assert self.user_email is not None
         headers = self._graph_client._get_headers()
@@ -391,6 +396,11 @@ class GraphPoller:
 
         select_fields = "id,conversationId,internetMessageId,subject,from,toRecipients,ccRecipients,receivedDateTime,bodyPreview,hasAttachments,isRead,webLink,categories"
         url = f"{base_path}/mailFolders/{folder_id}/messages?$select={select_fields}&$top={page_size}&$expand=attachments($select=id,name,contentType,size)"
+
+        # Add date filter if specified
+        if since_date:
+            iso_date = since_date.strftime("%Y-%m-%dT00:00:00Z")
+            url += f"&$filter=receivedDateTime ge {iso_date}"
 
         messages_synced = 0
         conn = get_connection()
@@ -470,6 +480,7 @@ class GraphPoller:
         fetch_body: bool = True,
         message_callback: Optional[Callable[[int, str], None]] = None,
         body_concurrency: int = 5,
+        since_date: Optional[datetime] = None,
     ) -> Tuple[int, int]:
         """
         Perform an incremental delta sync of a folder.
@@ -478,11 +489,12 @@ class GraphPoller:
         Args:
             message_callback: Optional callback(count, subject) for per-message progress
             body_concurrency: Number of concurrent body fetches (default 5, conservative for Graph API limits)
+            since_date: Optional date filter (only used if falling back to full sync)
         """
         sync_state = self.get_sync_state(folder_id)
         if not sync_state or not sync_state[0]:
             logger.info(f"No delta link for {folder_name}, falling back to full sync")
-            count = self.full_sync_folder(folder_id, folder_name, fetch_body, message_callback=message_callback)
+            count = self.full_sync_folder(folder_id, folder_name, fetch_body, message_callback=message_callback, since_date=since_date)
             return (count, 0)
 
         delta_link, _ = sync_state
@@ -575,6 +587,7 @@ class GraphPoller:
         fetch_body: bool = True,
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
         message_callback: Optional[Callable[[int, str], None]] = None,
+        since_date: Optional[datetime] = None,
     ) -> Dict[str, Any]:
         """
         Sync all folders in the mailbox.
@@ -585,6 +598,7 @@ class GraphPoller:
             fetch_body: Whether to fetch full email bodies
             progress_callback: Optional callback(current, total, folder_name) for folder progress
             message_callback: Optional callback(count, subject) for per-message progress
+            since_date: Optional date to filter emails (only sync emails received on or after this date)
         """
         folders = self.get_all_folders()
         total_folders = len(folders)
@@ -611,7 +625,8 @@ class GraphPoller:
 
             if sync_state and sync_state[0]:
                 updated, deleted = self.delta_sync_folder(
-                    folder_id, folder_name, fetch_body, message_callback=message_callback
+                    folder_id, folder_name, fetch_body, message_callback=message_callback,
+                    since_date=since_date
                 )
                 results["folder_details"].append({
                     "name": folder_name,
@@ -623,7 +638,8 @@ class GraphPoller:
                 results["total_deleted"] += deleted
             else:
                 count = self.full_sync_folder(
-                    folder_id, folder_name, fetch_body, message_callback=message_callback
+                    folder_id, folder_name, fetch_body, message_callback=message_callback,
+                    since_date=since_date
                 )
                 results["folder_details"].append({
                     "name": folder_name,

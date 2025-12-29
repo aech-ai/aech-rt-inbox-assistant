@@ -49,12 +49,18 @@ activity() {
     echo -e "${CYAN}→${NC} $1"
 }
 
+# Optional: limit sync to emails from a specific date (YYYY-MM-DD)
+SYNC_SINCE=${SYNC_SINCE:-}
+
 echo ""
 echo -e "${BOLD}${GREEN}╔══════════════════════════════════════════════════════╗${NC}"
 echo -e "${BOLD}${GREEN}║     FRESH START - Full Pipeline from Scratch         ║${NC}"
 echo -e "${BOLD}${GREEN}╚══════════════════════════════════════════════════════╝${NC}"
 echo ""
 echo -e "${BOLD}User:${NC}     ${DELEGATED_USER:-unknown}"
+if [ -n "$SYNC_SINCE" ]; then
+    echo -e "${BOLD}Since:${NC}    $SYNC_SINCE"
+fi
 
 # Determine DB path
 if [ -f "/home/agentaech/.inbox-assistant/inbox.sqlite" ]; then
@@ -93,7 +99,11 @@ step_done
 step_header "2" "Sync All Emails (with bodies)"
 activity "Fetching emails from Microsoft Graph API..."
 echo ""
-aech-cli-inbox-assistant sync --human
+if [ -n "$SYNC_SINCE" ]; then
+    aech-cli-inbox-assistant sync --human --since "$SYNC_SINCE"
+else
+    aech-cli-inbox-assistant sync --human
+fi
 echo ""
 step_done
 
@@ -115,7 +125,7 @@ step_done
 step_header "5" "LLM Extraction"
 activity "Extracting thread summaries, signatures, cleanup actions..."
 echo ""
-aech-cli-inbox-assistant extract-content --limit 2000 --human
+aech-cli-inbox-assistant extract-content --limit 10000 --human
 echo ""
 step_done
 
@@ -123,7 +133,7 @@ step_done
 step_header "6" "Create Search Index"
 activity "Building FTS index and chunks..."
 echo ""
-aech-cli-inbox-assistant index --limit 10000 --human
+aech-cli-inbox-assistant index --limit 100000 --human
 echo ""
 step_done
 
@@ -131,7 +141,7 @@ step_done
 step_header "7" "Generate Embeddings"
 activity "Computing vector embeddings (bge-m3)..."
 echo ""
-aech-cli-inbox-assistant embed --limit 10000 --human
+aech-cli-inbox-assistant embed --limit 100000 --human
 echo ""
 step_done
 
