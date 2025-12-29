@@ -271,6 +271,32 @@ All state is stored in `~/.inbox-assistant/` (per capability convention):
 └── preferences.json  # User preferences (optional)
 ```
 
+### Data Integrity Controls
+
+The SQLite schema enforces enterprise-grade data integrity:
+
+| Control | Implementation |
+|---------|----------------|
+| **Referential Integrity** | All child tables use `FOREIGN KEY ... ON DELETE CASCADE` to prevent orphaned records |
+| **Cascading Deletes** | Email deletion automatically removes: attachments, chunks, triage_log, labels, reply_tracking, working memory references |
+| **CHECK Constraints** | Enum fields validated at DB level: `urgency IN ('immediate', 'today', 'this_week', 'someday')`, `extraction_status IN ('pending', 'extracting', 'completed', 'failed', 'skipped')`, etc. |
+| **NOT NULL + Defaults** | Required fields enforced; JSON arrays default to `'[]'` to avoid null-check bugs |
+| **Polymorphic FK Cleanup** | Triggers delete orphaned `chunks` when parent `emails` or `attachments` are removed |
+| **WAL Mode** | Write-Ahead Logging enabled for concurrent read/write access |
+| **Foreign Keys Enabled** | `PRAGMA foreign_keys=ON` enforced at connection time |
+
+**Indexed Fields** (optimized for common queries):
+
+- `emails`: conversation_id, sender, received_at, urgency, processed_at
+- `attachments`: email_id, content_hash, extraction_status
+- `chunks`: source_type + source_id (composite)
+- `work_items`: status, type
+- `wm_threads`: status, urgency, needs_reply
+- `wm_contacts`: email, relationship
+- `wm_observations`: type, observed_at
+- `wm_decisions`: is_resolved, urgency
+- `wm_commitments`: is_completed, due_by
+
 ### Working Memory Tables
 
 | Table | Purpose |

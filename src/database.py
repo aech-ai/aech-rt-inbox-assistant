@@ -74,35 +74,45 @@ def init_db(db_path: Optional[Path] = None) -> None:
         conversation_id TEXT,
         internet_message_id TEXT,
         subject TEXT,
-        sender TEXT,
-        to_emails TEXT, -- JSON array
-        cc_emails TEXT, -- JSON array
-        received_at DATETIME,
+        sender TEXT NOT NULL,
+        to_emails TEXT NOT NULL DEFAULT '[]', -- JSON array
+        cc_emails TEXT NOT NULL DEFAULT '[]', -- JSON array
+        received_at DATETIME NOT NULL,
         body_preview TEXT,
         body_text TEXT,
         body_html TEXT,
         body_hash TEXT,
-        has_attachments BOOLEAN,
-        is_read BOOLEAN,
+        has_attachments BOOLEAN DEFAULT 0,
+        is_read BOOLEAN DEFAULT 0,
         etag TEXT,
         web_link TEXT,
         -- Categories mode fields
-        outlook_categories TEXT, -- JSON array of applied Outlook categories
-        urgency TEXT DEFAULT 'someday', -- immediate/today/this_week/someday
-        processed_at DATETIME
+        outlook_categories TEXT NOT NULL DEFAULT '[]', -- JSON array of applied Outlook categories
+        urgency TEXT DEFAULT 'someday' CHECK(urgency IN ('immediate', 'today', 'this_week', 'someday')),
+        processed_at DATETIME,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
     """)
-    
+    # Indexes for common email queries
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_emails_conversation ON emails(conversation_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_emails_sender ON emails(sender)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_emails_received ON emails(received_at)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_emails_urgency ON emails(urgency)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_emails_processed ON emails(processed_at)")
+
+    # Migration: Add extracted_body column for LLM-extracted clean content
+    _ensure_columns(cursor, "emails", {"extracted_body": "TEXT"})
+
     # Triage Log table - categories mode
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS triage_log (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        email_id TEXT,
-        outlook_categories TEXT, -- JSON array of applied categories
-        urgency TEXT,
+        email_id TEXT NOT NULL,
+        outlook_categories TEXT NOT NULL DEFAULT '[]', -- JSON array of applied categories
+        urgency TEXT CHECK(urgency IN ('immediate', 'today', 'this_week', 'someday')),
         reason TEXT,
         timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY(email_id) REFERENCES emails(id)
+        FOREIGN KEY(email_id) REFERENCES emails(id) ON DELETE CASCADE
     )
     """)
 
@@ -148,12 +158,14 @@ def init_db(db_path: Optional[Path] = None) -> None:
     CREATE TABLE IF NOT EXISTS work_items (
         id TEXT PRIMARY KEY,
         type TEXT NOT NULL,
-        status TEXT NOT NULL,
-        payload_json TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('pending', 'processing', 'completed', 'failed')),
+        payload_json TEXT NOT NULL DEFAULT '{}',
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
     """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_work_items_status ON work_items(status)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_work_items_type ON work_items(type)")
 
     # Sync state for delta sync tracking (per-folder)
     cursor.execute("""
@@ -176,10 +188,11 @@ def init_db(db_path: Optional[Path] = None) -> None:
         size_bytes INTEGER,
         content_hash TEXT,
         extracted_text TEXT,
-        extraction_status TEXT DEFAULT 'pending',
+        extraction_status TEXT DEFAULT 'pending' CHECK(extraction_status IN ('pending', 'extracting', 'completed', 'failed', 'skipped')),
         extraction_error TEXT,
         downloaded_at DATETIME,
         extracted_at DATETIME,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY(email_id) REFERENCES emails(id) ON DELETE CASCADE
     )
     """)
@@ -191,19 +204,33 @@ def init_db(db_path: Optional[Path] = None) -> None:
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS chunks (
         id TEXT PRIMARY KEY,
-        source_type TEXT NOT NULL,
+        source_type TEXT NOT NULL CHECK(source_type IN ('email', 'attachment')),
         source_id TEXT NOT NULL,
-        chunk_index INTEGER NOT NULL,
+        chunk_index INTEGER NOT NULL CHECK(chunk_index >= 0),
         content TEXT NOT NULL,
         char_offset_start INTEGER,
         char_offset_end INTEGER,
-        metadata_json TEXT,
+        metadata_json TEXT NOT NULL DEFAULT '{}',
         embedding BLOB,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(source_type, source_id, chunk_index)
     )
     """)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_chunks_source ON chunks(source_type, source_id)")
+
+    # Cascade delete triggers for chunks (polymorphic FK cleanup)
+    cursor.execute("""
+    CREATE TRIGGER IF NOT EXISTS emails_delete_chunks
+    AFTER DELETE ON emails BEGIN
+        DELETE FROM chunks WHERE source_type = 'email' AND source_id = old.id;
+    END;
+    """)
+    cursor.execute("""
+    CREATE TRIGGER IF NOT EXISTS attachments_delete_chunks
+    AFTER DELETE ON attachments BEGIN
+        DELETE FROM chunks WHERE source_type = 'attachment' AND source_id = old.id;
+    END;
+    """)
 
     # === Working Memory Tables ===
 
@@ -213,21 +240,21 @@ def init_db(db_path: Optional[Path] = None) -> None:
         id TEXT PRIMARY KEY,
         conversation_id TEXT NOT NULL UNIQUE,
         subject TEXT,
-        participants_json TEXT,
-        status TEXT DEFAULT 'active',
-        urgency TEXT DEFAULT 'this_week',
+        participants_json TEXT NOT NULL DEFAULT '[]',
+        status TEXT DEFAULT 'active' CHECK(status IN ('active', 'resolved', 'archived')),
+        urgency TEXT DEFAULT 'this_week' CHECK(urgency IN ('immediate', 'today', 'this_week', 'someday')),
         started_at DATETIME,
         last_activity_at DATETIME,
         user_last_action_at DATETIME,
         summary TEXT,
-        key_points_json TEXT,
-        pending_questions_json TEXT,
+        key_points_json TEXT NOT NULL DEFAULT '[]',
+        pending_questions_json TEXT NOT NULL DEFAULT '[]',
         message_count INTEGER DEFAULT 0,
         user_is_cc BOOLEAN DEFAULT 0,
         needs_reply BOOLEAN DEFAULT 0,
         reply_deadline DATETIME,
-        labels_json TEXT,
-        project_refs_json TEXT,
+        labels_json TEXT NOT NULL DEFAULT '[]',
+        project_refs_json TEXT NOT NULL DEFAULT '[]',
         latest_email_id TEXT,
         latest_web_link TEXT,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -246,14 +273,14 @@ def init_db(db_path: Optional[Path] = None) -> None:
         email TEXT NOT NULL UNIQUE,
         name TEXT,
         organization TEXT,
-        relationship TEXT DEFAULT 'unknown',
+        relationship TEXT DEFAULT 'unknown' CHECK(relationship IN ('unknown', 'colleague', 'client', 'vendor', 'partner', 'personal', 'other')),
         first_seen_at DATETIME,
         last_interaction_at DATETIME,
         total_interactions INTEGER DEFAULT 0,
         user_initiated_count INTEGER DEFAULT 0,
         they_initiated_count INTEGER DEFAULT 0,
         cc_count INTEGER DEFAULT 0,
-        topics_json TEXT,
+        topics_json TEXT NOT NULL DEFAULT '[]',
         notes TEXT,
         is_vip BOOLEAN DEFAULT 0,
         is_internal BOOLEAN DEFAULT 0,
@@ -270,31 +297,36 @@ def init_db(db_path: Optional[Path] = None) -> None:
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
         description TEXT,
-        related_threads_json TEXT,
-        participants_json TEXT,
-        status TEXT DEFAULT 'active',
-        confidence REAL DEFAULT 0.5,
+        related_threads_json TEXT NOT NULL DEFAULT '[]',
+        participants_json TEXT NOT NULL DEFAULT '[]',
+        status TEXT DEFAULT 'active' CHECK(status IN ('active', 'completed', 'on_hold', 'cancelled')),
+        confidence REAL DEFAULT 0.5 CHECK(confidence >= 0.0 AND confidence <= 1.0),
         first_mentioned_at DATETIME,
         last_activity_at DATETIME,
-        key_decisions_json TEXT,
-        deadlines_json TEXT,
+        key_decisions_json TEXT NOT NULL DEFAULT '[]',
+        deadlines_json TEXT NOT NULL DEFAULT '[]',
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
     """)
 
     # Observations from passive learning (CC emails)
+    # Types match ObservationType enum in src/working_memory/models.py
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS wm_observations (
         id TEXT PRIMARY KEY,
-        type TEXT NOT NULL,
+        type TEXT NOT NULL CHECK(type IN (
+            'project_mention', 'decision_made', 'deadline_mentioned',
+            'person_introduced', 'status_update', 'meeting_scheduled',
+            'commitment_made', 'context_learned'
+        )),
         content TEXT NOT NULL,
         source_email_id TEXT,
         source_thread_id TEXT,
-        related_contacts_json TEXT,
-        related_projects_json TEXT,
-        importance REAL DEFAULT 0.5,
-        confidence REAL DEFAULT 0.5,
+        related_contacts_json TEXT NOT NULL DEFAULT '[]',
+        related_projects_json TEXT NOT NULL DEFAULT '[]',
+        importance REAL DEFAULT 0.5 CHECK(importance >= 0.0 AND importance <= 1.0),
+        confidence REAL DEFAULT 0.5 CHECK(confidence >= 0.0 AND confidence <= 1.0),
         observed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         relevant_until DATETIME,
         FOREIGN KEY(source_email_id) REFERENCES emails(id) ON DELETE CASCADE
@@ -309,11 +341,11 @@ def init_db(db_path: Optional[Path] = None) -> None:
         id TEXT PRIMARY KEY,
         question TEXT NOT NULL,
         context TEXT,
-        options_json TEXT,
+        options_json TEXT NOT NULL DEFAULT '[]',
         source_email_id TEXT,
         source_thread_id TEXT,
         requester TEXT,
-        urgency TEXT DEFAULT 'this_week',
+        urgency TEXT DEFAULT 'this_week' CHECK(urgency IN ('immediate', 'today', 'this_week', 'someday')),
         deadline DATETIME,
         is_resolved BOOLEAN DEFAULT 0,
         resolution TEXT,

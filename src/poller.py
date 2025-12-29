@@ -3,6 +3,7 @@ import json
 import subprocess
 import os
 import hashlib
+from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional, Tuple
 
 import requests
@@ -77,14 +78,17 @@ class GraphPoller:
                 conversation_id = msg.get("conversationId") or msg.get("conversation_id")
                 internet_message_id = msg.get("internetMessageId") or msg.get("internet_message_id")
                 etag = msg.get("@odata.etag") or msg.get("etag")
+                categories = msg.get("categories") or []
+                categories_json = json.dumps(categories) if categories else None
+                processed_at = datetime.now(timezone.utc).isoformat() if categories else None
                 conn.execute(
                     """
                     INSERT INTO emails (
                         id, conversation_id, internet_message_id, subject, sender,
                         to_emails, cc_emails, received_at, body_preview, has_attachments,
-                        is_read, etag, web_link
+                        is_read, etag, web_link, outlook_categories, processed_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
                         conversation_id=excluded.conversation_id,
                         internet_message_id=excluded.internet_message_id,
@@ -97,7 +101,9 @@ class GraphPoller:
                         has_attachments=excluded.has_attachments,
                         is_read=excluded.is_read,
                         etag=excluded.etag,
-                        web_link=excluded.web_link
+                        web_link=excluded.web_link,
+                        outlook_categories=COALESCE(excluded.outlook_categories, emails.outlook_categories),
+                        processed_at=COALESCE(emails.processed_at, excluded.processed_at)
                     """,
                     (
                         msg.get("id"),
@@ -113,6 +119,8 @@ class GraphPoller:
                         msg.get("isRead", False),
                         etag,
                         msg.get("webLink"),
+                        categories_json or json.dumps([]),
+                        processed_at,
                     ),
                 )
             conn.commit()
@@ -227,6 +235,12 @@ class GraphPoller:
             if r.get("emailAddress", {}).get("address")
         ]
 
+        categories = msg.get("categories") or []
+        categories_json = json.dumps(categories) if categories else None
+
+        # If this message already has categories in Outlook, assume it was triaged before.
+        processed_at = datetime.now(timezone.utc).isoformat() if categories else None
+
         return {
             "id": msg.get("id"),
             "conversation_id": msg.get("conversationId"),
@@ -241,6 +255,8 @@ class GraphPoller:
             "is_read": msg.get("isRead", False),
             "etag": msg.get("@odata.etag"),
             "web_link": msg.get("webLink"),
+            "outlook_categories": categories_json,
+            "processed_at": processed_at,
         }
 
     def _upsert_message(self, conn, msg_data: Dict[str, Any], body_text: Optional[str] = None, body_html: Optional[str] = None) -> None:
@@ -249,14 +265,18 @@ class GraphPoller:
         if body_text:
             body_hash = hashlib.sha256(body_text.encode()).hexdigest()[:16]
 
+        categories_value = msg_data.get("outlook_categories")
+        processed_at_value = msg_data.get("processed_at")
+
         conn.execute(
             """
             INSERT INTO emails (
                 id, conversation_id, internet_message_id, subject, sender,
                 to_emails, cc_emails, received_at, body_preview, has_attachments,
-                is_read, etag, body_text, body_html, body_hash, web_link
+                is_read, etag, body_text, body_html, body_hash, web_link,
+                outlook_categories, processed_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 conversation_id=excluded.conversation_id,
                 internet_message_id=excluded.internet_message_id,
@@ -272,7 +292,9 @@ class GraphPoller:
                 body_text=COALESCE(excluded.body_text, emails.body_text),
                 body_html=COALESCE(excluded.body_html, emails.body_html),
                 body_hash=COALESCE(excluded.body_hash, emails.body_hash),
-                web_link=excluded.web_link
+                web_link=excluded.web_link,
+                outlook_categories=COALESCE(excluded.outlook_categories, emails.outlook_categories),
+                processed_at=COALESCE(emails.processed_at, excluded.processed_at)
             """,
             (
                 msg_data["id"],
@@ -291,6 +313,8 @@ class GraphPoller:
                 body_html,
                 body_hash,
                 msg_data.get("web_link"),
+                categories_value or json.dumps([]),
+                processed_at_value,
             ),
         )
 
@@ -326,7 +350,7 @@ class GraphPoller:
         headers = self._graph_client._get_headers()
         base_path = self._graph_client._get_base_path(self.user_email)
 
-        select_fields = "id,conversationId,internetMessageId,subject,from,toRecipients,ccRecipients,receivedDateTime,bodyPreview,hasAttachments,isRead,webLink"
+        select_fields = "id,conversationId,internetMessageId,subject,from,toRecipients,ccRecipients,receivedDateTime,bodyPreview,hasAttachments,isRead,webLink,categories"
         url = f"{base_path}/mailFolders/{folder_id}/messages?$select={select_fields}&$top={page_size}&$expand=attachments($select=id,name,contentType,size)"
 
         messages_synced = 0

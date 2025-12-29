@@ -57,15 +57,17 @@ def fts_search(query: str, limit: int = 50) -> List[SearchResult]:
         ).fetchall()
 
         for i, row in enumerate(rows):
+            metadata = json.loads(row["metadata_json"]) if row["metadata_json"] else None
+            source_type = "virtual_email" if metadata and metadata.get("is_virtual") else row["source_type"]
             results.append(
                 SearchResult(
                     chunk_id=row["id"],
-                    source_type=row["source_type"],
+                    source_type=source_type,
                     source_id=row["source_id"],
                     content_preview=row["content"][:300] if row["content"] else "",
                     score=abs(row["rank"]),  # BM25 returns negative scores
                     fts_rank=i + 1,
-                    metadata=json.loads(row["metadata_json"]) if row["metadata_json"] else None,
+                    metadata=metadata,
                 )
             )
 
@@ -114,15 +116,17 @@ def vector_search(query: str, limit: int = 50, min_score: float = 0.25) -> List[
 
     results = []
     for i, (row, score) in enumerate(scored[:limit]):
+        metadata = json.loads(row["metadata_json"]) if row["metadata_json"] else None
+        source_type = "virtual_email" if metadata and metadata.get("is_virtual") else row["source_type"]
         results.append(
             SearchResult(
                 chunk_id=row["id"],
-                source_type=row["source_type"],
+                source_type=source_type,
                 source_id=row["source_id"],
                 content_preview=row["content"][:300] if row["content"] else "",
                 score=score,
                 vector_rank=i + 1,
-                metadata=json.loads(row["metadata_json"]) if row["metadata_json"] else None,
+                metadata=metadata,
             )
         )
 
@@ -283,6 +287,7 @@ def search_with_source_details(
                 item["email_date"] = metadata.get("extracted_date", "")
                 item["extracted_from"] = metadata.get("source_email_id")
                 item["position_in_chain"] = metadata.get("position_in_chain")
+                item["conversation_id"] = metadata.get("parent_conversation_id")
 
                 # Try to get the forwarding email's details
                 source_email_id = metadata.get("source_email_id")

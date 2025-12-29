@@ -1,3 +1,4 @@
+import os
 import typer
 import sqlite3
 import json
@@ -12,6 +13,7 @@ from .state import (
     set_preference_from_string,
     write_preferences,
 )
+from src.database import init_db
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +22,14 @@ app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
 )
+
+
+@app.callback()
+def startup():
+    """Initialize database schema on every command."""
+    init_db()
+
+
 prefs_app = typer.Typer(help="Manage `/home/agentaech/preferences.json`.", add_completion=False)
 app.add_typer(prefs_app, name="prefs")
 
@@ -265,9 +275,9 @@ def backfill_bodies(
     This is needed if emails were synced before body fetching was enabled.
     """
     try:
-        from src.poller import InboxPoller
+        from src.poller import GraphPoller
     except ImportError:
-        typer.echo("Error: InboxPoller not available. Run from inbox-assistant repo.", err=True)
+        typer.echo("Error: GraphPoller not available. Run from inbox-assistant repo.", err=True)
         raise typer.Exit(1)
 
     conn = connect_db()
@@ -293,7 +303,7 @@ def backfill_bodies(
     if human:
         typer.echo(f"Backfilling {len(emails_to_backfill)} emails...")
 
-    poller = InboxPoller()
+    poller = GraphPoller()
     results = {"backfilled": 0, "failed": 0}
 
     for email_id, subject in emails_to_backfill:
@@ -375,6 +385,54 @@ def sync_status(
         typer.echo(json.dumps(status, default=str))
 
 
+@app.command("sync")
+def sync_emails(
+    human: bool = typer.Option(False, "--human", help="Human-readable output instead of JSON"),
+    no_bodies: bool = typer.Option(False, "--no-bodies", help="Skip fetching full bodies during sync (metadata only)"),
+    full: bool = typer.Option(False, "--full", help="Force full sync instead of delta"),
+):
+    """
+    Sync emails from Microsoft Graph.
+
+    Uses delta sync to efficiently fetch only changes since last sync.
+    Handles new emails, updates, and deletions.
+    Use --full to force a complete resync.
+    """
+    try:
+        from src.poller import GraphPoller
+    except ImportError:
+        typer.echo("Error: GraphPoller not available. Run from inbox-assistant repo.", err=True)
+        raise typer.Exit(1)
+
+    poller = GraphPoller()
+
+    if human:
+        typer.echo("Syncing emails from Microsoft Graph...")
+
+    if full:
+        # Reset sync state to force full sync
+        conn = connect_db()
+        conn.execute("DELETE FROM sync_state")
+        conn.commit()
+        conn.close()
+        if human:
+            typer.echo("  Cleared sync state, forcing full sync...")
+
+    results = poller.sync_all_folders(fetch_body=not no_bodies)
+
+    if human:
+        typer.echo(f"\nSync complete:")
+        typer.echo(f"  Folders synced: {results['folders_synced']}")
+        typer.echo(f"  Total messages: {results['total_messages']}")
+        typer.echo(f"  Deleted:        {results.get('total_deleted', 0)}")
+        if results.get('folder_results'):
+            typer.echo(f"\nPer folder:")
+            for fr in results['folder_results']:
+                typer.echo(f"  {fr['folder_name']}: {fr['messages']} msgs ({fr['sync_type']})")
+    else:
+        typer.echo(json.dumps(results, default=str))
+
+
 @app.command()
 def stats(
     human: bool = typer.Option(False, "--human", help="Human-readable output instead of JSON"),
@@ -399,11 +457,14 @@ def stats(
     cursor.execute("SELECT COUNT(*) FROM attachments")
     stats_data["total_attachments"] = cursor.fetchone()[0]
 
-    cursor.execute("SELECT COUNT(*) FROM attachments WHERE extraction_status = 'success'")
+    cursor.execute("SELECT COUNT(*) FROM attachments WHERE extraction_status = 'completed'")
     stats_data["attachments_extracted"] = cursor.fetchone()[0]
 
     cursor.execute("SELECT COUNT(*) FROM attachments WHERE extraction_status = 'pending'")
     stats_data["attachments_pending"] = cursor.fetchone()[0]
+
+    cursor.execute("SELECT COUNT(*) FROM attachments WHERE extraction_status = 'failed'")
+    stats_data["attachments_failed"] = cursor.fetchone()[0]
 
     # Chunk counts
     cursor.execute("SELECT COUNT(*) FROM chunks")
@@ -432,6 +493,7 @@ def stats(
         typer.echo(f"Total attachments:         {stats_data['total_attachments']:,}")
         typer.echo(f"Extracted:                 {stats_data['attachments_extracted']:,}")
         typer.echo(f"Pending extraction:        {stats_data['attachments_pending']:,}")
+        typer.echo(f"Failed extraction:         {stats_data['attachments_failed']:,}")
         typer.echo("")
         typer.echo("=== Chunks & Embeddings ===")
         typer.echo(f"Total chunks:              {stats_data['total_chunks']:,}")
@@ -447,7 +509,7 @@ def stats(
 @app.command("attachment-status")
 def attachment_status(
     limit: int = typer.Option(20, help="Number of attachments to list"),
-    status_filter: str = typer.Option(None, "--status", help="Filter by status (pending/success/failed/unsupported)"),
+    status_filter: str = typer.Option(None, "--status", help="Filter by status (pending/completed/failed/skipped/extracting)"),
     human: bool = typer.Option(False, "--human", help="Human-readable output instead of JSON"),
 ):
     """Show attachment extraction status."""
@@ -504,6 +566,7 @@ def attachment_status(
 @app.command("extract-attachments")
 def extract_attachments(
     limit: int = typer.Option(50, help="Number of attachments to process"),
+    concurrency: int = typer.Option(5, "--concurrency", help="Number of parallel workers"),
     human: bool = typer.Option(False, "--human", help="Human-readable output instead of JSON"),
 ):
     """
@@ -512,6 +575,8 @@ def extract_attachments(
     Downloads attachments from Graph API and extracts text using aech-cli-documents.
     Extracted text is stored in the database for full-text search.
     """
+    import asyncio
+
     try:
         from src.attachments import AttachmentProcessor
     except ImportError:
@@ -522,14 +587,26 @@ def extract_attachments(
 
     if human:
         typer.echo(f"Processing up to {limit} pending attachments...")
+        typer.echo(f"Concurrency: {concurrency}")
 
-    results = processor.process_pending_attachments(limit=limit)
+        def progress(current: int, total: int, filename: str):
+            typer.echo(f"  [{current}/{total}] {filename}")
+
+        results = asyncio.run(
+            processor.process_pending_attachments_async(
+                limit=limit, concurrency=concurrency, progress_callback=progress
+            )
+        )
+    else:
+        results = asyncio.run(
+            processor.process_pending_attachments_async(limit=limit, concurrency=concurrency)
+        )
 
     if human:
         typer.echo(f"\nResults:")
-        typer.echo(f"  Success:     {results['success']}")
+        typer.echo(f"  Completed:   {results['completed']}")
         typer.echo(f"  Failed:      {results['failed']}")
-        typer.echo(f"  Unsupported: {results['unsupported']}")
+        typer.echo(f"  Skipped:     {results['skipped']}")
     else:
         typer.echo(json.dumps(results))
 
@@ -577,6 +654,161 @@ def index_content(
         typer.echo(f"  Chunks:    {combined['attachment_chunks']}")
     else:
         typer.echo(json.dumps(combined))
+
+
+@app.command("extract-content")
+def extract_content(
+    limit: int = typer.Option(100, help="Number of emails to process"),
+    concurrency: int = typer.Option(10, "--concurrency", help="Number of parallel LLM calls"),
+    human: bool = typer.Option(False, "--human", help="Human-readable output instead of JSON"),
+):
+    """
+    Extract clean content from emails using LLM.
+
+    Runs content extraction on emails where extracted_body is NULL.
+    This is required before 'index' since chunking requires extracted content.
+    """
+    import asyncio
+    import threading
+
+    conn = connect_db()
+    cursor = conn.cursor()
+
+    # Find emails without extracted_body
+    cursor.execute("""
+        SELECT id, conversation_id, subject, sender, received_at,
+               body_text, body_preview, to_emails, cc_emails
+        FROM emails
+        WHERE extracted_body IS NULL
+          AND (body_text IS NOT NULL OR body_preview IS NOT NULL)
+        LIMIT ?
+    """, (limit,))
+
+    emails = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+
+    if not emails:
+        if human:
+            typer.echo("No emails need content extraction.")
+        else:
+            typer.echo(json.dumps({"processed": 0, "failed": 0, "remaining": 0}))
+        return
+
+    # Count remaining
+    conn = connect_db()
+    remaining = conn.execute("""
+        SELECT COUNT(*) FROM emails
+        WHERE extracted_body IS NULL
+          AND (body_text IS NOT NULL OR body_preview IS NOT NULL)
+    """).fetchone()[0]
+    conn.close()
+
+    if human:
+        typer.echo(f"Processing {len(emails)} emails ({remaining} total without extracted content)...")
+        typer.echo(f"Concurrency: {concurrency}")
+
+    try:
+        from src.working_memory.updater import WorkingMemoryUpdater
+    except ImportError:
+        typer.echo("Error: WorkingMemoryUpdater not available.", err=True)
+        raise typer.Exit(1)
+
+    user_email = os.getenv("DELEGATED_USER", "")
+    updater = WorkingMemoryUpdater(user_email)
+
+    # Thread-safe counters
+    lock = threading.Lock()
+    counters = {"success": 0, "failed": 0, "completed": 0}
+    total = len(emails)
+
+    async def process_one(email: dict, semaphore: asyncio.Semaphore):
+        async with semaphore:
+            try:
+                await updater.process_email(email)
+                with lock:
+                    counters["success"] += 1
+                    counters["completed"] += 1
+                    if human and counters["completed"] % 25 == 0:
+                        typer.echo(f"  Progress: {counters['completed']}/{total}")
+            except Exception as e:
+                with lock:
+                    counters["failed"] += 1
+                    counters["completed"] += 1
+                    if human:
+                        typer.echo(f"  ✗ {email.get('subject', 'Unknown')[:50]}... ({e})")
+
+    async def process_all():
+        semaphore = asyncio.Semaphore(concurrency)
+        tasks = [process_one(email, semaphore) for email in emails]
+        await asyncio.gather(*tasks)
+
+    asyncio.run(process_all())
+
+    results = {
+        "processed": counters["success"],
+        "failed": counters["failed"],
+        "remaining": remaining - counters["success"],
+    }
+
+    if human:
+        typer.echo(f"\nResults:")
+        typer.echo(f"  Processed: {results['processed']}")
+        typer.echo(f"  Failed:    {results['failed']}")
+        typer.echo(f"  Remaining: {results['remaining']}")
+
+        if results['remaining'] > 0:
+            typer.echo(f"\nNote: Run again to process remaining emails.")
+    else:
+        typer.echo(json.dumps(results))
+
+
+@app.command("embed")
+def embed_chunks(
+    limit: int = typer.Option(1000, help="Number of chunks to embed"),
+    batch_size: int = typer.Option(16, help="Batch size for model inference and progress updates"),
+    human: bool = typer.Option(False, "--human", help="Human-readable output instead of JSON"),
+):
+    """
+    Generate embeddings for vector similarity search.
+
+    Creates embeddings for chunks that don't have them yet.
+    Uses BAAI/bge-m3 by default (configurable via EMBEDDING_MODEL env var).
+    Run this after 'index' to enable semantic search.
+
+    Note: Embeddings use batch processing for efficiency. Concurrency won't help
+    since the model inference is the bottleneck, not I/O.
+    """
+    try:
+        from src.embeddings import embed_pending_chunks, MODEL_NAME
+    except ImportError:
+        typer.echo("Error: Embeddings module not available. Run from inbox-assistant repo.", err=True)
+        raise typer.Exit(1)
+
+    if human:
+        typer.echo(f"Generating embeddings using model: {MODEL_NAME}")
+        typer.echo(f"Processing up to {limit} chunks (batch size: {batch_size})...")
+
+        def show_progress(processed: int, total: int):
+            pct = (processed / total) * 100 if total > 0 else 0
+            typer.echo(f"  Progress: {processed}/{total} ({pct:.1f}%)")
+
+        results = embed_pending_chunks(
+            limit=limit,
+            enrich=True,
+            batch_size=batch_size,
+            progress_callback=show_progress,
+        )
+
+        typer.echo(f"\nResults:")
+        typer.echo(f"  Processed: {results['processed']}")
+        typer.echo(f"  Failed:    {results['failed']}")
+        typer.echo(f"  Remaining: {results['total_pending']}")
+
+        if results['total_pending'] > 0:
+            typer.echo(f"\nNote: Run again to process remaining chunks.")
+    else:
+        results = embed_pending_chunks(limit=limit, enrich=True, batch_size=batch_size)
+        typer.echo(json.dumps(results))
 
 
 @app.command()
@@ -965,7 +1197,7 @@ def categories_reset(
     """Reset categories to defaults.
 
     This will replace all custom categories with the default set:
-    Action Required, Follow Up, Work, FYI, Personal
+    Action Required, Follow Up, Work, Personal
     """
     from src.categories_config import DEFAULT_CATEGORIES
 
@@ -982,6 +1214,150 @@ def categories_reset(
             typer.echo(f"  - {cat['name']} ({cat['color']})")
     else:
         typer.echo(json.dumps({"reset": True, "categories": DEFAULT_CATEGORIES}, default=str))
+
+
+@categories_app.command("strip")
+def categories_strip(
+    name: str = typer.Argument(..., help="Category name to remove from all messages"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be done without making changes"),
+    concurrency: int = typer.Option(10, "--concurrency", help="Number of parallel API calls"),
+    human: bool = typer.Option(False, "--human", help="Human-readable output instead of JSON"),
+):
+    """Remove a category from all messages that have it.
+
+    This command updates messages in Outlook to remove the specified category,
+    useful when retiring a category (like FYI) from your workflow.
+
+    Example:
+        aech-cli-inbox-assistant categories strip "FYI" --dry-run
+        aech-cli-inbox-assistant categories strip "FYI"
+    """
+    import subprocess
+    import os
+    import concurrent.futures
+
+    user_email = os.environ.get("DELEGATED_USER")
+    if not user_email:
+        typer.echo("Error: DELEGATED_USER environment variable not set", err=True)
+        raise typer.Exit(1)
+
+    conn = connect_db()
+    cursor = conn.cursor()
+
+    # Find all emails with this category in our DB
+    cursor.execute("""
+        SELECT id, subject, outlook_categories
+        FROM emails
+        WHERE outlook_categories LIKE ?
+    """, (f'%"{name}"%',))
+    rows = cursor.fetchall()
+    conn.close()
+
+    if not rows:
+        if human:
+            typer.echo(f"No emails found with category '{name}'")
+        else:
+            typer.echo(json.dumps({"found": 0, "updated": 0, "failed": 0}))
+        return
+
+    # Filter to only those that actually have the category
+    messages_to_update = []
+    for row in rows:
+        try:
+            categories = json.loads(row["outlook_categories"] or "[]")
+            if name in categories:
+                new_categories = [c for c in categories if c != name]
+                messages_to_update.append({
+                    "id": row["id"],
+                    "subject": row["subject"],
+                    "old_categories": categories,
+                    "new_categories": new_categories,
+                })
+        except json.JSONDecodeError:
+            continue
+
+    if not messages_to_update:
+        if human:
+            typer.echo(f"No emails found with category '{name}'")
+        else:
+            typer.echo(json.dumps({"found": 0, "updated": 0, "failed": 0}))
+        return
+
+    if human:
+        typer.echo(f"Found {len(messages_to_update)} emails with category '{name}'")
+
+    if dry_run:
+        if human:
+            typer.echo(f"\n[DRY RUN] Would update {len(messages_to_update)} messages:")
+            for msg in messages_to_update[:10]:
+                typer.echo(f"  - {msg['subject'][:60]}...")
+                typer.echo(f"    {msg['old_categories']} → {msg['new_categories']}")
+            if len(messages_to_update) > 10:
+                typer.echo(f"  ... and {len(messages_to_update) - 10} more")
+        else:
+            typer.echo(json.dumps({"dry_run": True, "found": len(messages_to_update), "messages": messages_to_update[:10]}))
+        return
+
+    results = {"found": len(messages_to_update), "updated": 0, "failed": 0, "errors": []}
+
+    def update_message(msg):
+        """Update a single message's categories."""
+        cmd = [
+            "aech-cli-msgraph", "update-message", msg["id"],
+            "--user", user_email,
+        ]
+        # Set categories (empty string clears all categories)
+        if msg["new_categories"]:
+            cmd.extend(["--categories", ",".join(msg["new_categories"])])
+        else:
+            cmd.extend(["--categories", ""])
+
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            return result.returncode == 0, msg["id"], result.stderr if result.returncode != 0 else None
+        except Exception as e:
+            return False, msg["id"], str(e)
+
+    if human:
+        typer.echo(f"Updating messages (concurrency={concurrency})...")
+
+    # Process in parallel
+    successful_updates = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:
+        futures = {executor.submit(update_message, msg): msg for msg in messages_to_update}
+
+        for future in concurrent.futures.as_completed(futures):
+            msg = futures[future]
+            success, msg_id, error = future.result()
+            if success:
+                results["updated"] += 1
+                successful_updates.append(msg)
+            else:
+                results["failed"] += 1
+                if error:
+                    results["errors"].append(f"{msg_id}: {error}")
+
+    # Update local DB only for successful updates
+    if successful_updates:
+        conn = connect_db()
+        for msg in successful_updates:
+            conn.execute(
+                "UPDATE emails SET outlook_categories = ? WHERE id = ?",
+                (json.dumps(msg["new_categories"]), msg["id"])
+            )
+        conn.commit()
+        conn.close()
+
+    if human:
+        typer.echo(f"\nResults:")
+        typer.echo(f"  Updated: {results['updated']}")
+        typer.echo(f"  Failed:  {results['failed']}")
+        if results["errors"]:
+            typer.echo(f"\nErrors:")
+            for err in results["errors"][:5]:
+                typer.echo(f"  - {err}")
+    else:
+        typer.echo(json.dumps(results, default=str))
 
 
 @categories_app.command("colors")

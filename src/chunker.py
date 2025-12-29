@@ -298,16 +298,14 @@ def process_email_for_indexing(email_id: str) -> Optional[ProcessedEmail]:
     """
     Process an email for search indexing.
 
-    For REPLIES: Strip quoted content (recipient already has it)
-    For FORWARDS: Parse into virtual emails (content is NEW to recipient)
-
-    Returns None if email not found or has no useful content.
+    Requires LLM-extracted content (extracted_body).
+    Returns None if email not found or not yet processed by LLM extraction.
     """
     conn = get_connection()
     row = conn.execute(
         """
         SELECT id, conversation_id, subject, sender, received_at,
-               body_text, body_preview
+               extracted_body, body_text, body_preview
         FROM emails WHERE id = ?
         """,
         (email_id,),
@@ -317,89 +315,110 @@ def process_email_for_indexing(email_id: str) -> Optional[ProcessedEmail]:
     if not row:
         return None
 
+    # Require LLM-extracted content - no regex fallback
+    if not row["extracted_body"]:
+        logger.debug(f"Email {email_id} has no extracted_body - skipping (run extract-content first)")
+        return None
+
+    clean_body = row["extracted_body"]
+    original_body = row["body_text"] or row["body_preview"] or ""
     subject = row["subject"] or ""
-    body = row["body_text"] or row["body_preview"] or ""
 
-    # Detect if this is a forward
-    email_is_forward = is_forward(subject, body)
+    if len(clean_body) < MIN_CHUNK_LENGTH:
+        logger.debug(f"Email {email_id} has insufficient extracted content")
+        return None
 
-    if email_is_forward:
-        # Parse forwarded chain into virtual emails
-        virtual_emails = parse_forwarded_chain(body, email_id)
-
-        # The "new" content from the forwarder is everything before the first forward marker
-        new_content = ""
-        for marker in FORWARD_BODY_MARKERS:
-            match = marker.search(body)
-            if match:
-                new_content = body[:match.start()].strip()
-                break
-
-        if not new_content and not virtual_emails:
-            # No parseable content
-            logger.debug(f"Forward {email_id} has no parseable content")
-            return None
-
-        return ProcessedEmail(
-            email_id=email_id,
-            conversation_id=row["conversation_id"],
-            subject=subject,
-            sender=row["sender"],
-            received_at=row["received_at"],
-            clean_body=new_content,  # Just the forwarder's new message
-            original_length=len(body),
-            clean_length=len(new_content),
-            is_forward=True,
-            virtual_emails=virtual_emails,
-        )
-
-    else:
-        # Regular email or reply - strip quoted content
-        clean_body = strip_quoted_replies(body)
-
-        if len(clean_body) < MIN_CHUNK_LENGTH:
-            logger.debug(f"Email {email_id} has insufficient content after quote stripping")
-            return None
-
-        return ProcessedEmail(
-            email_id=email_id,
-            conversation_id=row["conversation_id"],
-            subject=subject,
-            sender=row["sender"],
-            received_at=row["received_at"],
-            clean_body=clean_body,
-            original_length=len(body),
-            clean_length=len(clean_body),
-            is_forward=False,
-            virtual_emails=[],
-        )
+    return ProcessedEmail(
+        email_id=email_id,
+        conversation_id=row["conversation_id"],
+        subject=subject,
+        sender=row["sender"],
+        received_at=row["received_at"],
+        clean_body=clean_body,
+        original_length=len(original_body),
+        clean_length=len(clean_body),
+        is_forward=False,  # LLM extracts only new content
+        virtual_emails=[],  # LLM handles forwards by extracting new content only
+    )
 
 
 def create_email_chunk(email_data: ProcessedEmail) -> int:
     """
     Create chunk entries for an email and its virtual emails (from forwards).
+    Applies document chunking for large email bodies.
     Returns total number of chunks created.
     """
     chunks_created = 0
     conn = get_connection()
+    next_chunk_index = 0  # Track next available chunk index
 
-    # Create chunk for the main email content (if any)
+    # Create chunks for the main email content (if any)
     if email_data.clean_body and len(email_data.clean_body) >= MIN_CHUNK_LENGTH:
-        chunk_id = generate_chunk_id("email", email_data.email_id, 0)
+        # Split large email bodies into chunks (same as attachments)
+        if len(email_data.clean_body) > DOCUMENT_CHUNK_SIZE:
+            body_chunks = chunk_document(email_data.clean_body)
+        else:
+            body_chunks = [email_data.clean_body]
+
+        for chunk_idx, chunk_text in enumerate(body_chunks):
+            chunk_id = generate_chunk_id("email", email_data.email_id, chunk_idx)
+
+            metadata = {
+                "conversation_id": email_data.conversation_id,
+                "subject": email_data.subject,
+                "sender": email_data.sender,
+                "received_at": email_data.received_at,
+                "is_forward": email_data.is_forward,
+                "chunk_of": len(body_chunks),  # Track total chunks for this email
+            }
+
+            conn.execute(
+                """
+                INSERT INTO chunks (id, source_type, source_id, chunk_index, content,
+                                   char_offset_start, char_offset_end, metadata_json)
+                VALUES (?, 'email', ?, ?, ?, 0, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    content = excluded.content,
+                    char_offset_end = excluded.char_offset_end,
+                    metadata_json = excluded.metadata_json
+                """,
+                (
+                    chunk_id,
+                    email_data.email_id,
+                    chunk_idx,
+                    chunk_text,
+                    len(chunk_text),
+                    json.dumps(metadata),
+                ),
+            )
+            chunks_created += 1
+
+        next_chunk_index = len(body_chunks)
+
+    # Create chunks for virtual emails (extracted from forwards)
+    for virtual in email_data.virtual_emails:
+        # Use chunk_index offset so they cascade-delete with the parent email
+        chunk_index = next_chunk_index + virtual.position
+        chunk_id = generate_chunk_id("email", email_data.email_id, chunk_index)
 
         metadata = {
-            "conversation_id": email_data.conversation_id,
-            "subject": email_data.subject,
-            "sender": email_data.sender,
-            "received_at": email_data.received_at,
-            "is_forward": email_data.is_forward,
+            "source_email_id": email_data.email_id,
+            "position_in_chain": virtual.position,
+            "extracted_sender": virtual.sender,
+            "extracted_recipients": virtual.recipients,
+            "extracted_date": virtual.date,
+            "extracted_subject": virtual.subject,
+            "virtual_id": f"virtual:{email_data.email_id}:{virtual.position}",
+            # Link to parent conversation if available
+            "parent_conversation_id": email_data.conversation_id,
+            "is_virtual": True,
         }
 
         conn.execute(
             """
             INSERT INTO chunks (id, source_type, source_id, chunk_index, content,
                                char_offset_start, char_offset_end, metadata_json)
-            VALUES (?, 'email', ?, 0, ?, 0, ?, ?)
+            VALUES (?, 'email', ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 content = excluded.content,
                 char_offset_end = excluded.char_offset_end,
@@ -408,44 +427,9 @@ def create_email_chunk(email_data: ProcessedEmail) -> int:
             (
                 chunk_id,
                 email_data.email_id,
-                email_data.clean_body,
-                email_data.clean_length,
-                json.dumps(metadata),
-            ),
-        )
-        chunks_created += 1
-
-    # Create chunks for virtual emails (extracted from forwards)
-    for virtual in email_data.virtual_emails:
-        # Use a compound ID: virtual:{source_email}:{position}
-        virtual_id = f"virtual:{virtual.source_email_id}:{virtual.position}"
-        chunk_id = generate_chunk_id("virtual_email", virtual_id, 0)
-
-        metadata = {
-            "source_email_id": virtual.source_email_id,
-            "position_in_chain": virtual.position,
-            "extracted_sender": virtual.sender,
-            "extracted_recipients": virtual.recipients,
-            "extracted_date": virtual.date,
-            "extracted_subject": virtual.subject,
-            # Link to parent conversation if available
-            "parent_conversation_id": email_data.conversation_id,
-        }
-
-        conn.execute(
-            """
-            INSERT INTO chunks (id, source_type, source_id, chunk_index, content,
-                               char_offset_start, char_offset_end, metadata_json)
-            VALUES (?, 'virtual_email', ?, 0, ?, 0, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET
-                content = excluded.content,
-                char_offset_end = excluded.char_offset_end,
-                metadata_json = excluded.metadata_json
-            """,
-            (
-                chunk_id,
-                virtual_id,
+                chunk_index,
                 virtual.body,
+                0,
                 len(virtual.body),
                 json.dumps(metadata),
             ),
@@ -572,7 +556,7 @@ def process_unindexed_attachments(limit: int = 100) -> Dict[str, int]:
     rows = conn.execute(
         """
         SELECT a.id FROM attachments a
-        WHERE a.extraction_status = 'success'
+        WHERE a.extraction_status = 'completed'
           AND a.extracted_text IS NOT NULL
           AND NOT EXISTS (
               SELECT 1 FROM chunks c WHERE c.source_type = 'attachment' AND c.source_id = a.id

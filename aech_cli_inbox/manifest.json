@@ -43,11 +43,19 @@
       ]
     },
     {
+      "name": "embed",
+      "description": "Generate embeddings for vector similarity search. Uses BAAI/bge-m3 by default (configurable via EMBEDDING_MODEL env var).",
+      "parameters": [
+        {"name": "limit", "type": "option", "required": false, "description": "Number of chunks to embed per batch (default: 1000)."},
+        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
+      ]
+    },
+    {
       "name": "attachment-status",
       "description": "Show attachment extraction status (JSON by default).",
       "parameters": [
         {"name": "limit", "type": "option", "required": false, "description": "Number of attachments to list."},
-        {"name": "status", "type": "option", "required": false, "description": "Filter by status (pending/success/failed/unsupported)."},
+        {"name": "status", "type": "option", "required": false, "description": "Filter by status (pending/completed/failed/skipped/extracting)."},
         {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
       ]
     },

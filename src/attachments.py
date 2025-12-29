@@ -5,6 +5,7 @@ Downloads attachments from Microsoft Graph API and extracts text using
 aech-cli-documents for searchable indexing.
 """
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -12,7 +13,7 @@ import os
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import requests
 from aech_cli_msgraph.graph import GraphClient
@@ -136,37 +137,44 @@ class AttachmentProcessor:
             try:
                 # Create temp output directory
                 with tempfile.TemporaryDirectory() as output_dir:
-                    # Call documents CLI
+                    # Call documents CLI (convert-to-markdown extracts text as markdown)
                     result = subprocess.run(
                         [
                             "aech-cli-documents",
-                            "extract",
+                            "convert-to-markdown",
                             temp_path,
                             "--output-dir",
                             output_dir,
-                            "--format",
-                            "markdown",
                         ],
                         capture_output=True,
                         text=True,
-                        timeout=60,
+                        timeout=120,
                     )
 
-                    if result.returncode != 0:
-                        logger.warning(
-                            f"Documents CLI failed for {filename}: {result.stderr}"
-                        )
-                        return None
-
-                    # Read the output markdown file
+                    # Check for output files first - onnxruntime warnings may cause
+                    # non-zero exit even when extraction succeeds
                     output_files = list(Path(output_dir).glob("*.md"))
                     if output_files:
                         return output_files[0].read_text()
-                    else:
-                        # Try txt files
-                        output_files = list(Path(output_dir).glob("*.txt"))
-                        if output_files:
-                            return output_files[0].read_text()
+
+                    # Try txt files
+                    output_files = list(Path(output_dir).glob("*.txt"))
+                    if output_files:
+                        return output_files[0].read_text()
+
+                    # Only report failure if no output was produced
+                    stderr = result.stderr
+                    stdout = result.stdout
+                    # Log actual error for debugging (filter onnxruntime noise)
+                    clean_stderr = "\n".join(
+                        line for line in stderr.split("\n")
+                        if "onnxruntime" not in line.lower() and line.strip()
+                    )
+                    if clean_stderr:
+                        logger.warning(f"Documents CLI error for {filename}: {clean_stderr}")
+                    if "Error" in stdout or "Error" in stderr:
+                        # Extract the actual error message
+                        logger.warning(f"Documents CLI output for {filename}: {stdout}")
 
                     logger.warning(f"No output file from documents CLI for {filename}")
                     return None
@@ -235,7 +243,7 @@ class AttachmentProcessor:
         # Check if we can extract from this type
         if content_type not in EXTRACTABLE_TYPES:
             self._update_attachment_status(
-                att_id, "unsupported", error=f"Content type not supported: {content_type}"
+                att_id, "skipped", error=f"Content type not supported: {content_type}"
             )
             return False
 
@@ -264,7 +272,7 @@ class AttachmentProcessor:
             ).fetchone()
             if row:
                 self._update_attachment_status(
-                    att_id, "success", extracted_text=row["extracted_text"], content_hash=content_hash
+                    att_id, "completed", extracted_text=row["extracted_text"], content_hash=content_hash
                 )
                 logger.info(f"Used cached extraction for {filename}")
                 return True
@@ -275,7 +283,7 @@ class AttachmentProcessor:
 
         if extracted_text:
             self._update_attachment_status(
-                att_id, "success", extracted_text=extracted_text, content_hash=content_hash
+                att_id, "completed", extracted_text=extracted_text, content_hash=content_hash
             )
             logger.info(f"Successfully extracted text from {filename} ({len(extracted_text)} chars)")
             return True
@@ -285,31 +293,46 @@ class AttachmentProcessor:
             )
             return False
 
-    def process_pending_attachments(self, limit: int = 50) -> Dict[str, int]:
+    def process_pending_attachments(
+        self,
+        limit: int = 50,
+        progress_callback: Optional[Callable[[int, int, str], None]] = None,
+    ) -> Dict[str, int]:
         """
         Process all pending attachments.
-        Returns counts of success/failed/unsupported.
+        Returns counts of completed/failed/skipped.
+
+        Args:
+            limit: Maximum number of attachments to process
+            progress_callback: Optional callback(current, total, filename) for progress updates
         """
         attachments = self._get_pending_attachments(limit)
-        logger.info(f"Processing {len(attachments)} pending attachments")
+        total = len(attachments)
+        logger.info(f"Processing {total} pending attachments")
 
-        results = {"success": 0, "failed": 0, "unsupported": 0}
+        results = {"completed": 0, "failed": 0, "skipped": 0}
 
-        for att in attachments:
+        for i, att in enumerate(attachments):
+            filename = att.get("filename", "unknown")
+
+            # Report progress before processing
+            if progress_callback:
+                progress_callback(i + 1, total, filename)
+
             try:
                 success = self.process_attachment(att)
                 if success:
-                    results["success"] += 1
+                    results["completed"] += 1
                 else:
-                    # Check if it was unsupported or failed
+                    # Check actual status to bucket correctly
                     conn = get_connection()
                     row = conn.execute(
                         "SELECT extraction_status FROM attachments WHERE id = ?",
                         (att["id"],),
                     ).fetchone()
                     conn.close()
-                    if row and row["extraction_status"] == "unsupported":
-                        results["unsupported"] += 1
+                    if row and row["extraction_status"] == "skipped":
+                        results["skipped"] += 1
                     else:
                         results["failed"] += 1
             except Exception as e:
@@ -318,8 +341,77 @@ class AttachmentProcessor:
                 results["failed"] += 1
 
         logger.info(
-            f"Attachment processing complete: {results['success']} success, "
-            f"{results['failed']} failed, {results['unsupported']} unsupported"
+            f"Attachment processing complete: {results['completed']} completed, "
+            f"{results['failed']} failed, {results['skipped']} skipped"
+        )
+        return results
+
+    async def process_pending_attachments_async(
+        self,
+        limit: int = 50,
+        concurrency: int = 5,
+        progress_callback: Optional[Callable[[int, int, str], None]] = None,
+    ) -> Dict[str, int]:
+        """
+        Process pending attachments concurrently.
+
+        Args:
+            limit: Maximum number of attachments to process
+            concurrency: Number of concurrent workers
+            progress_callback: Optional callback(current, total, filename) for progress updates
+        """
+        attachments = self._get_pending_attachments(limit)
+        total = len(attachments)
+        logger.info(f"Processing {total} pending attachments with concurrency={concurrency}")
+
+        results = {"completed": 0, "failed": 0, "skipped": 0}
+        processed_count = 0
+        lock = asyncio.Lock()
+        semaphore = asyncio.Semaphore(concurrency)
+
+        async def process_one(att: Dict[str, Any]) -> None:
+            nonlocal processed_count
+            filename = att.get("filename", "unknown")
+
+            async with semaphore:
+                # Report progress
+                async with lock:
+                    processed_count += 1
+                    current = processed_count
+                if progress_callback:
+                    progress_callback(current, total, filename)
+
+                try:
+                    # Run synchronous processing in thread pool
+                    success = await asyncio.to_thread(self.process_attachment, att)
+
+                    async with lock:
+                        if success:
+                            results["completed"] += 1
+                        else:
+                            # Check actual status
+                            conn = get_connection()
+                            row = conn.execute(
+                                "SELECT extraction_status FROM attachments WHERE id = ?",
+                                (att["id"],),
+                            ).fetchone()
+                            conn.close()
+                            if row and row["extraction_status"] == "skipped":
+                                results["skipped"] += 1
+                            else:
+                                results["failed"] += 1
+                except Exception as e:
+                    logger.error(f"Error processing attachment {att['id']}: {e}")
+                    self._update_attachment_status(att["id"], "failed", error=str(e))
+                    async with lock:
+                        results["failed"] += 1
+
+        # Process all attachments concurrently
+        await asyncio.gather(*[process_one(att) for att in attachments])
+
+        logger.info(
+            f"Attachment processing complete: {results['completed']} completed, "
+            f"{results['failed']} failed, {results['skipped']} skipped"
         )
         return results
 

@@ -43,13 +43,6 @@ DEFAULT_CATEGORIES: list[dict[str, Any]] = [
         "description": "Work-related, read when available",
     },
     {
-        "name": "FYI",
-        "color": "gray",
-        "preset": "preset14",
-        "flag_urgency": None,
-        "description": "Newsletters, notifications, updates - no action needed",
-    },
-    {
         "name": "Personal",
         "color": "green",
         "preset": "preset4",

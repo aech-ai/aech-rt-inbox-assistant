@@ -1,37 +1,48 @@
 """
 Embedding generation for Email Corpus Intelligence.
 
-Uses sentence-transformers (all-MiniLM-L6-v2) for local embedding generation.
+Uses sentence-transformers with configurable model (default: BAAI/bge-m3).
 Embeddings are stored as BLOBs in SQLite for vector similarity search.
+
+bge-m3 features:
+- 8192 token context (handles long attachment chunks)
+- Multi-lingual support
+- Strong retrieval performance
 """
 
+import json
 import logging
+import os
 import struct
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from .database import get_connection
 
 logger = logging.getLogger(__name__)
 
-# Model configuration
-MODEL_NAME = "all-MiniLM-L6-v2"
-EMBEDDING_DIM = 384
-BATCH_SIZE = 32
+# Model configuration - configurable via environment
+DEFAULT_MODEL = "BAAI/bge-m3"
+MODEL_NAME = os.getenv("EMBEDDING_MODEL", DEFAULT_MODEL)
+BATCH_SIZE = int(os.getenv("EMBEDDING_BATCH_SIZE", "8"))  # Lower default for memory efficiency
 
-# Lazy-loaded model
+# Lazy-loaded model and dimension
 _model = None
+_embedding_dim = None
 
 
 def get_model():
     """Lazy-load the sentence transformer model."""
-    global _model
+    global _model, _embedding_dim
     if _model is None:
         try:
             from sentence_transformers import SentenceTransformer
 
             logger.info(f"Loading embedding model: {MODEL_NAME}")
-            _model = SentenceTransformer(MODEL_NAME)
-            logger.info(f"Model loaded successfully (dim={EMBEDDING_DIM})")
+            _model = SentenceTransformer(MODEL_NAME, trust_remote_code=True)
+
+            # Auto-detect embedding dimension
+            _embedding_dim = _model.get_sentence_embedding_dimension()
+            logger.info(f"Model loaded successfully (dim={_embedding_dim})")
         except ImportError:
             logger.error(
                 "sentence-transformers not installed. "
@@ -39,6 +50,14 @@ def get_model():
             )
             raise
     return _model
+
+
+def get_embedding_dim() -> int:
+    """Get the embedding dimension (loads model if needed)."""
+    global _embedding_dim
+    if _embedding_dim is None:
+        get_model()
+    return _embedding_dim or 0
 
 
 def encode_text(text: str) -> bytes:
@@ -88,6 +107,66 @@ def cosine_similarity(a: bytes, b: bytes) -> float:
     return dot / (norm_a * norm_b)
 
 
+def prepare_email_text_for_embedding(
+    content: str,
+    subject: Optional[str] = None,
+    sender: Optional[str] = None,
+    received_at: Optional[str] = None,
+) -> str:
+    """
+    Prepare email content for embedding by enriching with metadata.
+
+    Enriched format improves retrieval quality by including searchable
+    context that users might query (subject, sender, date).
+    """
+    parts = []
+
+    if subject:
+        parts.append(f"Subject: {subject}")
+    if sender:
+        # Extract name from "Name <email>" format if present
+        sender_display = sender.split("<")[0].strip() if "<" in sender else sender
+        parts.append(f"From: {sender_display}")
+    if received_at:
+        # Just the date portion
+        date_part = received_at.split("T")[0] if "T" in received_at else received_at
+        parts.append(f"Date: {date_part}")
+
+    if parts:
+        parts.append("")  # Blank line before content
+
+    parts.append(content)
+
+    return "\n".join(parts)
+
+
+def prepare_attachment_text_for_embedding(
+    content: str,
+    filename: Optional[str] = None,
+    email_subject: Optional[str] = None,
+    email_sender: Optional[str] = None,
+) -> str:
+    """
+    Prepare attachment content for embedding by enriching with metadata.
+    """
+    parts = []
+
+    if filename:
+        parts.append(f"Attachment: {filename}")
+    if email_subject:
+        parts.append(f"From email: {email_subject}")
+    if email_sender:
+        sender_display = email_sender.split("<")[0].strip() if "<" in email_sender else email_sender
+        parts.append(f"Sender: {sender_display}")
+
+    if parts:
+        parts.append("")  # Blank line before content
+
+    parts.append(content)
+
+    return "\n".join(parts)
+
+
 def embed_chunk(chunk_id: str) -> bool:
     """
     Generate and store embedding for a single chunk.
@@ -120,18 +199,37 @@ def embed_chunk(chunk_id: str) -> bool:
         return False
 
 
-def embed_pending_chunks(limit: int = 100) -> Dict[str, int]:
+def embed_pending_chunks(
+    limit: int = 1000,
+    enrich: bool = True,
+    batch_size: int = 50,
+    progress_callback: Optional[Callable[[int, int], None]] = None,
+) -> Dict[str, int]:
     """
     Generate embeddings for chunks that don't have them yet.
-    Uses batch processing for efficiency.
+    Uses batch processing for efficiency with progress reporting.
+
+    Args:
+        limit: Maximum number of chunks to process
+        enrich: If True, enrich text with email/attachment metadata for better retrieval
+        batch_size: Number of chunks to process per batch (for progress updates)
+        progress_callback: Optional callback(processed, total) for progress updates
     """
     conn = get_connection()
 
-    # Get chunks without embeddings
+    # Get chunks without embeddings, with source metadata
     rows = conn.execute(
         """
-        SELECT id, content FROM chunks
-        WHERE embedding IS NULL
+        SELECT
+            c.id, c.content, c.source_type, c.source_id, c.metadata_json,
+            e.subject as email_subject, e.sender as email_sender, e.received_at,
+            a.filename as attachment_filename,
+            ae.subject as attachment_email_subject, ae.sender as attachment_email_sender
+        FROM chunks c
+        LEFT JOIN emails e ON c.source_type = 'email' AND c.source_id = e.id
+        LEFT JOIN attachments a ON c.source_type = 'attachment' AND c.source_id = a.id
+        LEFT JOIN emails ae ON a.email_id = ae.id
+        WHERE c.embedding IS NULL
         LIMIT ?
         """,
         (limit,),
@@ -139,40 +237,103 @@ def embed_pending_chunks(limit: int = 100) -> Dict[str, int]:
     conn.close()
 
     if not rows:
-        return {"processed": 0, "failed": 0}
+        return {"processed": 0, "failed": 0, "total_pending": 0}
 
-    chunk_ids = [r["id"] for r in rows]
-    texts = [r["content"] for r in rows]
-
-    logger.info(f"Generating embeddings for {len(texts)} chunks")
-
-    try:
-        embeddings = encode_batch(texts)
-    except Exception as e:
-        logger.error(f"Batch embedding failed: {e}")
-        return {"processed": 0, "failed": len(texts)}
-
-    # Store embeddings
+    # Check total pending for progress reporting
     conn = get_connection()
+    total_pending = conn.execute(
+        "SELECT COUNT(*) FROM chunks WHERE embedding IS NULL"
+    ).fetchone()[0]
+    conn.close()
+
+    # Prepare all texts first
+    all_chunk_ids = []
+    all_texts = []
+
+    for row in rows:
+        all_chunk_ids.append(row["id"])
+        content = row["content"] or ""
+
+        if enrich:
+            if row["source_type"] == "email":
+                text = prepare_email_text_for_embedding(
+                    content=content,
+                    subject=row["email_subject"],
+                    sender=row["email_sender"],
+                    received_at=row["received_at"],
+                )
+            elif row["source_type"] == "attachment":
+                text = prepare_attachment_text_for_embedding(
+                    content=content,
+                    filename=row["attachment_filename"],
+                    email_subject=row["attachment_email_subject"],
+                    email_sender=row["attachment_email_sender"],
+                )
+            else:
+                # Virtual emails or other types
+                metadata = {}
+                if row["metadata_json"]:
+                    try:
+                        metadata = json.loads(row["metadata_json"])
+                    except json.JSONDecodeError:
+                        pass
+
+                text = prepare_email_text_for_embedding(
+                    content=content,
+                    subject=metadata.get("extracted_subject"),
+                    sender=metadata.get("extracted_sender"),
+                    received_at=metadata.get("extracted_date"),
+                )
+        else:
+            text = content
+
+        all_texts.append(text)
+
+    total_to_process = len(all_texts)
+    logger.info(f"Generating embeddings for {total_to_process} chunks ({total_pending} total pending)")
+
     success = 0
     failed = 0
 
-    for chunk_id, embedding in zip(chunk_ids, embeddings):
-        try:
-            conn.execute(
-                "UPDATE chunks SET embedding = ? WHERE id = ?",
-                (embedding, chunk_id),
-            )
-            success += 1
-        except Exception as e:
-            logger.error(f"Failed to store embedding for {chunk_id}: {e}")
-            failed += 1
+    # Process in batches with progress updates
+    for batch_start in range(0, total_to_process, batch_size):
+        batch_end = min(batch_start + batch_size, total_to_process)
+        batch_ids = all_chunk_ids[batch_start:batch_end]
+        batch_texts = all_texts[batch_start:batch_end]
 
-    conn.commit()
-    conn.close()
+        try:
+            embeddings = encode_batch(batch_texts)
+        except Exception as e:
+            logger.error(f"Batch embedding failed: {e}")
+            failed += len(batch_ids)
+            continue
+
+        # Store embeddings
+        conn = get_connection()
+        for chunk_id, embedding in zip(batch_ids, embeddings):
+            try:
+                conn.execute(
+                    "UPDATE chunks SET embedding = ? WHERE id = ?",
+                    (embedding, chunk_id),
+                )
+                success += 1
+            except Exception as e:
+                logger.error(f"Failed to store embedding for {chunk_id}: {e}")
+                failed += 1
+
+        conn.commit()
+        conn.close()
+
+        # Report progress
+        if progress_callback:
+            progress_callback(batch_end, total_to_process)
 
     logger.info(f"Embedding complete: {success} success, {failed} failed")
-    return {"processed": success, "failed": failed}
+    return {
+        "processed": success,
+        "failed": failed,
+        "total_pending": total_pending - success,
+    }
 
 
 def search_by_similarity(query: str, limit: int = 20, min_score: float = 0.3) -> List[Dict[str, Any]]:
@@ -241,6 +402,8 @@ def get_embedding_stats() -> Dict[str, Any]:
         """
     )
     stats["by_source_type"] = {row["source_type"]: row["count"] for row in cursor.fetchall()}
+
+    stats["model"] = MODEL_NAME
 
     conn.close()
     return stats

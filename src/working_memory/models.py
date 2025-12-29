@@ -48,7 +48,7 @@ class UrgencyLevel(str, Enum):
     IMMEDIATE = "immediate"  # Needs attention now
     TODAY = "today"  # Should handle today
     THIS_WEEK = "this_week"  # Can wait a few days
-    SOMEDAY = "someday"  # Low priority/FYI
+    SOMEDAY = "someday"  # Low priority
 
 
 class ThreadStatus(str, Enum):
@@ -307,6 +307,16 @@ class EmailAnalysis(BaseModel):
     suggested_urgency: UrgencyLevel = UrgencyLevel.THIS_WEEK
     needs_reply: bool = False
     reply_deadline: str | None = None
+
+    # Content extraction for search indexing
+    extracted_new_content: str | None = Field(
+        default=None,
+        description=(
+            "Only the NEW content from this email, excluding quoted replies, "
+            "forwarded headers, signatures, and legal disclaimers. "
+            "Used for search indexing to avoid duplicate content in threads."
+        ),
+    )
 
 
 # === Aggregate Views ===
