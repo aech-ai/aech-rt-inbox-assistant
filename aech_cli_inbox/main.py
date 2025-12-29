@@ -418,7 +418,15 @@ def sync_emails(
         if human:
             typer.echo("  Cleared sync state, forcing full sync...")
 
-    results = poller.sync_all_folders(fetch_body=not no_bodies)
+    def progress(current: int, total: int, folder_name: str):
+        if human:
+            pct = int(current / total * 100)
+            print(f"\r  Syncing folder {current}/{total}: {folder_name[:30]:<30} ({pct}%)", end="", flush=True)
+
+    results = poller.sync_all_folders(fetch_body=not no_bodies, progress_callback=progress if human else None)
+
+    if human:
+        print()  # newline after progress
 
     if human:
         typer.echo(f"\nSync complete:")
@@ -728,13 +736,18 @@ def extract_content(
                 with lock:
                     counters["success"] += 1
                     counters["completed"] += 1
-                    if human and counters["completed"] % 25 == 0:
-                        typer.echo(f"  Progress: {counters['completed']}/{total}")
+                    if human:
+                        pct = int(counters["completed"] / total * 100)
+                        bar_len = 30
+                        filled = int(bar_len * counters["completed"] / total)
+                        bar = "█" * filled + "░" * (bar_len - filled)
+                        print(f"\r  [{bar}] {pct}% ({counters['completed']}/{total})", end="", flush=True)
             except Exception as e:
                 with lock:
                     counters["failed"] += 1
                     counters["completed"] += 1
                     if human:
+                        print()  # newline before error
                         typer.echo(f"  ✗ {email.get('subject', 'Unknown')[:50]}... ({e})")
 
     async def process_all():
@@ -744,6 +757,9 @@ def extract_content(
 
     asyncio.run(process_all())
 
+    if human:
+        print()  # newline after progress bar
+
     results = {
         "processed": counters["success"],
         "failed": counters["failed"],
@@ -751,7 +767,7 @@ def extract_content(
     }
 
     if human:
-        typer.echo(f"\nResults:")
+        typer.echo(f"Results:")
         typer.echo(f"  Processed: {results['processed']}")
         typer.echo(f"  Failed:    {results['failed']}")
         typer.echo(f"  Remaining: {results['remaining']}")
@@ -789,8 +805,11 @@ def embed_chunks(
         typer.echo(f"Processing up to {limit} chunks (batch size: {batch_size})...")
 
         def show_progress(processed: int, total: int):
-            pct = (processed / total) * 100 if total > 0 else 0
-            typer.echo(f"  Progress: {processed}/{total} ({pct:.1f}%)")
+            pct = int(processed / total * 100) if total > 0 else 0
+            bar_len = 30
+            filled = int(bar_len * processed / total) if total > 0 else 0
+            bar = "█" * filled + "░" * (bar_len - filled)
+            print(f"\r  [{bar}] {pct}% ({processed}/{total})", end="", flush=True)
 
         results = embed_pending_chunks(
             limit=limit,
@@ -798,8 +817,9 @@ def embed_chunks(
             batch_size=batch_size,
             progress_callback=show_progress,
         )
+        print()  # newline after progress bar
 
-        typer.echo(f"\nResults:")
+        typer.echo(f"Results:")
         typer.echo(f"  Processed: {results['processed']}")
         typer.echo(f"  Failed:    {results['failed']}")
         typer.echo(f"  Remaining: {results['total_pending']}")

@@ -4,7 +4,7 @@ import subprocess
 import os
 import hashlib
 from datetime import datetime, timezone
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Callable
 
 import requests
 from aech_cli_msgraph.graph import GraphClient
@@ -477,14 +477,23 @@ class GraphPoller:
 
         return (messages_updated, messages_deleted)
 
-    def sync_all_folders(self, fetch_body: bool = True) -> Dict[str, Any]:
+    def sync_all_folders(
+        self,
+        fetch_body: bool = True,
+        progress_callback: Optional[Callable[[int, int, str], None]] = None,
+    ) -> Dict[str, Any]:
         """
         Sync all folders in the mailbox.
         Uses delta sync if available, otherwise full sync.
         Returns a summary of the sync operation.
+
+        Args:
+            fetch_body: Whether to fetch full email bodies
+            progress_callback: Optional callback(current, total, folder_name) for progress
         """
         folders = self.get_all_folders()
-        logger.info(f"Starting sync for {len(folders)} folders")
+        total_folders = len(folders)
+        logger.info(f"Starting sync for {total_folders} folders")
 
         results = {
             "folders_synced": 0,
@@ -493,12 +502,15 @@ class GraphPoller:
             "folder_details": []
         }
 
-        for folder in folders:
+        for i, folder in enumerate(folders):
             folder_id = folder.get("id")
             folder_name = folder.get("displayName", "Unknown")
 
             if not folder_id:
                 continue
+
+            if progress_callback:
+                progress_callback(i + 1, total_folders, folder_name)
 
             sync_state = self.get_sync_state(folder_id)
 
