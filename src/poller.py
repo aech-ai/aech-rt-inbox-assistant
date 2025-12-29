@@ -345,10 +345,20 @@ class GraphPoller:
                 )
             )
 
-    def full_sync_folder(self, folder_id: str, folder_name: str, fetch_body: bool = True, page_size: int = 50) -> int:
+    def full_sync_folder(
+        self,
+        folder_id: str,
+        folder_name: str,
+        fetch_body: bool = True,
+        page_size: int = 50,
+        message_callback: Optional[Callable[[int, str], None]] = None,
+    ) -> int:
         """
         Perform a full sync of a folder using pagination.
         Returns the number of messages synced.
+
+        Args:
+            message_callback: Optional callback(count, subject) for per-message progress
         """
         logger.info(f"Starting full sync for folder: {folder_name} ({folder_id})")
 
@@ -386,6 +396,10 @@ class GraphPoller:
 
                     messages_synced += 1
 
+                    if message_callback:
+                        subject = msg_data.get("subject", "")[:40]
+                        message_callback(messages_synced, subject)
+
                 conn.commit()
                 logger.debug(f"Synced {messages_synced} messages so far from {folder_name}")
 
@@ -408,15 +422,24 @@ class GraphPoller:
 
         return messages_synced
 
-    def delta_sync_folder(self, folder_id: str, folder_name: str, fetch_body: bool = True) -> Tuple[int, int]:
+    def delta_sync_folder(
+        self,
+        folder_id: str,
+        folder_name: str,
+        fetch_body: bool = True,
+        message_callback: Optional[Callable[[int, str], None]] = None,
+    ) -> Tuple[int, int]:
         """
         Perform an incremental delta sync of a folder.
         Returns (messages_updated, messages_deleted).
+
+        Args:
+            message_callback: Optional callback(count, subject) for per-message progress
         """
         sync_state = self.get_sync_state(folder_id)
         if not sync_state or not sync_state[0]:
             logger.info(f"No delta link for {folder_name}, falling back to full sync")
-            count = self.full_sync_folder(folder_id, folder_name, fetch_body)
+            count = self.full_sync_folder(folder_id, folder_name, fetch_body, message_callback=message_callback)
             return (count, 0)
 
         delta_link, _ = sync_state
@@ -436,7 +459,7 @@ class GraphPoller:
                     if resp.status_code == 410:
                         logger.warning(f"Delta token expired for {folder_name}, doing full sync")
                         conn.close()
-                        count = self.full_sync_folder(folder_id, folder_name, fetch_body)
+                        count = self.full_sync_folder(folder_id, folder_name, fetch_body, message_callback=message_callback)
                         return (count, 0)
                     logger.error(f"Delta sync failed: {resp.status_code} - {resp.text}")
                     break
@@ -457,6 +480,10 @@ class GraphPoller:
 
                         self._upsert_message(conn, msg_data, body_html)
                         messages_updated += 1
+
+                        if message_callback:
+                            subject = msg_data.get("subject", "")[:40]
+                            message_callback(messages_updated, subject)
 
                 conn.commit()
 
@@ -481,6 +508,7 @@ class GraphPoller:
         self,
         fetch_body: bool = True,
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
+        message_callback: Optional[Callable[[int, str], None]] = None,
     ) -> Dict[str, Any]:
         """
         Sync all folders in the mailbox.
@@ -489,7 +517,8 @@ class GraphPoller:
 
         Args:
             fetch_body: Whether to fetch full email bodies
-            progress_callback: Optional callback(current, total, folder_name) for progress
+            progress_callback: Optional callback(current, total, folder_name) for folder progress
+            message_callback: Optional callback(count, subject) for per-message progress
         """
         folders = self.get_all_folders()
         total_folders = len(folders)
@@ -515,7 +544,9 @@ class GraphPoller:
             sync_state = self.get_sync_state(folder_id)
 
             if sync_state and sync_state[0]:
-                updated, deleted = self.delta_sync_folder(folder_id, folder_name, fetch_body)
+                updated, deleted = self.delta_sync_folder(
+                    folder_id, folder_name, fetch_body, message_callback=message_callback
+                )
                 results["folder_details"].append({
                     "name": folder_name,
                     "sync_type": "delta",
@@ -525,7 +556,9 @@ class GraphPoller:
                 results["total_messages"] += updated
                 results["total_deleted"] += deleted
             else:
-                count = self.full_sync_folder(folder_id, folder_name, fetch_body)
+                count = self.full_sync_folder(
+                    folder_id, folder_name, fetch_body, message_callback=message_callback
+                )
                 results["folder_details"].append({
                     "name": folder_name,
                     "sync_type": "full",

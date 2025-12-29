@@ -305,8 +305,9 @@ def backfill_bodies(
 
     poller = GraphPoller()
     results = {"backfilled": 0, "failed": 0}
+    total = len(emails_to_backfill)
 
-    for email_id, subject in emails_to_backfill:
+    for i, (email_id, subject) in enumerate(emails_to_backfill, 1):
         try:
             body_text, body_html = poller._get_message_body(email_id)
             if body_text:
@@ -317,16 +318,21 @@ def backfill_bodies(
                     WHERE id = ?
                 """, (body_text, body_html, body_hash, email_id))
                 results["backfilled"] += 1
-                if human:
-                    typer.echo(f"  ✓ {subject[:50]}...")
             else:
                 results["failed"] += 1
-                if human:
-                    typer.echo(f"  ✗ {subject[:50]}... (no body returned)")
-        except Exception as e:
+        except Exception:
             results["failed"] += 1
-            if human:
-                typer.echo(f"  ✗ {subject[:50]}... ({e})")
+
+        if human:
+            pct = int(i / total * 100)
+            bar_len = 30
+            filled = int(bar_len * i / total)
+            bar = "█" * filled + "░" * (bar_len - filled)
+            subj = (subject or "(no subject)")[:30]
+            print(f"\r  [{bar}] {pct}% ({i}/{total}) {subj}...", end="", flush=True)
+
+    if human:
+        print("\r\033[K", end="")  # Clear progress line
 
     conn.commit()
 
@@ -418,15 +424,33 @@ def sync_emails(
         if human:
             typer.echo("  Cleared sync state, forcing full sync...")
 
+    # Track current folder for message callback context
+    current_folder_info = {"name": "", "num": 0, "total": 0}
+
     def progress(current: int, total: int, folder_name: str):
         if human:
+            current_folder_info["name"] = folder_name
+            current_folder_info["num"] = current
+            current_folder_info["total"] = total
             pct = int(current / total * 100)
-            print(f"\r  Syncing folder {current}/{total}: {folder_name[:30]:<30} ({pct}%)", end="", flush=True)
+            # Clear line and show folder progress
+            print(f"\r\033[K  Syncing folder {current}/{total}: {folder_name[:30]:<30} ({pct}%)", end="", flush=True)
 
-    results = poller.sync_all_folders(fetch_body=not no_bodies, progress_callback=progress if human else None)
+    def message_progress(count: int, subject: str):
+        if human:
+            folder = current_folder_info["name"][:20]
+            # Truncate subject to fit on line
+            subj = subject[:35] if subject else "(no subject)"
+            print(f"\r\033[K  [{folder}] {count} msgs - {subj}...", end="", flush=True)
+
+    results = poller.sync_all_folders(
+        fetch_body=not no_bodies,
+        progress_callback=progress if human else None,
+        message_callback=message_progress if human else None,
+    )
 
     if human:
-        print()  # newline after progress
+        print("\r\033[K", end="")  # Clear progress line
 
     if human:
         typer.echo(f"\nSync complete:")
@@ -594,17 +618,22 @@ def extract_attachments(
     processor = AttachmentProcessor()
 
     if human:
-        typer.echo(f"Processing up to {limit} pending attachments...")
-        typer.echo(f"Concurrency: {concurrency}")
+        typer.echo(f"Processing up to {limit} pending attachments (concurrency: {concurrency})...")
 
         def progress(current: int, total: int, filename: str):
-            typer.echo(f"  [{current}/{total}] {filename}")
+            pct = int(current / total * 100) if total > 0 else 0
+            bar_len = 30
+            filled = int(bar_len * current / total) if total > 0 else 0
+            bar = "█" * filled + "░" * (bar_len - filled)
+            name = (filename or "unknown")[:25]
+            print(f"\r  [{bar}] {pct}% ({current}/{total}) {name}...", end="", flush=True)
 
         results = asyncio.run(
             processor.process_pending_attachments_async(
                 limit=limit, concurrency=concurrency, progress_callback=progress
             )
         )
+        print("\r\033[K", end="")  # Clear progress line
     else:
         results = asyncio.run(
             processor.process_pending_attachments_async(limit=limit, concurrency=concurrency)
@@ -638,9 +667,18 @@ def index_content(
 
     if human:
         typer.echo(f"Indexing up to {limit} items per type...")
+        print("  Processing emails...", end="", flush=True)
 
     email_results = process_unindexed_emails(limit=limit)
+
+    if human:
+        print(f"\r\033[K  Emails: {email_results['processed']} processed, {email_results['chunks_created']} chunks")
+        print("  Processing attachments...", end="", flush=True)
+
     attachment_results = process_unindexed_attachments(limit=limit)
+
+    if human:
+        print(f"\r\033[K  Attachments: {attachment_results['processed']} processed, {attachment_results['chunks_created']} chunks")
 
     combined = {
         "emails_processed": email_results["processed"],
@@ -652,14 +690,8 @@ def index_content(
     }
 
     if human:
-        typer.echo(f"\nEmail indexing:")
-        typer.echo(f"  Processed: {combined['emails_processed']}")
-        typer.echo(f"  Skipped:   {combined['emails_skipped']}")
-        typer.echo(f"  Chunks:    {combined['email_chunks']}")
-        typer.echo(f"  Virtual:   {combined['virtual_emails']} (from forwards)")
-        typer.echo(f"\nAttachment indexing:")
-        typer.echo(f"  Processed: {combined['attachments_processed']}")
-        typer.echo(f"  Chunks:    {combined['attachment_chunks']}")
+        if combined['emails_skipped'] > 0 or combined['virtual_emails'] > 0:
+            typer.echo(f"\n  Skipped: {combined['emails_skipped']}, Virtual: {combined['virtual_emails']} (from forwards)")
     else:
         typer.echo(json.dumps(combined))
 
