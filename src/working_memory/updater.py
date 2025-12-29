@@ -234,8 +234,8 @@ class WorkingMemoryUpdater:
         category = (category_decision or {}).get("category", "Unknown")
         requires_reply = (category_decision or {}).get("requires_reply", False)
 
-        # Get body - prefer full body_text, fall back to preview
-        body = email.get("body_text") or email.get("body_preview") or ""
+        # Get body - prefer full body_markdown, fall back to preview
+        body = email.get("body_markdown") or email.get("body_preview") or ""
         # Truncate very long bodies
         if len(body) > 4000:
             body = body[:4000] + "..."

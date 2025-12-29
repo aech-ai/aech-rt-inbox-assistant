@@ -272,7 +272,7 @@ def backfill_bodies(
     """
     Backfill missing email bodies from Graph API.
 
-    Fetches full body content for emails where body_text is NULL.
+    Fetches full body content for emails where body_markdown is NULL.
     This is needed if emails were synced before body fetching was enabled.
     """
     import asyncio
@@ -281,17 +281,18 @@ def backfill_bodies(
 
     try:
         from src.poller import GraphPoller
+        from src.body_parser import parse_email_body
     except ImportError:
         typer.echo("Error: GraphPoller not available. Run from inbox-assistant repo.", err=True)
         raise typer.Exit(1)
 
     conn = connect_db()
 
-    # Find emails with missing bodies
+    # Find emails with missing bodies (body_markdown is the new field)
     cursor = conn.cursor()
     cursor.execute("""
         SELECT id, subject FROM emails
-        WHERE body_text IS NULL OR body_text = ''
+        WHERE body_markdown IS NULL OR body_markdown = ''
         ORDER BY received_at DESC
         LIMIT ?
     """, (limit,))
@@ -319,14 +320,18 @@ def backfill_bodies(
     async def fetch_one(email_id: str, subject: str, semaphore: asyncio.Semaphore):
         async with semaphore:
             try:
-                # Run sync method in thread pool
-                body_text, body_html = await asyncio.to_thread(
+                # Run sync method in thread pool - returns HTML
+                body_html = await asyncio.to_thread(
                     poller._get_message_body, email_id
                 )
-                if body_text:
-                    body_hash = hashlib.sha256(body_text.encode()).hexdigest()[:16]
+                if body_html:
+                    # Parse HTML to markdown (same as poller does)
+                    parsed = parse_email_body(body_html)
+                    body_markdown = parsed.main_content
+                    signature_block = parsed.signature_block
+                    body_hash = hashlib.sha256(body_html.encode()).hexdigest()[:16]
                     with lock:
-                        updates.append((body_text, body_html, body_hash, email_id))
+                        updates.append((body_html, body_markdown, signature_block, body_hash, email_id))
                         counters["backfilled"] += 1
                 else:
                     with lock:
@@ -362,7 +367,7 @@ def backfill_bodies(
     if updates:
         conn = connect_db()
         conn.executemany("""
-            UPDATE emails SET body_text = ?, body_html = ?, body_hash = ?
+            UPDATE emails SET body_html = ?, body_markdown = ?, signature_block = ?, body_hash = ?
             WHERE id = ?
         """, updates)
         conn.commit()
@@ -511,7 +516,7 @@ def stats(
     cursor.execute("SELECT COUNT(*) FROM emails")
     stats_data["total_emails"] = cursor.fetchone()[0]
 
-    cursor.execute("SELECT COUNT(*) FROM emails WHERE body_text IS NOT NULL")
+    cursor.execute("SELECT COUNT(*) FROM emails WHERE body_markdown IS NOT NULL")
     stats_data["emails_with_body"] = cursor.fetchone()[0]
 
     cursor.execute("SELECT COUNT(*) FROM emails WHERE has_attachments = 1")
@@ -746,13 +751,13 @@ def extract_content(
     conn = connect_db()
     cursor = conn.cursor()
 
-    # Find emails without extracted_body
+    # Find emails without thread_summary (LLM extraction)
     cursor.execute("""
         SELECT id, conversation_id, subject, sender, received_at,
-               body_text, body_preview, to_emails, cc_emails
+               body_markdown, body_preview, to_emails, cc_emails
         FROM emails
-        WHERE extracted_body IS NULL
-          AND (body_text IS NOT NULL OR body_preview IS NOT NULL)
+        WHERE thread_summary IS NULL
+          AND (body_markdown IS NOT NULL OR body_preview IS NOT NULL)
         LIMIT ?
     """, (limit,))
 
@@ -770,8 +775,8 @@ def extract_content(
     conn = connect_db()
     remaining = conn.execute("""
         SELECT COUNT(*) FROM emails
-        WHERE extracted_body IS NULL
-          AND (body_text IS NOT NULL OR body_preview IS NOT NULL)
+        WHERE thread_summary IS NULL
+          AND (body_markdown IS NOT NULL OR body_preview IS NOT NULL)
     """).fetchone()[0]
     conn.close()
 
