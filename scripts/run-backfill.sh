@@ -8,7 +8,7 @@ export AECH_USER_DIR=../aech-main/data/users/steven@aech.ai
 export RT_OUTBOX_DIR=../aech-main/data/users/steven@aech.ai/.inbox-assistant/triggers/outbox
 export RT_DEDUPE_DIR=../aech-main/data/users/steven@aech.ai/.inbox-assistant/triggers/dedupe
 
-DB_PATH="$AECH_USER_DIR/.inbox-assistant/inbox.sqlite"
+DB_PATH="$AECH_USER_DIR/.inbox-assistant/assistant.sqlite"
 
 echo "=== Inbox Assistant Backfill ==="
 

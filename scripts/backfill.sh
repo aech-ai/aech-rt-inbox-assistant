@@ -27,8 +27,8 @@ echo "Index limit: $INDEX_LIMIT"
 echo ""
 
 # Check we're in the right environment
-if [ ! -f "/home/agentaech/.inbox-assistant/inbox.sqlite" ]; then
-    echo "ERROR: Database not found at /home/agentaech/.inbox-assistant/inbox.sqlite"
+if [ ! -f "/home/agentaech/.inbox-assistant/assistant.sqlite" ]; then
+    echo "ERROR: Database not found at /home/agentaech/.inbox-assistant/assistant.sqlite"
     echo "Make sure you're running inside Docker with volumes mounted."
     exit 1
 fi

@@ -329,7 +329,7 @@ All state is stored in `~/.inbox-assistant/` (per capability convention):
 
 ```
 ~/.inbox-assistant/
-├── inbox.sqlite      # Main database (emails, labels, triage_log, working memory, etc.)
+├── assistant.sqlite  # Main database (emails, labels, triage_log, calendar, working memory, etc.)
 ├── queries/          # SQL query templates
 └── preferences.json  # User preferences (optional)
 ```

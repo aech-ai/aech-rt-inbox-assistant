@@ -15,7 +15,7 @@ from pathlib import Path
 sys.path.insert(0, "/app")
 
 def get_db_path():
-    return "/home/agentaech/.inbox-assistant/inbox.sqlite"
+    return "/home/agentaech/.inbox-assistant/assistant.sqlite"
 
 def get_pending_attachment():
     """Get one pending attachment for testing."""

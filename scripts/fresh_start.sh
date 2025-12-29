@@ -63,14 +63,14 @@ if [ -n "$SYNC_SINCE" ]; then
 fi
 
 # Determine DB path
-if [ -f "/home/agentaech/.inbox-assistant/inbox.sqlite" ]; then
-    DB_PATH="/home/agentaech/.inbox-assistant/inbox.sqlite"
+if [ -f "/home/agentaech/.inbox-assistant/assistant.sqlite" ]; then
+    DB_PATH="/home/agentaech/.inbox-assistant/assistant.sqlite"
 elif [ -n "$INBOX_DB_PATH" ]; then
     DB_PATH="$INBOX_DB_PATH"
 elif [ -n "$AECH_USER_DIR" ]; then
-    DB_PATH="$AECH_USER_DIR/.inbox-assistant/inbox.sqlite"
+    DB_PATH="$AECH_USER_DIR/.inbox-assistant/assistant.sqlite"
 else
-    DB_PATH="./data/users/${DELEGATED_USER}/.inbox-assistant/inbox.sqlite"
+    DB_PATH="./data/users/${DELEGATED_USER}/.inbox-assistant/assistant.sqlite"
 fi
 
 echo -e "${BOLD}Database:${NC} $DB_PATH"

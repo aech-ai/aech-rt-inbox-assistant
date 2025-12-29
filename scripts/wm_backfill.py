@@ -73,7 +73,7 @@ def get_eval_user_dir(user_email: str) -> Path:
 
 def get_eval_db(user_email: str) -> Path:
     """Get path to eval database."""
-    return get_eval_user_dir(user_email) / ".inbox-assistant" / "inbox.sqlite"
+    return get_eval_user_dir(user_email) / ".inbox-assistant" / "assistant.sqlite"
 
 
 def get_checkpoints_dir(user_email: str) -> Path:
@@ -84,7 +84,7 @@ def get_checkpoints_dir(user_email: str) -> Path:
 def get_live_db_path(user_email: str) -> Path:
     """Get path to the live database."""
     live_data = Path(__file__).parent.parent.parent / "aech-main" / "data" / "users" / user_email / ".inbox-assistant"
-    return live_data / "inbox.sqlite"
+    return live_data / "assistant.sqlite"
 
 
 def get_live_user_dir(user_email: str) -> Path:
