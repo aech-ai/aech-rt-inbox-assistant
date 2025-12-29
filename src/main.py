@@ -85,6 +85,14 @@ async def process_pending_content():
                 email = dict(row)
                 try:
                     await updater.process_email(email)
+                    # Mark as processed by setting extracted_body
+                    conn = get_connection()
+                    conn.execute(
+                        "UPDATE emails SET extracted_body = COALESCE(body_markdown, body_preview, '') WHERE id = ?",
+                        (email["id"],)
+                    )
+                    conn.commit()
+                    conn.close()
                     extracted += 1
                 except Exception as e:
                     logger.warning(f"Content extraction failed for {email['id']}: {e}")
