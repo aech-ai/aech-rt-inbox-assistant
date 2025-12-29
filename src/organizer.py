@@ -50,7 +50,8 @@ class EmailClassification(BaseModel):
     """AI classification result for an email."""
 
     outlook_categories: list[str] = Field(
-        description="Outlook categories to apply (e.g., 'Action Required', 'Work', 'FYI'). Must have at least one."
+        default_factory=list,
+        description="Outlook categories to apply (e.g., 'Action Required', 'Work'). Can be empty for low-value content."
     )
     urgency: str = Field(
         default="someday",
@@ -90,7 +91,12 @@ class EmailClassification(BaseModel):
 
 def _build_agent(prefs: dict) -> Agent[None, EmailClassification]:
     """Create the AI agent for email classification."""
-    model_name = os.getenv("MODEL_NAME", "openai-responses:gpt-5-mini")
+    # Use CLASSIFICATION_MODEL if set, otherwise fall back to MODEL_NAME
+    # Default to nano model - classification is a simple pattern matching task
+    model_name = os.getenv(
+        "CLASSIFICATION_MODEL",
+        os.getenv("MODEL_NAME", "openai-responses:gpt-5-mini")
+    )
     cleanup_strategy = os.getenv("CLEANUP_STRATEGY", "medium").lower()
 
     category_names = get_category_names(prefs)
@@ -122,12 +128,11 @@ Think step-by-step:
 
 3. **Is it work-related but informational?**
    - Status updates, meeting notes → "Work"
-   - Internal announcements → "Work" or "FYI"
+   - Internal announcements → "Work"
 
-4. **Is it a newsletter/notification/update?**
-   - Automated notifications → "FYI"
-   - Newsletters, digests → "FYI"
-   - Marketing/promotions → "FYI"
+4. **Is it low-value content?**
+   - Automated notifications, newsletters, digests, marketing → Leave UNCATEGORIZED (no category)
+   - Only categorize emails that matter to the user's job, preferences, or require attention
 
 5. **Is it personal?**
    - Non-work correspondence → "Personal"
@@ -136,7 +141,7 @@ Think step-by-step:
 - **immediate**: Needs attention NOW (rare - only for critical time-sensitive items)
 - **today**: Should handle today (deadlines today, urgent requests)
 - **this_week**: Can wait a few days but shouldn't be forgotten
-- **someday**: Low priority, FYI, no action needed
+- **someday**: Low priority, no action needed
 
 ### 5. Cleanup Strategy (Current Level: {cleanup_strategy.upper()})
 - **Low**: Only mark spam/phishing for deletion
@@ -144,7 +149,7 @@ Think step-by-step:
 - **Aggressive**: Also delete cold outreach, old promos
 
 ### 6. Output Fields
-- **outlook_categories**: List of category names to apply (MUST have at least one from: {", ".join(category_names)})
+- **outlook_categories**: List of category names to apply (from: {", ".join(category_names)}). Can be empty for low-value content.
 - **urgency**: One of: immediate, today, this_week, someday
 - **reason**: Brief explanation of your decision
 
@@ -220,6 +225,17 @@ class Organizer:
         try:
             result = await self._get_agent(prefs).run(email_content)
             decision = result.output
+
+            # Log LLM usage for cost tracking
+            try:
+                usage = result.usage()
+                model = os.getenv("CLASSIFICATION_MODEL", os.getenv("MODEL_NAME", "gpt-5-mini"))
+                logger.info(
+                    f"LLM_USAGE task=classification model={model} "
+                    f"in={usage.request_tokens} out={usage.response_tokens}"
+                )
+            except Exception:
+                pass  # Usage tracking is best-effort
 
             logger.info(f"AI Decision for {email['id']}: {decision}")
 

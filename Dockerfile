@@ -2,23 +2,38 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# System deps: pandoc is required for content conversion (aech-cli-msgraph).
+# System deps: match aech-main worker for full document processing support
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends pandoc sqlite3 libsqlite3-dev build-essential && \
-    rm -rf /var/lib/apt/lists/*
+    apt-get install -y --no-install-recommends \
+        pandoc \
+        sqlite3 \
+        libsqlite3-dev \
+        build-essential \
+        poppler-utils \
+        libreoffice \
+        libreoffice-java-common \
+        imagemagick \
+        ghostscript \
+    && rm -rf /var/lib/apt/lists/*
 
-# Base Python deps for this project
+# Copy local wheels to /tmp/wheels (for --find-links)
+COPY aech-cli-msgraph/dist/*.whl /tmp/wheels/
+COPY aech-cli-documents/dist/*.whl /tmp/wheels/
+COPY aech-main/packages/aech-llm-observability/dist/*.whl /tmp/wheels/
+
+# Install Python deps (--find-links looks in /tmp/wheels/ first, then PyPI)
 COPY aech-rt-inbox-assistant/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Install aech-cli-msgraph (required for all Graph interactions)
-COPY aech-cli-msgraph/dist/aech_cli_msgraph-0.1.28-py3-none-any.whl /tmp/aech_cli_msgraph-0.1.28-py3-none-any.whl
-RUN pip install uv && uv pip install --system /tmp/aech_cli_msgraph-0.1.28-py3-none-any.whl
+RUN pip install --no-cache-dir -r requirements.txt --find-links /tmp/wheels/
 
 # App source
 COPY aech-rt-inbox-assistant/src/ src/
 COPY aech-rt-inbox-assistant/aech_cli_inbox/ aech_cli_inbox/
 COPY aech-rt-inbox-assistant/manifest.json manifest.json
+COPY aech-rt-inbox-assistant/scripts/ scripts/
+
+# Install the CLI package (provides aech-cli-inbox-assistant command)
+COPY aech-rt-inbox-assistant/pyproject.toml .
+RUN pip install --no-cache-dir -e .
 
 # Create non-root user
 RUN useradd -m -s /bin/bash agentaech && \

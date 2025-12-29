@@ -17,7 +17,12 @@ logger = logging.getLogger(__name__)
 
 def _build_wm_analysis_agent() -> Agent:
     """Build the AI agent for email analysis and working memory extraction."""
-    model_name = os.getenv("MODEL_NAME", "openai-responses:gpt-5-mini")
+    # Use WM_MODEL if set, otherwise fall back to MODEL_NAME
+    # Default to mini model - WM analysis requires moderate reasoning
+    model_name = os.getenv(
+        "WM_MODEL",
+        os.getenv("MODEL_NAME", "openai-responses:gpt-5-mini")
+    )
 
     system_prompt = """
 You are an executive assistant analyzing emails to update working memory.
@@ -66,6 +71,16 @@ DO NOT extract as projects:
 - project_mentions: Apply strict rules above. Return empty list for newsletters.
 - suggested_urgency: immediate/today/this_week/someday
 - needs_reply: true ONLY if human response is expected from user
+
+## Content Extraction (CRITICAL for search indexing)
+- extracted_new_content: Extract ONLY the new content written by the sender in THIS email.
+  EXCLUDE all of the following:
+  - Quoted replies (text after "On X wrote:", "> " prefixed lines, forwarded headers)
+  - Email signatures (name, title, phone, address blocks)
+  - Legal disclaimers and confidentiality notices
+  - "Sent from my iPhone/Android" footers
+  - Forwarded message headers (From:, To:, Subject:, Date: blocks)
+  Return ONLY the fresh content the sender actually wrote. This is used for search indexing.
 """
 
     return Agent(
@@ -123,6 +138,18 @@ class WorkingMemoryUpdater:
         try:
             result = await self._get_agent().run(context)
             analysis = result.output
+
+            # Log LLM usage for cost tracking
+            try:
+                usage = result.usage()
+                model = os.getenv("WM_MODEL", os.getenv("MODEL_NAME", "gpt-5-mini"))
+                logger.info(
+                    f"LLM_USAGE task=wm_analysis model={model} "
+                    f"in={usage.request_tokens} out={usage.response_tokens}"
+                )
+            except Exception:
+                pass  # Usage tracking is best-effort
+
         except Exception as e:
             logger.warning(f"Working memory analysis failed for {email.get('id')}: {e}")
             # Fall back to basic updates without AI analysis
@@ -151,6 +178,13 @@ class WorkingMemoryUpdater:
 
             # Update projects
             self._update_projects(conn, email, analysis)
+
+            # Store extracted content for search indexing
+            if analysis.extracted_new_content:
+                conn.execute(
+                    "UPDATE emails SET extracted_body = ? WHERE id = ?",
+                    (analysis.extracted_new_content, email.get("id")),
+                )
 
             conn.commit()
             logger.debug(
@@ -412,7 +446,7 @@ BODY:
 
         for obs in analysis.observations:
             obs_type = obs.get("type", ObservationType.CONTEXT_LEARNED.value)
-            # Validate observation type
+            # Validate observation type against enum
             try:
                 ObservationType(obs_type)
             except ValueError:

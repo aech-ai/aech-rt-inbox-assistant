@@ -4,3 +4,8 @@ pydantic-ai
 openai
 msal
 pysqlite3
+markitdown[all]
+sentence-transformers
+aech-cli-msgraph
+aech-cli-documents
+aech-llm-observability
