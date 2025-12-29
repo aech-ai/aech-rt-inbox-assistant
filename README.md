@@ -112,9 +112,8 @@ docker compose run --rm backfill-gpu
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DELEGATED_USER` | (required) | Email of the mailbox to manage |
-| `POLL_INTERVAL` | `5` | Seconds between poll cycles |
-| `MODEL_NAME` | `openai-responses:gpt-5-mini` | AI model for categorization |
-| `FOLDER_PREFIX` | `aa_` | Prefix for managed folders |
+| `POLL_INTERVAL` | `60` | Seconds between poll cycles |
+| `MODEL_NAME` | `openai:gpt-5` | AI model for categorization |
 | `CLEANUP_STRATEGY` | `medium` | `low`, `medium`, or `aggressive` |
 | `FOLLOWUP_N_DAYS` | `2` | Days before follow-up reminder |
 
