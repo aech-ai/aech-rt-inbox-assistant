@@ -193,31 +193,51 @@ class GraphPoller:
         conn.commit()
         conn.close()
 
-    def _get_message_body(self, message_id: str) -> Optional[str]:
-        """Fetch the full HTML body of a message."""
-        try:
-            assert self.user_email is not None
-            headers = self._graph_client._get_headers()
-            base_path = self._graph_client._get_base_path(self.user_email)
-            url = f"{base_path}/messages/{message_id}?$select=body"
-            resp = requests.get(url, headers=headers)
-            if resp.ok:
-                data = resp.json()
-                body = data.get("body", {})
-                content = body.get("content", "")
-                content_type = body.get("contentType", "text")
+    def _get_message_body(self, message_id: str, max_retries: int = 3) -> Optional[str]:
+        """Fetch the full HTML body of a message with retry on rate limit."""
+        import time
 
-                if content_type == "html":
-                    return content
+        assert self.user_email is not None
+        headers = self._graph_client._get_headers()
+        base_path = self._graph_client._get_base_path(self.user_email)
+        url = f"{base_path}/messages/{message_id}?$select=body"
+
+        for attempt in range(max_retries):
+            try:
+                resp = requests.get(url, headers=headers)
+
+                if resp.ok:
+                    data = resp.json()
+                    body = data.get("body", {})
+                    content = body.get("content", "")
+                    content_type = body.get("contentType", "text")
+
+                    if content_type == "html":
+                        return content
+                    else:
+                        # Plain text - wrap in simple HTML for consistent processing
+                        return f"<pre>{content}</pre>"
+
+                elif resp.status_code == 429:
+                    # Rate limited - respect Retry-After header
+                    retry_after = int(resp.headers.get("Retry-After", 2 ** attempt))
+                    logger.debug(f"Rate limited, waiting {retry_after}s before retry {attempt + 1}")
+                    time.sleep(retry_after)
+                    continue
+
                 else:
-                    # Plain text - wrap in simple HTML for consistent processing
-                    return f"<pre>{content}</pre>"
-            else:
-                logger.warning(f"Failed to fetch body for {message_id}: {resp.status_code}")
+                    logger.warning(f"Failed to fetch body for {message_id}: {resp.status_code}")
+                    return None
+
+            except Exception as e:
+                logger.error(f"Error fetching message body: {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(2 ** attempt)
+                    continue
                 return None
-        except Exception as e:
-            logger.error(f"Error fetching message body: {e}")
-            return None
+
+        logger.warning(f"Max retries exceeded for {message_id}")
+        return None
 
     def _extract_message_data(self, msg: Dict[str, Any]) -> Dict[str, Any]:
         """Extract and normalize message data from Graph API response."""
@@ -353,7 +373,7 @@ class GraphPoller:
         fetch_body: bool = True,
         page_size: int = 50,
         message_callback: Optional[Callable[[int, str], None]] = None,
-        body_concurrency: int = 10,
+        body_concurrency: int = 5,
     ) -> int:
         """
         Perform a full sync of a folder using pagination.
@@ -361,7 +381,7 @@ class GraphPoller:
 
         Args:
             message_callback: Optional callback(count, subject) for per-message progress
-            body_concurrency: Number of concurrent body fetches (default 10)
+            body_concurrency: Number of concurrent body fetches (default 5, conservative for Graph API limits)
         """
         logger.info(f"Starting full sync for folder: {folder_name} ({folder_id})")
 
@@ -449,7 +469,7 @@ class GraphPoller:
         folder_name: str,
         fetch_body: bool = True,
         message_callback: Optional[Callable[[int, str], None]] = None,
-        body_concurrency: int = 10,
+        body_concurrency: int = 5,
     ) -> Tuple[int, int]:
         """
         Perform an incremental delta sync of a folder.
@@ -457,7 +477,7 @@ class GraphPoller:
 
         Args:
             message_callback: Optional callback(count, subject) for per-message progress
-            body_concurrency: Number of concurrent body fetches (default 10)
+            body_concurrency: Number of concurrent body fetches (default 5, conservative for Graph API limits)
         """
         sync_state = self.get_sync_state(folder_id)
         if not sync_state or not sync_state[0]:

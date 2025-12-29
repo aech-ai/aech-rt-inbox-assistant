@@ -266,7 +266,7 @@ def dbpath():
 @app.command("backfill-bodies")
 def backfill_bodies(
     limit: int = typer.Option(100, help="Number of emails to backfill"),
-    concurrency: int = typer.Option(10, "--concurrency", help="Number of parallel fetches"),
+    concurrency: int = typer.Option(5, "--concurrency", help="Number of parallel fetches (conservative for Graph API)"),
     human: bool = typer.Option(False, "--human", help="Human-readable output instead of JSON"),
 ):
     """
