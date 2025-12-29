@@ -266,6 +266,7 @@ def dbpath():
 @app.command("backfill-bodies")
 def backfill_bodies(
     limit: int = typer.Option(100, help="Number of emails to backfill"),
+    concurrency: int = typer.Option(10, "--concurrency", help="Number of parallel fetches"),
     human: bool = typer.Option(False, "--human", help="Human-readable output instead of JSON"),
 ):
     """
@@ -274,6 +275,10 @@ def backfill_bodies(
     Fetches full body content for emails where body_text is NULL.
     This is needed if emails were synced before body fetching was enabled.
     """
+    import asyncio
+    import hashlib
+    import threading
+
     try:
         from src.poller import GraphPoller
     except ImportError:
@@ -291,64 +296,91 @@ def backfill_bodies(
         LIMIT ?
     """, (limit,))
     emails_to_backfill = cursor.fetchall()
+    conn.close()
 
     if not emails_to_backfill:
         if human:
             typer.echo("All emails already have body content.")
         else:
             typer.echo(json.dumps({"backfilled": 0, "failed": 0}))
-        conn.close()
         return
 
     if human:
-        typer.echo(f"Backfilling {len(emails_to_backfill)} emails...")
+        typer.echo(f"Backfilling {len(emails_to_backfill)} emails (concurrency: {concurrency})...")
 
     poller = GraphPoller()
-    results = {"backfilled": 0, "failed": 0}
     total = len(emails_to_backfill)
 
-    for i, (email_id, subject) in enumerate(emails_to_backfill, 1):
-        try:
-            body_text, body_html = poller._get_message_body(email_id)
-            if body_text:
-                import hashlib
-                body_hash = hashlib.sha256(body_text.encode()).hexdigest()[:16]
-                conn.execute("""
-                    UPDATE emails SET body_text = ?, body_html = ?, body_hash = ?
-                    WHERE id = ?
-                """, (body_text, body_html, body_hash, email_id))
-                results["backfilled"] += 1
-            else:
-                results["failed"] += 1
-        except Exception:
-            results["failed"] += 1
+    # Thread-safe counters and results queue
+    lock = threading.Lock()
+    counters = {"backfilled": 0, "failed": 0, "completed": 0}
+    updates = []  # Collect updates for batch commit
 
-        if human:
-            pct = int(i / total * 100)
-            bar_len = 30
-            filled = int(bar_len * i / total)
-            bar = "█" * filled + "░" * (bar_len - filled)
-            subj = (subject or "(no subject)")[:30]
-            print(f"\r  [{bar}] {pct}% ({i}/{total}) {subj}...", end="", flush=True)
+    async def fetch_one(email_id: str, subject: str, semaphore: asyncio.Semaphore):
+        async with semaphore:
+            try:
+                # Run sync method in thread pool
+                body_text, body_html = await asyncio.to_thread(
+                    poller._get_message_body, email_id
+                )
+                if body_text:
+                    body_hash = hashlib.sha256(body_text.encode()).hexdigest()[:16]
+                    with lock:
+                        updates.append((body_text, body_html, body_hash, email_id))
+                        counters["backfilled"] += 1
+                else:
+                    with lock:
+                        counters["failed"] += 1
+            except Exception:
+                with lock:
+                    counters["failed"] += 1
+
+            with lock:
+                counters["completed"] += 1
+                if human:
+                    pct = int(counters["completed"] / total * 100)
+                    bar_len = 30
+                    filled = int(bar_len * counters["completed"] / total)
+                    bar = "█" * filled + "░" * (bar_len - filled)
+                    subj = (subject or "(no subject)")[:25]
+                    print(f"\r  [{bar}] {pct}% ({counters['completed']}/{total}) {subj}...", end="", flush=True)
+
+    async def run_all():
+        semaphore = asyncio.Semaphore(concurrency)
+        tasks = [
+            fetch_one(email_id, subject, semaphore)
+            for email_id, subject in emails_to_backfill
+        ]
+        await asyncio.gather(*tasks)
+
+    asyncio.run(run_all())
 
     if human:
         print("\r\033[K", end="")  # Clear progress line
 
-    conn.commit()
-
-    # Also update FTS index
-    if human:
-        typer.echo("\nUpdating FTS index...")
-
-    try:
-        # Rebuild FTS for updated emails
-        conn.execute("INSERT INTO emails_fts(emails_fts) VALUES('rebuild')")
+    # Batch commit all updates
+    if updates:
+        conn = connect_db()
+        conn.executemany("""
+            UPDATE emails SET body_text = ?, body_html = ?, body_hash = ?
+            WHERE id = ?
+        """, updates)
         conn.commit()
-    except Exception as e:
-        if human:
-            typer.echo(f"FTS rebuild failed: {e}")
 
-    conn.close()
+        # Also update FTS index
+        if human:
+            typer.echo("Updating FTS index...")
+
+        try:
+            conn.execute("INSERT INTO emails_fts(emails_fts) VALUES('rebuild')")
+            conn.commit()
+        except Exception as e:
+            if human:
+                typer.echo(f"FTS rebuild failed: {e}")
+
+        conn.close()
+
+    results = {"backfilled": counters["backfilled"], "failed": counters["failed"]}
 
     if human:
         typer.echo(f"\nResults:")

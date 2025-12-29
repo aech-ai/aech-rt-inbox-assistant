@@ -3,6 +3,7 @@ import json
 import subprocess
 import os
 import hashlib
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional, Tuple, Callable
 
@@ -352,6 +353,7 @@ class GraphPoller:
         fetch_body: bool = True,
         page_size: int = 50,
         message_callback: Optional[Callable[[int, str], None]] = None,
+        body_concurrency: int = 10,
     ) -> int:
         """
         Perform a full sync of a folder using pagination.
@@ -359,6 +361,7 @@ class GraphPoller:
 
         Args:
             message_callback: Optional callback(count, subject) for per-message progress
+            body_concurrency: Number of concurrent body fetches (default 10)
         """
         logger.info(f"Starting full sync for folder: {folder_name} ({folder_id})")
 
@@ -382,13 +385,31 @@ class GraphPoller:
                 data = resp.json()
                 messages = data.get("value", [])
 
+                # Extract message data first
+                page_messages = []
                 for msg in messages:
                     msg_data = self._extract_message_data(msg)
+                    page_messages.append((msg, msg_data))
 
-                    body_html = None
-                    if fetch_body:
-                        body_html = self._get_message_body(msg["id"])
+                # Fetch bodies concurrently if enabled
+                bodies = {}
+                if fetch_body and page_messages:
+                    with ThreadPoolExecutor(max_workers=body_concurrency) as executor:
+                        future_to_id = {
+                            executor.submit(self._get_message_body, msg["id"]): msg["id"]
+                            for msg, _ in page_messages
+                        }
+                        for future in as_completed(future_to_id):
+                            msg_id = future_to_id[future]
+                            try:
+                                bodies[msg_id] = future.result()
+                            except Exception as e:
+                                logger.warning(f"Failed to fetch body for {msg_id}: {e}")
+                                bodies[msg_id] = None
 
+                # Now upsert with bodies
+                for msg, msg_data in page_messages:
+                    body_html = bodies.get(msg["id"]) if fetch_body else None
                     self._upsert_message(conn, msg_data, body_html)
 
                     if msg.get("attachments"):
@@ -428,6 +449,7 @@ class GraphPoller:
         folder_name: str,
         fetch_body: bool = True,
         message_callback: Optional[Callable[[int, str], None]] = None,
+        body_concurrency: int = 10,
     ) -> Tuple[int, int]:
         """
         Perform an incremental delta sync of a folder.
@@ -435,6 +457,7 @@ class GraphPoller:
 
         Args:
             message_callback: Optional callback(count, subject) for per-message progress
+            body_concurrency: Number of concurrent body fetches (default 10)
         """
         sync_state = self.get_sync_state(folder_id)
         if not sync_state or not sync_state[0]:
@@ -467,23 +490,46 @@ class GraphPoller:
                 data = resp.json()
                 messages = data.get("value", [])
 
+                # Separate deletions from updates
+                to_delete = []
+                to_update = []
                 for msg in messages:
                     if msg.get("@removed"):
-                        conn.execute("DELETE FROM emails WHERE id = ?", (msg["id"],))
-                        messages_deleted += 1
+                        to_delete.append(msg["id"])
                     else:
                         msg_data = self._extract_message_data(msg)
+                        to_update.append((msg, msg_data))
 
-                        body_html = None
-                        if fetch_body:
-                            body_html = self._get_message_body(msg["id"])
+                # Handle deletions
+                for msg_id in to_delete:
+                    conn.execute("DELETE FROM emails WHERE id = ?", (msg_id,))
+                    messages_deleted += 1
 
-                        self._upsert_message(conn, msg_data, body_html)
-                        messages_updated += 1
+                # Fetch bodies concurrently for updates
+                bodies = {}
+                if fetch_body and to_update:
+                    with ThreadPoolExecutor(max_workers=body_concurrency) as executor:
+                        future_to_id = {
+                            executor.submit(self._get_message_body, msg["id"]): msg["id"]
+                            for msg, _ in to_update
+                        }
+                        for future in as_completed(future_to_id):
+                            msg_id = future_to_id[future]
+                            try:
+                                bodies[msg_id] = future.result()
+                            except Exception as e:
+                                logger.warning(f"Failed to fetch body for {msg_id}: {e}")
+                                bodies[msg_id] = None
 
-                        if message_callback:
-                            subject = msg_data.get("subject", "")[:40]
-                            message_callback(messages_updated, subject)
+                # Upsert updates with bodies
+                for msg, msg_data in to_update:
+                    body_html = bodies.get(msg["id"]) if fetch_body else None
+                    self._upsert_message(conn, msg_data, body_html)
+                    messages_updated += 1
+
+                    if message_callback:
+                        subject = msg_data.get("subject", "")[:40]
+                        message_callback(messages_updated, subject)
 
                 conn.commit()
 
