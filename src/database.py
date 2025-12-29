@@ -81,6 +81,7 @@ def init_db(db_path: Optional[Path] = None) -> None:
         body_preview TEXT,
         body_html TEXT,
         body_markdown TEXT,        -- Semantic markdown main content
+        extracted_body TEXT,       -- LLM-cleaned body (quotes/signatures removed)
         signature_block TEXT,      -- Preserved sender signature
         thread_summary TEXT,       -- LLM-generated thread summary
         body_hash TEXT,
@@ -102,6 +103,8 @@ def init_db(db_path: Optional[Path] = None) -> None:
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_emails_received ON emails(received_at)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_emails_urgency ON emails(urgency)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_emails_processed ON emails(processed_at)")
+    # Migrate existing databases
+    _ensure_columns(cursor, "emails", {"extracted_body": "TEXT"})
 
     # Triage Log table - categories mode
     cursor.execute("""
