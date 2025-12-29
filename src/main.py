@@ -78,7 +78,8 @@ async def process_pending_content():
         conn.close()
 
         if pending_emails:
-            updater = WorkingMemoryUpdater()
+            user_email = os.environ.get("DELEGATED_USER", "")
+            updater = WorkingMemoryUpdater(user_email)
             extracted = 0
             for row in pending_emails:
                 email = dict(row)
