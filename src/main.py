@@ -138,12 +138,18 @@ def service_loop(user_email: str, poll_interval: int, run_once: bool, concurrenc
     # Calendar sync configuration
     calendar_sync_interval = int(os.environ.get("CALENDAR_SYNC_INTERVAL", 300))  # Default 5 minutes
 
+    # Delta sync configuration (handles deletions)
+    delta_sync_interval = int(os.environ.get("DELTA_SYNC_INTERVAL", 300))  # Default 5 minutes
+    last_delta_sync = 0.0
+    inbox_folder_id = None  # Cached Inbox folder ID
+
     logger.info("Starting Inbox Assistant Service")
     logger.info(f"User: {user_email}")
     logger.info(f"Poll Interval: {poll_interval}s")
     logger.info(f"Concurrency: {concurrency}")
     logger.info(f"Working Memory Engine Interval: {wm_engine_interval}s")
     logger.info(f"Calendar Sync Interval: {calendar_sync_interval}s")
+    logger.info(f"Delta Sync Interval: {delta_sync_interval}s")
     if backfill:
         logger.info("Backfill mode: triggers suppressed (no Teams notifications)")
 
@@ -170,6 +176,25 @@ def service_loop(user_email: str, poll_interval: int, run_once: bool, concurrenc
                     sync_calendar()
                 except Exception as cal_err:
                     logger.warning(f"Calendar sync error: {cal_err}")
+
+            # Delta sync periodically (handles deletions from Outlook)
+            now = time.time()
+            if now - last_delta_sync >= delta_sync_interval:
+                try:
+                    # Get Inbox folder ID (cache it)
+                    if inbox_folder_id is None:
+                        folders = poller.get_all_folders()
+                        inbox = next((f for f in folders if f.get("displayName", "").lower() == "inbox"), None)
+                        if inbox:
+                            inbox_folder_id = inbox["id"]
+
+                    if inbox_folder_id:
+                        updated, deleted = poller.delta_sync_folder(inbox_folder_id, "Inbox", fetch_body=True)
+                        if updated > 0 or deleted > 0:
+                            logger.info(f"Delta sync: {updated} updated, {deleted} deleted")
+                    last_delta_sync = now
+                except Exception as sync_err:
+                    logger.warning(f"Delta sync error: {sync_err}")
 
             # Execute pending actions (from CLI)
             if has_pending_actions():
