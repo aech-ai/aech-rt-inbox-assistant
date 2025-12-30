@@ -176,15 +176,6 @@ def main():
         command="aech-cli-inbox-assistant",
     )
 
-    # Load existing manifest to preserve persona if present
-    if MANIFEST_PATH.exists():
-        try:
-            existing = json.loads(MANIFEST_PATH.read_text())
-            if "persona" in existing:
-                manifest["persona"] = existing["persona"]
-        except json.JSONDecodeError:
-            pass
-
     print(f"Found {len(manifest['actions'])} commands")
     print(f"Writing {MANIFEST_PATH}...")
 
