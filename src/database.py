@@ -140,18 +140,8 @@ def init_db(db_path: Optional[Path] = None) -> None:
     )
     """)
 
-    # Reply tracking for follow-ups
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS reply_tracking (
-        message_id TEXT PRIMARY KEY,
-        requires_reply BOOLEAN NOT NULL,
-        reason TEXT,
-        last_activity_at DATETIME,
-        nudge_scheduled_at DATETIME,
-        follow_up_sent_at DATETIME,
-        FOREIGN KEY(message_id) REFERENCES emails(id) ON DELETE CASCADE
-    )
-    """)
+    # NOTE: reply_tracking table removed - Working Memory (wm_threads) is now the source of truth
+    # for tracking which threads need replies. The WM Engine handles staleness and nudges.
 
     # NOTE: Calendar events are synced to calendar_events table by RT service.
     # See src/calendar_sync.py for sync implementation.

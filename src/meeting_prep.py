@@ -129,6 +129,9 @@ class DailyBriefing(BaseModel):
     meeting_preps: List[MeetingPrep] = Field(default_factory=list)
     # Alerts
     alerts: List[str] = Field(default_factory=list)
+    # Inbox status (from Working Memory)
+    new_replies_needed: int = 0  # Active threads needing reply (last 48h)
+    total_active_threads: int = 0  # All active threads needing reply
     # Generated at
     generated_at: str = ""
 
@@ -515,6 +518,29 @@ class MeetingPrepService:
             alerts.append(f"Heavy meeting load today ({briefing.busy_hours}h scheduled)")
 
         briefing.alerts = alerts
+
+        # Get inbox status from Working Memory
+        try:
+            inbox_conn = get_connection()
+            # New replies needed (last 48h)
+            result = inbox_conn.execute("""
+                SELECT COUNT(*) FROM wm_threads
+                WHERE needs_reply = 1
+                  AND status = 'active'
+                  AND last_activity_at >= datetime('now', '-2 days')
+            """).fetchone()
+            briefing.new_replies_needed = result[0] if result else 0
+
+            # Total active threads needing reply
+            result = inbox_conn.execute("""
+                SELECT COUNT(*) FROM wm_threads
+                WHERE needs_reply = 1
+                  AND status = 'active'
+            """).fetchone()
+            briefing.total_active_threads = result[0] if result else 0
+            inbox_conn.close()
+        except Exception as e:
+            logger.warning(f"Could not fetch inbox status: {e}")
 
         return briefing
 

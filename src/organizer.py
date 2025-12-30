@@ -230,7 +230,7 @@ class Organizer:
 
         logger.info(f"Finished processing {len(emails)} emails")
 
-        self._emit_followup_triggers(prefs)
+        # Working Memory Engine handles staleness and follow-up nudges
         self._emit_weekly_digest_trigger(prefs)
 
     async def _process_email(self, email, prefs: dict):
@@ -322,23 +322,9 @@ class Organizer:
             except Exception as e:
                 logger.warning(f"Failed to persist labels for {email['id']}: {e}")
 
-            # Persist reply tracking for follow-ups
-            if decision.requires_reply:
-                reply_reason = decision.reply_reason or decision.reason
-                conn.execute(
-                    """
-                    INSERT INTO reply_tracking (message_id, requires_reply, reason, last_activity_at)
-                    VALUES (?, 1, ?, ?)
-                    ON CONFLICT(message_id) DO UPDATE SET
-                        requires_reply=1,
-                        reason=excluded.reason,
-                        last_activity_at=excluded.last_activity_at
-                    """,
-                    (email["id"], reply_reason, email["received_at"]),
-                )
             conn.commit()
 
-            # Update Working Memory
+            # Update Working Memory (handles reply tracking via wm_threads)
             if self.user_email:
                 try:
                     wm_updater = WorkingMemoryUpdater(self.user_email)
@@ -466,69 +452,6 @@ class Organizer:
             logger.warning(f"Timeout applying categories for {message_id}")
         except Exception as e:
             logger.warning(f"Error applying categories for {message_id}: {e}")
-
-    def _emit_followup_triggers(self, prefs: dict) -> None:
-        followup_n_days = int(prefs.get("followup_n_days") or os.getenv("FOLLOWUP_N_DAYS", "2"))
-        if followup_n_days <= 0:
-            return
-
-        conn = get_connection()
-        try:
-            rows = conn.execute(
-                """
-                SELECT rt.message_id, rt.last_activity_at, e.subject, e.sender
-                FROM reply_tracking rt
-                JOIN emails e ON e.id = rt.message_id
-                WHERE rt.requires_reply = 1
-                  AND rt.follow_up_sent_at IS NULL
-                  AND rt.nudge_scheduled_at IS NULL
-                  AND rt.last_activity_at IS NOT NULL
-                ORDER BY rt.last_activity_at ASC
-                LIMIT 50
-                """
-            ).fetchall()
-
-            from datetime import datetime, timezone, timedelta
-
-            now = datetime.now(timezone.utc)
-            for row in rows:
-                last_activity_raw = row["last_activity_at"]
-                try:
-                    last_activity = datetime.fromisoformat(str(last_activity_raw).replace("Z", "+00:00"))
-                    if last_activity.tzinfo is None:
-                        last_activity = last_activity.replace(tzinfo=timezone.utc)
-                except Exception:
-                    continue
-
-                waiting = now - last_activity
-                if waiting < timedelta(days=followup_n_days):
-                    continue
-
-                message_id = row["message_id"]
-                days_waiting = max(followup_n_days, int(waiting.days))
-                follow_up_draft = f"Following up on \"{row['subject']}\" — do you have an update?\n\nThanks!"
-
-                write_trigger(
-                    self.user_email,
-                    "no_reply_after_n_days",
-                    {
-                        "message_id": message_id,
-                        "subject": row["subject"],
-                        "sender": row["sender"],
-                        "last_activity_at": last_activity_raw,
-                        "days_waiting": days_waiting,
-                        "follow_up_draft": follow_up_draft,
-                    },
-                    dedupe_key=make_dedupe_key("no_reply_after_n_days", self.user_email, message_id),
-                    routing={"channel": "teams"},
-                )
-                conn.execute(
-                    "UPDATE reply_tracking SET nudge_scheduled_at = CURRENT_TIMESTAMP WHERE message_id = ?",
-                    (message_id,),
-                )
-            conn.commit()
-        finally:
-            conn.close()
 
     def _emit_weekly_digest_trigger(self, prefs: dict) -> None:
         enabled = os.getenv("ENABLE_WEEKLY_DIGEST", "").strip().lower() in {"1", "true", "yes"}

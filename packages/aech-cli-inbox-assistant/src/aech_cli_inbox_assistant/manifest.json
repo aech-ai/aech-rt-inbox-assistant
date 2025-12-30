@@ -128,14 +128,20 @@
     },
     {
       "name": "reply-needed",
-      "description": "List messages currently marked as requiring a reply.",
+      "description": "List threads currently marked as requiring a reply. Queries Working Memory (wm_threads table). By default excludes stale threads (no activity for 3+ days).",
       "parameters": [
         {
           "name": "limit",
           "type": "option",
           "required": false,
-          "description": "Number of messages to list",
+          "description": "Number of threads to list",
           "default": 20
+        },
+        {
+          "name": "include-stale",
+          "type": "flag",
+          "required": false,
+          "description": "Include stale threads (no activity for 3+ days)"
         },
         {
           "name": "human",
@@ -505,13 +511,13 @@
     },
     {
       "name": "prefs set",
-      "description": "Set a preference key in preferences.json.",
+      "description": "Set a preference key in preferences.json. Only known keys are accepted. Valid keys: timezone (IANA timezone), vip_senders (list of VIP emails), teams_default_target, digest_day, digest_time_local, meeting_prep, categories.",
       "parameters": [
         {
           "name": "key",
           "type": "argument",
           "required": true,
-          "description": "Preference key"
+          "description": "Preference key (must be a valid known key)"
         },
         {
           "name": "value",
@@ -520,6 +526,11 @@
           "description": "Preference value (string/number/bool/JSON)"
         }
       ]
+    },
+    {
+      "name": "prefs keys",
+      "description": "List all valid preference keys that can be set.",
+      "parameters": []
     },
     {
       "name": "prefs unset",

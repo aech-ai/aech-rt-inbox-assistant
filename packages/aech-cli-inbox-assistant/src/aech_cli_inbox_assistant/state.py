@@ -6,6 +6,28 @@ from typing import Any, Dict, Optional
 
 CAPABILITY_NAME = "inbox-assistant"
 
+# Valid top-level preference keys that the agent can set
+# Keys not in this list will be rejected to prevent hallucinated preferences
+VALID_PREFERENCE_KEYS = {
+    # Core settings
+    "timezone",                      # IANA timezone (e.g., "America/Los_Angeles")
+    "vip_senders",                   # List of VIP email addresses
+    "teams_default_target",          # Default Teams channel/user for messages
+
+    # Digest settings
+    "digest_day",                    # Day of week for weekly digest (e.g., "friday")
+    "digest_time_local",             # Local time for digest (e.g., "08:30")
+
+    # Capability namespaces (these are dicts, not simple values)
+    "meeting_prep",                  # Meeting prep config object
+    "categories",                    # Email categories configuration
+}
+
+
+class InvalidPreferenceKeyError(ValueError):
+    """Raised when an unknown preference key is used."""
+    pass
+
 
 def get_user_root() -> Path:
     configured = os.environ.get("AECH_USER_DIR")
@@ -97,7 +119,27 @@ def _parse_value(raw: str) -> Any:
         return raw
 
 
+def validate_preference_key(key: str) -> None:
+    """Validate that a preference key is known.
+
+    Raises:
+        InvalidPreferenceKeyError: If the key is not in VALID_PREFERENCE_KEYS
+    """
+    if key not in VALID_PREFERENCE_KEYS:
+        valid_keys = ", ".join(sorted(VALID_PREFERENCE_KEYS))
+        raise InvalidPreferenceKeyError(
+            f"Unknown preference key: '{key}'. "
+            f"Valid keys are: {valid_keys}"
+        )
+
+
 def set_preference_from_string(key: str, raw_value: str) -> Path:
+    """Set a preference from a string value, with validation.
+
+    Raises:
+        InvalidPreferenceKeyError: If the key is not a valid preference key
+    """
+    validate_preference_key(key)
     return set_preference(key, _parse_value(raw_value))
 
 

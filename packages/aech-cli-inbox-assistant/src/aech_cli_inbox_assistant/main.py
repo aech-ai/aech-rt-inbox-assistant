@@ -17,6 +17,8 @@ from .state import (
     read_preferences,
     set_preference_from_string,
     write_preferences,
+    InvalidPreferenceKeyError,
+    VALID_PREFERENCE_KEYS,
 )
 
 
@@ -434,18 +436,33 @@ def schema():
 
 @app.command("reply-needed")
 def reply_needed(
-    limit: int = typer.Option(20, help="Number of messages to list"),
+    limit: int = typer.Option(20, help="Number of threads to list"),
+    include_stale: bool = typer.Option(False, "--include-stale", help="Include stale threads"),
     human: bool = typer.Option(False, "--human", help="Human-readable output instead of JSON"),
 ):
-    """List messages currently marked as requiring a reply."""
+    """List threads currently marked as requiring a reply.
+
+    Queries Working Memory threads. By default excludes stale threads (no activity for 3+ days).
+    """
     conn = connect_db()
+
+    # Build query - exclude stale by default
+    status_filter = "" if include_stale else "AND status != 'stale'"
+
     rows = conn.execute(
-        """
-        SELECT rt.message_id, rt.reason, rt.last_activity_at, e.subject, e.sender, e.web_link
-        FROM reply_tracking rt
-        JOIN emails e ON e.id = rt.message_id
-        WHERE rt.requires_reply = 1
-        ORDER BY rt.last_activity_at DESC
+        f"""
+        SELECT id, conversation_id, subject, last_activity_at, urgency, summary, status
+        FROM wm_threads
+        WHERE needs_reply = 1
+          {status_filter}
+        ORDER BY
+            CASE urgency
+                WHEN 'immediate' THEN 1
+                WHEN 'today' THEN 2
+                WHEN 'this_week' THEN 3
+                ELSE 4
+            END,
+            last_activity_at DESC
         LIMIT ?
         """,
         (limit,),
@@ -456,19 +473,16 @@ def reply_needed(
 
     if human:
         if not items:
-            typer.echo("No reply-needed items.")
+            typer.echo("No threads needing reply.")
             return
         for item in items:
-            typer.echo(f"Subject: {item['subject']}")
-            typer.echo(f"  From: {item['sender']}")
-            typer.echo(f"  Reason: {item.get('reason', 'N/A')}")
+            urgency = item.get('urgency', 'someday')
+            status = item.get('status', 'active')
+            typer.echo(f"[{urgency.upper()}] {item['subject']}")
+            if item.get('summary'):
+                typer.echo(f"  Summary: {item['summary'][:100]}...")
             typer.echo(f"  Last activity: {item['last_activity_at']}")
-            link = item.get('web_link')
-            if not link and item.get('message_id'):
-                from urllib.parse import quote
-                link = f"https://outlook.office365.com/mail/inbox/id/{quote(item['message_id'], safe='')}"
-            if link:
-                typer.echo(f"  Link: {link}")
+            typer.echo(f"  Status: {status}")
             typer.echo()
     else:
         typer.echo(json.dumps(items, default=str))
@@ -1652,12 +1666,27 @@ def prefs_show():
 
 @prefs_app.command("set")
 def prefs_set(
-    key: str = typer.Argument(..., help="Preference key"),
+    key: str = typer.Argument(..., help="Preference key (use 'prefs keys' to see valid keys)"),
     value: str = typer.Argument(..., help="Preference value (string/number/bool/JSON)"),
 ):
-    """Set a preference key in preferences.json."""
-    path = set_preference_from_string(key, value)
-    typer.echo(str(path))
+    """Set a preference key in preferences.json.
+
+    Only known preference keys are allowed. Use 'prefs keys' to see valid keys.
+    """
+    try:
+        path = set_preference_from_string(key, value)
+        typer.echo(str(path))
+    except InvalidPreferenceKeyError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1)
+
+
+@prefs_app.command("keys")
+def prefs_keys():
+    """List all valid preference keys."""
+    typer.echo("Valid preference keys:\n")
+    for key in sorted(VALID_PREFERENCE_KEYS):
+        typer.echo(f"  {key}")
 
 
 @prefs_app.command("unset")
