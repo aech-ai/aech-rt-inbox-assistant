@@ -4,9 +4,12 @@ CLI for Agent Aech to query Inbox Assistant state.
 This CLI is a read-only query interface to the SQLite database
 populated by the RT (real-time) inbox assistant service.
 """
+import os
 import typer
 import sqlite3
 import json
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from .state import (
     connect_db,
@@ -16,6 +19,42 @@ from .state import (
     write_preferences,
 )
 
+
+def get_user_timezone() -> ZoneInfo:
+    """Get the user's timezone from environment or preferences.
+
+    Priority:
+    1. DEFAULT_TIMEZONE environment variable
+    2. 'timezone' key in preferences.json
+    3. Fall back to UTC
+    """
+    # Check environment first
+    tz_name = os.environ.get("DEFAULT_TIMEZONE")
+
+    # Then check preferences
+    if not tz_name:
+        prefs = read_preferences()
+        tz_name = prefs.get("timezone")
+
+    # Fall back to UTC
+    if not tz_name:
+        tz_name = "UTC"
+
+    try:
+        return ZoneInfo(tz_name)
+    except Exception:
+        return ZoneInfo("UTC")
+
+
+def now_in_user_tz() -> datetime:
+    """Get current datetime in user's timezone."""
+    return datetime.now(get_user_timezone())
+
+
+def today_in_user_tz():
+    """Get today's date in user's timezone."""
+    return now_in_user_tz().date()
+
 app = typer.Typer(
     help="Query Inbox Assistant state and preferences.",
     no_args_is_help=True,
@@ -24,6 +63,9 @@ app = typer.Typer(
 
 prefs_app = typer.Typer(help="Manage `/home/agentaech/preferences.json`.", add_completion=False)
 app.add_typer(prefs_app, name="prefs")
+
+wm_app = typer.Typer(help="Working Memory - EA cognitive state.", add_completion=False)
+app.add_typer(wm_app, name="wm")
 
 
 @app.command()
@@ -197,6 +239,16 @@ def search(
 def dbpath():
     """Get the absolute path to the user's database."""
     typer.echo(get_db_path())
+
+
+@app.command("timezone")
+def show_timezone():
+    """Show the current timezone being used for calendar queries."""
+    tz = get_user_timezone()
+    now = now_in_user_tz()
+    typer.echo(f"Timezone: {tz}")
+    typer.echo(f"Current time: {now.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+    typer.echo(f"Today's date: {today_in_user_tz()}")
 
 
 @app.command("sync-status")
@@ -451,14 +503,12 @@ def _format_event(event: dict, human: bool = True) -> str:
 def calendar_today(
     human: bool = typer.Option(False, "--human", help="Human-readable output instead of JSON"),
 ):
-    """Show today's calendar events."""
-    from datetime import datetime, timedelta
-
+    """Show today's calendar events (in user's timezone)."""
     conn = connect_db()
     cursor = conn.cursor()
 
-    # Get today's date range
-    today = datetime.now().date()
+    # Get today's date range in user's timezone
+    today = today_in_user_tz()
     start = today.isoformat() + "T00:00:00"
     end = (today + timedelta(days=1)).isoformat() + "T00:00:00"
 
@@ -478,9 +528,9 @@ def calendar_today(
 
     if human:
         if not events:
-            typer.echo("No events today.")
+            typer.echo(f"No events today ({today}, {get_user_timezone()}).")
             return
-        typer.echo(f"=== Today's Agenda ({today}) ===\n")
+        typer.echo(f"=== Today's Agenda ({today}, {get_user_timezone()}) ===\n")
         for event in events:
             typer.echo(_format_event(event, human=True))
             typer.echo()
@@ -492,13 +542,11 @@ def calendar_today(
 def calendar_week(
     human: bool = typer.Option(False, "--human", help="Human-readable output instead of JSON"),
 ):
-    """Show this week's calendar events."""
-    from datetime import datetime, timedelta
-
+    """Show this week's calendar events (in user's timezone)."""
     conn = connect_db()
     cursor = conn.cursor()
 
-    today = datetime.now().date()
+    today = today_in_user_tz()
     # Start from today, go 7 days forward
     start = today.isoformat() + "T00:00:00"
     end = (today + timedelta(days=7)).isoformat() + "T00:00:00"
@@ -519,9 +567,9 @@ def calendar_week(
 
     if human:
         if not events:
-            typer.echo("No events this week.")
+            typer.echo(f"No events this week ({get_user_timezone()}).")
             return
-        typer.echo(f"=== This Week ({today} to {today + timedelta(days=6)}) ===\n")
+        typer.echo(f"=== This Week ({today} to {today + timedelta(days=6)}, {get_user_timezone()}) ===\n")
         current_date = None
         for event in events:
             event_date = event["start_at"][:10]
@@ -538,14 +586,16 @@ def calendar_upcoming(
     hours: int = typer.Option(24, help="Number of hours to look ahead"),
     human: bool = typer.Option(False, "--human", help="Human-readable output instead of JSON"),
 ):
-    """Show upcoming events in the next N hours."""
-    from datetime import datetime, timedelta
-
+    """Show upcoming events in the next N hours (in user's timezone)."""
     conn = connect_db()
     cursor = conn.cursor()
 
-    now = datetime.now()
+    now = now_in_user_tz()
     end = now + timedelta(hours=hours)
+
+    # DB stores naive datetimes, so strip timezone for comparison
+    now_naive = now.strftime("%Y-%m-%dT%H:%M:%S")
+    end_naive = end.strftime("%Y-%m-%dT%H:%M:%S")
 
     cursor.execute(
         """
@@ -554,7 +604,7 @@ def calendar_upcoming(
           AND is_cancelled = 0
         ORDER BY start_at
         """,
-        (now.isoformat(), end.isoformat()),
+        (now_naive, end_naive),
     )
     rows = cursor.fetchall()
     conn.close()
@@ -563,9 +613,9 @@ def calendar_upcoming(
 
     if human:
         if not events:
-            typer.echo(f"No events in the next {hours} hours.")
+            typer.echo(f"No events in the next {hours} hours ({get_user_timezone()}).")
             return
-        typer.echo(f"=== Next {hours} Hours ===\n")
+        typer.echo(f"=== Next {hours} Hours ({get_user_timezone()}) ===\n")
         for event in events:
             typer.echo(_format_event(event, human=True))
             typer.echo()
@@ -578,9 +628,7 @@ def calendar_free(
     date: str = typer.Argument(..., help="Date to check (YYYY-MM-DD)"),
     human: bool = typer.Option(False, "--human", help="Human-readable output instead of JSON"),
 ):
-    """Show free time slots on a given date."""
-    from datetime import datetime, timedelta
-
+    """Show free time slots on a given date (in user's timezone)."""
     conn = connect_db()
     cursor = conn.cursor()
 
@@ -657,9 +705,7 @@ def calendar_busy(
     end: str = typer.Argument(..., help="End datetime"),
     human: bool = typer.Option(False, "--human", help="Human-readable output instead of JSON"),
 ):
-    """Check if busy during a time range."""
-    from datetime import datetime
-
+    """Check if busy during a time range (times interpreted in user's timezone)."""
     conn = connect_db()
     cursor = conn.cursor()
 
@@ -820,13 +866,12 @@ def calendar_prep(
     human: bool = typer.Option(False, "--human", help="Human-readable output instead of JSON"),
 ):
     """Prepare briefing for a meeting - includes attendee email history."""
-    from datetime import datetime
-
     conn = connect_db()
     cursor = conn.cursor()
 
     # Get the event
     if next_meeting:
+        now_naive = now_in_user_tz().strftime("%Y-%m-%dT%H:%M:%S")
         cursor.execute(
             """
             SELECT * FROM calendar_events
@@ -834,7 +879,7 @@ def calendar_prep(
             ORDER BY start_at
             LIMIT 1
             """,
-            (datetime.now().isoformat(),),
+            (now_naive,),
         )
     elif event_id:
         cursor.execute("SELECT * FROM calendar_events WHERE id = ?", (event_id,))
@@ -1121,6 +1166,478 @@ def actions_history(
                 typer.echo(f"    Error: {a['error']}")
     else:
         typer.echo(json.dumps(actions, default=str))
+
+
+# =============================================================================
+# Working Memory Commands (wm)
+# =============================================================================
+
+
+def _get_wm_snapshot(conn) -> dict:
+    """Query working memory state from database."""
+    cursor = conn.cursor()
+
+    # Get timezone info
+    tz = get_user_timezone()
+    now = now_in_user_tz()
+    today = today_in_user_tz()
+
+    # Active threads needing attention
+    cursor.execute("""
+        SELECT id, conversation_id, subject, status, urgency, needs_reply,
+               last_activity_at, summary, latest_email_id, latest_web_link
+        FROM wm_threads
+        WHERE status NOT IN ('resolved', 'stale')
+        ORDER BY
+            CASE urgency
+                WHEN 'immediate' THEN 1
+                WHEN 'today' THEN 2
+                WHEN 'this_week' THEN 3
+                ELSE 4
+            END,
+            last_activity_at DESC
+        LIMIT 20
+    """)
+    threads = [dict(r) for r in cursor.fetchall()]
+
+    # Threads needing reply
+    threads_needing_reply = [t for t in threads if t.get("needs_reply")]
+
+    # Pending decisions
+    cursor.execute("""
+        SELECT id, question, context, requester, urgency, deadline
+        FROM wm_decisions
+        WHERE is_resolved = 0
+        ORDER BY
+            CASE urgency
+                WHEN 'immediate' THEN 1
+                WHEN 'today' THEN 2
+                WHEN 'this_week' THEN 3
+                ELSE 4
+            END,
+            created_at DESC
+        LIMIT 10
+    """)
+    decisions = [dict(r) for r in cursor.fetchall()]
+
+    # Open commitments
+    cursor.execute("""
+        SELECT id, description, to_whom, due_by, committed_at
+        FROM wm_commitments
+        WHERE is_completed = 0
+        ORDER BY due_by ASC NULLS LAST, committed_at DESC
+        LIMIT 10
+    """)
+    commitments = [dict(r) for r in cursor.fetchall()]
+
+    # Overdue commitments count
+    cursor.execute("""
+        SELECT COUNT(*) FROM wm_commitments
+        WHERE is_completed = 0 AND due_by IS NOT NULL AND due_by < ?
+    """, (now.isoformat(),))
+    overdue_count = cursor.fetchone()[0]
+
+    # Recent observations (last 7 days, for context)
+    cursor.execute("""
+        SELECT type, content, observed_at
+        FROM wm_observations
+        WHERE observed_at > datetime('now', '-7 days')
+        ORDER BY observed_at DESC
+        LIMIT 10
+    """)
+    observations = [dict(r) for r in cursor.fetchall()]
+
+    # Today's calendar (if available)
+    today_events = []
+    try:
+        start = today.isoformat() + "T00:00:00"
+        end = (today + timedelta(days=1)).isoformat() + "T00:00:00"
+        cursor.execute("""
+            SELECT subject, start_at, end_at, is_online_meeting, location
+            FROM calendar_events
+            WHERE start_at >= ? AND start_at < ? AND is_cancelled = 0
+            ORDER BY start_at
+        """, (start, end))
+        today_events = [dict(r) for r in cursor.fetchall()]
+    except Exception:
+        pass  # Calendar table may not exist
+
+    return {
+        "timezone": str(tz),
+        "current_time": now.strftime("%Y-%m-%d %H:%M:%S %Z"),
+        "today": str(today),
+        "active_threads": threads,
+        "threads_needing_reply": len(threads_needing_reply),
+        "pending_decisions": decisions,
+        "open_commitments": commitments,
+        "overdue_commitments": overdue_count,
+        "recent_observations": observations,
+        "today_calendar": today_events,
+        "urgent_items": len([t for t in threads if t.get("urgency") in ("immediate", "today")]),
+    }
+
+
+@wm_app.command("snapshot")
+def wm_snapshot(
+    human: bool = typer.Option(False, "--human", help="Human-readable output"),
+    llm: bool = typer.Option(False, "--llm", help="LLM-optimized output for context injection"),
+):
+    """Get complete working memory snapshot (for context injection)."""
+    conn = connect_db()
+    snapshot = _get_wm_snapshot(conn)
+    conn.close()
+
+    if llm:
+        # LLM-optimized format for context injection
+        lines = [
+            f"=== EA Working Memory (as of {snapshot['current_time']}) ===",
+            f"Timezone: {snapshot['timezone']} | Today: {snapshot['today']}",
+            "",
+        ]
+
+        # Today's schedule
+        if snapshot["today_calendar"]:
+            lines.append("## Today's Schedule")
+            for event in snapshot["today_calendar"]:
+                time = event["start_at"][11:16]
+                end_time = event["end_at"][11:16]
+                loc = " (Teams)" if event.get("is_online_meeting") else ""
+                lines.append(f"  {time}-{end_time} {event['subject']}{loc}")
+            lines.append("")
+
+        # Urgent attention
+        if snapshot["threads_needing_reply"] > 0 or snapshot["pending_decisions"]:
+            lines.append("## Needs Attention")
+            if snapshot["threads_needing_reply"] > 0:
+                lines.append(f"  - {snapshot['threads_needing_reply']} threads awaiting reply")
+            if snapshot["pending_decisions"]:
+                lines.append(f"  - {len(snapshot['pending_decisions'])} pending decisions")
+            if snapshot["overdue_commitments"] > 0:
+                lines.append(f"  - {snapshot['overdue_commitments']} overdue commitments")
+            lines.append("")
+
+        # Active threads (brief)
+        if snapshot["active_threads"]:
+            lines.append("## Active Threads")
+            for t in snapshot["active_threads"][:10]:
+                urgency = t.get("urgency", "")[:4]
+                reply = "[REPLY NEEDED]" if t.get("needs_reply") else ""
+                link = t.get("latest_web_link") or ""
+                if link:
+                    lines.append(f"  - [{urgency}] {t['subject'][:50]} {reply}")
+                    lines.append(f"    Link: {link}")
+                else:
+                    lines.append(f"  - [{urgency}] {t['subject'][:50]} {reply}")
+                if t.get("summary"):
+                    lines.append(f"    {t['summary'][:100]}")
+            lines.append("")
+
+        # Pending decisions
+        if snapshot["pending_decisions"]:
+            lines.append("## Pending Decisions")
+            for d in snapshot["pending_decisions"][:5]:
+                lines.append(f"  - [{d['urgency'][:4]}] {d['question'][:60]}")
+                lines.append(f"    From: {d['requester']}")
+            lines.append("")
+
+        # Commitments
+        if snapshot["open_commitments"]:
+            lines.append("## Open Commitments")
+            for c in snapshot["open_commitments"][:5]:
+                due = f" (due: {c['due_by'][:10]})" if c.get("due_by") else ""
+                lines.append(f"  - {c['description'][:50]} → {c['to_whom']}{due}")
+            lines.append("")
+
+        typer.echo("\n".join(lines))
+
+    elif human:
+        # Human-readable format
+        typer.echo(f"=== Working Memory Snapshot ===")
+        typer.echo(f"Timezone: {snapshot['timezone']}")
+        typer.echo(f"Current Time: {snapshot['current_time']}")
+        typer.echo(f"Today: {snapshot['today']}")
+        typer.echo("")
+
+        if snapshot["today_calendar"]:
+            typer.echo("--- Today's Calendar ---")
+            for event in snapshot["today_calendar"]:
+                time = event["start_at"][11:16]
+                typer.echo(f"  {time} - {event['subject']}")
+            typer.echo("")
+
+        typer.echo("--- Summary ---")
+        typer.echo(f"  Active threads: {len(snapshot['active_threads'])}")
+        typer.echo(f"  Threads needing reply: {snapshot['threads_needing_reply']}")
+        typer.echo(f"  Pending decisions: {len(snapshot['pending_decisions'])}")
+        typer.echo(f"  Open commitments: {len(snapshot['open_commitments'])}")
+        typer.echo(f"  Overdue commitments: {snapshot['overdue_commitments']}")
+        typer.echo(f"  Urgent items: {snapshot['urgent_items']}")
+        typer.echo("")
+
+        if snapshot["active_threads"]:
+            typer.echo("--- Active Threads (top 10) ---")
+            for t in snapshot["active_threads"][:10]:
+                reply = " [REPLY NEEDED]" if t.get("needs_reply") else ""
+                typer.echo(f"  [{t['urgency']}] {t['subject'][:50]}{reply}")
+            typer.echo("")
+
+        if snapshot["pending_decisions"]:
+            typer.echo("--- Pending Decisions ---")
+            for d in snapshot["pending_decisions"]:
+                typer.echo(f"  [{d['urgency']}] {d['question'][:60]}")
+                typer.echo(f"    From: {d['requester']}")
+            typer.echo("")
+
+        if snapshot["open_commitments"]:
+            typer.echo("--- Open Commitments ---")
+            for c in snapshot["open_commitments"]:
+                due = f" (due: {c['due_by'][:10]})" if c.get("due_by") else ""
+                typer.echo(f"  - {c['description'][:50]} → {c['to_whom']}{due}")
+            typer.echo("")
+
+    else:
+        # JSON format
+        typer.echo(json.dumps(snapshot, default=str))
+
+
+@wm_app.command("threads")
+def wm_threads(
+    needs_reply: bool = typer.Option(False, "--needs-reply", help="Only show threads needing reply"),
+    urgency: str = typer.Option(None, help="Filter by urgency (immediate/today/this_week/someday)"),
+    limit: int = typer.Option(20, help="Number of threads to show"),
+    human: bool = typer.Option(False, "--human", help="Human-readable output"),
+):
+    """Query active threads."""
+    conn = connect_db()
+    cursor = conn.cursor()
+
+    query = """
+        SELECT id, conversation_id, subject, status, urgency, needs_reply,
+               last_activity_at, summary, participants_json, latest_web_link
+        FROM wm_threads
+        WHERE status NOT IN ('resolved')
+    """
+    params = []
+
+    if needs_reply:
+        query += " AND needs_reply = 1"
+    if urgency:
+        query += " AND urgency = ?"
+        params.append(urgency)
+
+    query += " ORDER BY last_activity_at DESC LIMIT ?"
+    params.append(limit)
+
+    cursor.execute(query, params)
+    threads = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+
+    if human:
+        if not threads:
+            typer.echo("No matching threads.")
+            return
+        for t in threads:
+            reply = " [REPLY NEEDED]" if t.get("needs_reply") else ""
+            typer.echo(f"[{t['urgency']}] {t['subject']}{reply}")
+            typer.echo(f"  Status: {t['status']} | Last: {t['last_activity_at'][:16]}")
+            if t.get("summary"):
+                typer.echo(f"  {t['summary'][:100]}")
+            if t.get("latest_web_link"):
+                typer.echo(f"  Link: {t['latest_web_link']}")
+            typer.echo("")
+    else:
+        typer.echo(json.dumps(threads, default=str))
+
+
+@wm_app.command("decisions")
+def wm_decisions(
+    human: bool = typer.Option(False, "--human", help="Human-readable output"),
+):
+    """List pending decisions awaiting response."""
+    conn = connect_db()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT id, question, context, requester, urgency, deadline, created_at
+        FROM wm_decisions
+        WHERE is_resolved = 0
+        ORDER BY
+            CASE urgency
+                WHEN 'immediate' THEN 1
+                WHEN 'today' THEN 2
+                WHEN 'this_week' THEN 3
+                ELSE 4
+            END,
+            created_at DESC
+    """)
+    decisions = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+
+    if human:
+        if not decisions:
+            typer.echo("No pending decisions.")
+            return
+        typer.echo(f"=== Pending Decisions ({len(decisions)}) ===\n")
+        for d in decisions:
+            typer.echo(f"[{d['urgency']}] {d['question']}")
+            typer.echo(f"  From: {d['requester']}")
+            if d.get("context"):
+                typer.echo(f"  Context: {d['context'][:100]}")
+            if d.get("deadline"):
+                typer.echo(f"  Deadline: {d['deadline']}")
+            typer.echo("")
+    else:
+        typer.echo(json.dumps(decisions, default=str))
+
+
+@wm_app.command("commitments")
+def wm_commitments(
+    overdue: bool = typer.Option(False, "--overdue", help="Only show overdue commitments"),
+    human: bool = typer.Option(False, "--human", help="Human-readable output"),
+):
+    """List open commitments."""
+    conn = connect_db()
+    cursor = conn.cursor()
+    now = now_in_user_tz()
+
+    query = """
+        SELECT id, description, to_whom, due_by, committed_at
+        FROM wm_commitments
+        WHERE is_completed = 0
+    """
+    params = []
+
+    if overdue:
+        query += " AND due_by IS NOT NULL AND due_by < ?"
+        params.append(now.isoformat())
+
+    query += " ORDER BY due_by ASC NULLS LAST, committed_at DESC"
+
+    cursor.execute(query, params)
+    commitments = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+
+    if human:
+        if not commitments:
+            typer.echo("No open commitments." if not overdue else "No overdue commitments.")
+            return
+        title = "Overdue Commitments" if overdue else "Open Commitments"
+        typer.echo(f"=== {title} ({len(commitments)}) ===\n")
+        for c in commitments:
+            due = f" [DUE: {c['due_by'][:10]}]" if c.get("due_by") else ""
+            typer.echo(f"- {c['description']}")
+            typer.echo(f"  To: {c['to_whom']}{due}")
+            typer.echo("")
+    else:
+        typer.echo(json.dumps(commitments, default=str))
+
+
+@wm_app.command("contacts")
+def wm_contacts(
+    external: bool = typer.Option(False, "--external", help="Only external contacts"),
+    search: str = typer.Option(None, "--search", help="Search by email or name"),
+    limit: int = typer.Option(20, help="Number of contacts to show"),
+    human: bool = typer.Option(False, "--human", help="Human-readable output"),
+):
+    """Query known contacts."""
+    conn = connect_db()
+    cursor = conn.cursor()
+
+    query = "SELECT * FROM wm_contacts WHERE 1=1"
+    params = []
+
+    if external:
+        query += " AND is_internal = 0"
+    if search:
+        query += " AND (email LIKE ? OR name LIKE ?)"
+        params.extend([f"%{search}%", f"%{search}%"])
+
+    query += " ORDER BY last_interaction_at DESC LIMIT ?"
+    params.append(limit)
+
+    cursor.execute(query, params)
+    contacts = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+
+    if human:
+        if not contacts:
+            typer.echo("No matching contacts.")
+            return
+        for c in contacts:
+            name = c.get("name") or c["email"]
+            internal = " [internal]" if c.get("is_internal") else ""
+            typer.echo(f"{name}{internal}")
+            typer.echo(f"  Email: {c['email']}")
+            typer.echo(f"  Interactions: {c['total_interactions']} (last: {c['last_interaction_at'][:10]})")
+            typer.echo("")
+    else:
+        typer.echo(json.dumps(contacts, default=str))
+
+
+@wm_app.command("observations")
+def wm_observations(
+    days: int = typer.Option(7, "--days", help="Days of observations to show"),
+    human: bool = typer.Option(False, "--human", help="Human-readable output"),
+):
+    """View recent passive observations."""
+    conn = connect_db()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT type, content, importance, observed_at
+        FROM wm_observations
+        WHERE observed_at > datetime('now', ? || ' days')
+        ORDER BY observed_at DESC
+        LIMIT 50
+    """, (f"-{days}",))
+    observations = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+
+    if human:
+        if not observations:
+            typer.echo(f"No observations in the last {days} days.")
+            return
+        typer.echo(f"=== Observations (last {days} days) ===\n")
+        for o in observations:
+            typer.echo(f"[{o['type']}] {o['content'][:80]}")
+            typer.echo(f"  {o['observed_at'][:16]}")
+            typer.echo("")
+    else:
+        typer.echo(json.dumps(observations, default=str))
+
+
+@wm_app.command("projects")
+def wm_projects(
+    human: bool = typer.Option(False, "--human", help="Human-readable output"),
+):
+    """View inferred projects."""
+    conn = connect_db()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT name, description, status, confidence, first_mentioned_at, last_activity_at
+        FROM wm_projects
+        WHERE status = 'active'
+        ORDER BY last_activity_at DESC
+        LIMIT 20
+    """)
+    projects = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+
+    if human:
+        if not projects:
+            typer.echo("No active projects found.")
+            return
+        typer.echo("=== Inferred Projects ===\n")
+        for p in projects:
+            conf = f" ({int(p['confidence']*100)}% confidence)" if p.get("confidence") else ""
+            typer.echo(f"- {p['name']}{conf}")
+            if p.get("description"):
+                typer.echo(f"  {p['description'][:80]}")
+            typer.echo(f"  Last activity: {p['last_activity_at'][:10]}")
+            typer.echo("")
+    else:
+        typer.echo(json.dumps(projects, default=str))
 
 
 # =============================================================================
