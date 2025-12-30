@@ -1,400 +1,550 @@
 {
   "name": "inbox-assistant",
   "type": "cli",
-  "description": "Query Inbox Assistant state (SQLite), manage corpus, search emails, access calendar, and get meeting prep briefings. All commands output JSON by default.",
-  "persona": {
-    "exclusive": true,
-    "context_injection": "aech-cli-inbox-assistant wm snapshot --llm",
-    "system_addendum": "You are the user's Executive Assistant with continuous awareness of their email, calendar, commitments, and relationships through working memory.\n\n## Working Memory Context\nYour context includes a Working Memory Snapshot with:\n- **Threads Needing Reply**: Emails awaiting the user's response. STALE means no activity for 3+ days—these are overdue.\n- **Other Active Threads**: Recent conversations the user should be aware of.\n- **Pending Decisions**: Explicit questions from others awaiting the user's decision.\n- **Open Commitments**: Promises the user made to others (with due dates if known).\n- **Observations**: Context learned from CC'd emails—things happening around the user.\n\n## Proactive Behaviors\n- When the user starts a conversation, briefly note any urgent items: \"I see 3 threads need your reply, including an overdue one from National HealthClaim.\"\n- If a user mentions a contact or topic, check if it relates to active threads: \"I see you have an open thread with Erik Kaas about meeting logistics.\"\n- Before meetings, correlate calendar with email: \"Your 2pm with Jane—I found 3 recent email threads with her about the Q1 proposal.\"\n- Surface stale threads periodically: \"The thread with Jon about connecting from LinkedIn has been waiting 5 weeks.\"\n\n## Example Interactions\n\n**User**: \"What do I need to deal with today?\"\n**You**: Check working memory, then: \"You have 4 threads needing reply (2 are stale/overdue). There's also 1 pending decision from Ashi about meeting timing. Want me to draft responses?\"\n\n**User**: \"Tell me about my relationship with Erik Kaas\"\n**You**: Use `wm contacts --search 'erik'` and `search 'erik kaas'` to gather context, then summarize: \"Erik Kaas is from NRC-CNRC. You've exchanged 12 emails. Last thread was about a meeting location issue—he couldn't find your office.\"\n\n**User**: \"Draft a reply to the HealthClaim thread\"\n**You**: Use `search` to get full thread context, then draft a reply that acknowledges the delay and addresses their recommendation.\n\n**User**: \"What's happening with the Aech deployment?\"\n**You**: Check observations and search emails: \"I see several threads about Agent Aech deployment—looks like there's ongoing discussion with multiple parties. Want me to summarize the current state?\"\n\n## Tools for Deeper Context\n- `wm threads --needs-reply` — Focus on actionable items\n- `wm threads --urgency immediate` — Filter by urgency\n- `wm contacts --search 'name'` — Get relationship context\n- `wm decisions` — Pending decisions\n- `wm commitments --overdue` — Overdue promises\n- `search 'query'` — Full-text search across email corpus\n- `calendar today` / `calendar upcoming` — Schedule awareness\n- `calendar prep --next` — Prepare for upcoming meetings\n\n## Behavioral Guidelines\n- Be concise but proactive—surface relevant context without being asked.\n- When drafting emails, match the user's tone from past emails.\n- For stale threads, suggest graceful follow-ups that acknowledge the delay.\n- Always offer to take action: \"Want me to draft a response?\" or \"Should I schedule time for this?\"\n- If working memory shows commitments with due dates, remind the user before they're overdue."
-  },
+  "description": "Query Inbox Assistant state and preferences.",
   "command": "aech-cli-inbox-assistant",
   "actions": [
     {
       "name": "list",
-      "description": "List ingested emails (JSON by default).",
+      "description": "List ingested emails.",
       "parameters": [
-        {"name": "limit", "type": "option", "required": false, "description": "Number of emails to list."},
-        {"name": "include-read", "type": "flag", "required": false, "description": "Include read emails."},
-        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
-      ]
-    },
-    {
-      "name": "search",
-      "description": "Search emails and attachments with FTS, vector, or hybrid mode (JSON by default).",
-      "parameters": [
-        {"name": "query", "type": "argument", "required": true, "description": "Search query."},
-        {"name": "limit", "type": "option", "required": false, "description": "Number of results to return."},
-        {"name": "mode", "type": "option", "required": false, "description": "Search mode: fts, vector, or hybrid."},
-        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
-      ]
-    },
-    {
-      "name": "sync-status",
-      "description": "Show the sync status for all folders (JSON by default).",
-      "parameters": [
-        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
-      ]
-    },
-    {
-      "name": "stats",
-      "description": "Show corpus statistics (emails, attachments, chunks, embeddings) (JSON by default).",
-      "parameters": [
-        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
-      ]
-    },
-    {
-      "name": "embed",
-      "description": "Generate embeddings for vector similarity search. Uses BAAI/bge-m3 by default (configurable via EMBEDDING_MODEL env var).",
-      "parameters": [
-        {"name": "limit", "type": "option", "required": false, "description": "Number of chunks to embed per batch (default: 1000)."},
-        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
-      ]
-    },
-    {
-      "name": "attachment-status",
-      "description": "Show attachment extraction status (JSON by default).",
-      "parameters": [
-        {"name": "limit", "type": "option", "required": false, "description": "Number of attachments to list."},
-        {"name": "status", "type": "option", "required": false, "description": "Filter by status (pending/completed/failed/skipped/extracting)."},
-        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
+        {
+          "name": "limit",
+          "type": "option",
+          "required": false,
+          "description": "Number of emails to list",
+          "default": 20
+        },
+        {
+          "name": "include-read",
+          "type": "flag",
+          "required": false,
+          "description": "Include read emails"
+        },
+        {
+          "name": "human",
+          "type": "flag",
+          "required": false,
+          "description": "Human-readable output instead of JSON"
+        }
       ]
     },
     {
       "name": "history",
-      "description": "View triage history (JSON by default).",
+      "description": "View triage history.",
       "parameters": [
-        {"name": "limit", "type": "option", "required": false, "description": "Number of entries to list."},
-        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
+        {
+          "name": "limit",
+          "type": "option",
+          "required": false,
+          "description": "Number of entries to list",
+          "default": 20
+        },
+        {
+          "name": "human",
+          "type": "flag",
+          "required": false,
+          "description": "Human-readable output instead of JSON"
+        }
       ]
     },
     {
-      "name": "reply-needed",
-      "description": "List messages currently marked as requiring a reply (JSON by default).",
+      "name": "search",
+      "description": "Search emails and attachments using full-text search.",
       "parameters": [
-        {"name": "limit", "type": "option", "required": false, "description": "Number of messages to list."},
-        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
+        {
+          "name": "limit",
+          "type": "option",
+          "required": false,
+          "description": "Number of results to return",
+          "default": 20
+        },
+        {
+          "name": "human",
+          "type": "flag",
+          "required": false,
+          "description": "Human-readable output instead of JSON"
+        }
       ]
     },
     {
       "name": "dbpath",
-      "description": "Print the resolved SQLite DB path.",
+      "description": "Get the absolute path to the user's database.",
       "parameters": []
+    },
+    {
+      "name": "sync-status",
+      "description": "Show the sync status for all folders.",
+      "parameters": [
+        {
+          "name": "human",
+          "type": "flag",
+          "required": false,
+          "description": "Human-readable output instead of JSON"
+        }
+      ]
+    },
+    {
+      "name": "stats",
+      "description": "Show corpus statistics.",
+      "parameters": [
+        {
+          "name": "human",
+          "type": "flag",
+          "required": false,
+          "description": "Human-readable output instead of JSON"
+        }
+      ]
+    },
+    {
+      "name": "attachment-status",
+      "description": "Show attachment extraction status.",
+      "parameters": [
+        {
+          "name": "limit",
+          "type": "option",
+          "required": false,
+          "description": "Number of attachments to list",
+          "default": 20
+        },
+        {
+          "name": "status",
+          "type": "option",
+          "required": false,
+          "description": "Filter by status (pending/completed/failed/skipped/extracting)"
+        },
+        {
+          "name": "human",
+          "type": "flag",
+          "required": false,
+          "description": "Human-readable output instead of JSON"
+        }
+      ]
     },
     {
       "name": "schema",
-      "description": "Print CREATE TABLE statements from SQLite.",
+      "description": "Get the database schema (CREATE TABLE statements).",
       "parameters": []
     },
     {
+      "name": "reply-needed",
+      "description": "List messages currently marked as requiring a reply.",
+      "parameters": [
+        {
+          "name": "limit",
+          "type": "option",
+          "required": false,
+          "description": "Number of messages to list",
+          "default": 20
+        },
+        {
+          "name": "human",
+          "type": "flag",
+          "required": false,
+          "description": "Human-readable output instead of JSON"
+        }
+      ]
+    },
+    {
+      "name": "calendar-today",
+      "description": "Show today's calendar events.",
+      "parameters": [
+        {
+          "name": "human",
+          "type": "flag",
+          "required": false,
+          "description": "Human-readable output instead of JSON"
+        }
+      ]
+    },
+    {
+      "name": "calendar-week",
+      "description": "Show this week's calendar events.",
+      "parameters": [
+        {
+          "name": "human",
+          "type": "flag",
+          "required": false,
+          "description": "Human-readable output instead of JSON"
+        }
+      ]
+    },
+    {
+      "name": "calendar-upcoming",
+      "description": "Show upcoming events in the next N hours.",
+      "parameters": [
+        {
+          "name": "hours",
+          "type": "option",
+          "required": false,
+          "description": "Number of hours to look ahead",
+          "default": 24
+        },
+        {
+          "name": "human",
+          "type": "flag",
+          "required": false,
+          "description": "Human-readable output instead of JSON"
+        }
+      ]
+    },
+    {
+      "name": "calendar-free",
+      "description": "Show free time slots on a given date.",
+      "parameters": [
+        {
+          "name": "date",
+          "type": "argument",
+          "required": true,
+          "description": "Date to check (YYYY-MM-DD)"
+        },
+        {
+          "name": "human",
+          "type": "flag",
+          "required": false,
+          "description": "Human-readable output instead of JSON"
+        }
+      ]
+    },
+    {
+      "name": "calendar-busy",
+      "description": "Check if busy during a time range.",
+      "parameters": [
+        {
+          "name": "start",
+          "type": "argument",
+          "required": true,
+          "description": "Start datetime (YYYY-MM-DDTHH:MM or YYYY-MM-DD HH:MM)"
+        },
+        {
+          "name": "end",
+          "type": "argument",
+          "required": true,
+          "description": "End datetime"
+        },
+        {
+          "name": "human",
+          "type": "flag",
+          "required": false,
+          "description": "Human-readable output instead of JSON"
+        }
+      ]
+    },
+    {
+      "name": "calendar-event",
+      "description": "Get details of a specific calendar event.",
+      "parameters": [
+        {
+          "name": "event_id",
+          "type": "argument",
+          "required": true,
+          "description": "Event ID"
+        },
+        {
+          "name": "human",
+          "type": "flag",
+          "required": false,
+          "description": "Human-readable output instead of JSON"
+        }
+      ]
+    },
+    {
+      "name": "calendar-search",
+      "description": "Search calendar events by subject or attendee.",
+      "parameters": [
+        {
+          "name": "query",
+          "type": "argument",
+          "required": true,
+          "description": "Search query (subject or attendee email)"
+        },
+        {
+          "name": "limit",
+          "type": "option",
+          "required": false,
+          "description": "Number of results",
+          "default": 20
+        },
+        {
+          "name": "human",
+          "type": "flag",
+          "required": false,
+          "description": "Human-readable output instead of JSON"
+        }
+      ]
+    },
+    {
+      "name": "calendar-meetings-with",
+      "description": "List meetings with a specific person.",
+      "parameters": [
+        {
+          "name": "email",
+          "type": "argument",
+          "required": true,
+          "description": "Email address to search for"
+        },
+        {
+          "name": "limit",
+          "type": "option",
+          "required": false,
+          "description": "Number of results",
+          "default": 50
+        },
+        {
+          "name": "human",
+          "type": "flag",
+          "required": false,
+          "description": "Human-readable output instead of JSON"
+        }
+      ]
+    },
+    {
+      "name": "calendar-prep",
+      "description": "Prepare briefing for a meeting - includes attendee email history.",
+      "parameters": [
+        {
+          "name": "event_id",
+          "type": "argument",
+          "required": false,
+          "description": "Event ID (or use --next for next meeting)"
+        },
+        {
+          "name": "next",
+          "type": "flag",
+          "required": false,
+          "description": "Prepare for next upcoming meeting"
+        },
+        {
+          "name": "human",
+          "type": "flag",
+          "required": false,
+          "description": "Human-readable output instead of JSON"
+        }
+      ]
+    },
+    {
+      "name": "event-create",
+      "description": "Schedule a new calendar event (queued for RT service execution).",
+      "parameters": [
+        {
+          "name": "subject",
+          "type": "argument",
+          "required": true,
+          "description": "Event subject"
+        },
+        {
+          "name": "start",
+          "type": "argument",
+          "required": true,
+          "description": "Start datetime (YYYY-MM-DDTHH:MM)"
+        },
+        {
+          "name": "end",
+          "type": "argument",
+          "required": true,
+          "description": "End datetime (YYYY-MM-DDTHH:MM)"
+        },
+        {
+          "name": "attendees",
+          "type": "option",
+          "required": false,
+          "description": "Comma-separated attendee emails"
+        },
+        {
+          "name": "location",
+          "type": "option",
+          "required": false,
+          "description": "Location"
+        },
+        {
+          "name": "body",
+          "type": "option",
+          "required": false,
+          "description": "Event description"
+        },
+        {
+          "name": "online",
+          "type": "flag",
+          "required": false,
+          "description": "Create as Teams meeting"
+        },
+        {
+          "name": "human",
+          "type": "flag",
+          "required": false,
+          "description": "Human-readable output"
+        }
+      ]
+    },
+    {
+      "name": "event-update",
+      "description": "Update/reschedule a calendar event (queued for RT service execution).",
+      "parameters": [
+        {
+          "name": "event_id",
+          "type": "argument",
+          "required": true,
+          "description": "Event ID to update"
+        },
+        {
+          "name": "subject",
+          "type": "option",
+          "required": false,
+          "description": "New subject"
+        },
+        {
+          "name": "start",
+          "type": "option",
+          "required": false,
+          "description": "New start datetime"
+        },
+        {
+          "name": "end",
+          "type": "option",
+          "required": false,
+          "description": "New end datetime"
+        },
+        {
+          "name": "location",
+          "type": "option",
+          "required": false,
+          "description": "New location"
+        },
+        {
+          "name": "human",
+          "type": "flag",
+          "required": false,
+          "description": "Human-readable output"
+        }
+      ]
+    },
+    {
+      "name": "event-cancel",
+      "description": "Cancel a calendar event (queued for RT service execution).",
+      "parameters": [
+        {
+          "name": "event_id",
+          "type": "argument",
+          "required": true,
+          "description": "Event ID to cancel"
+        },
+        {
+          "name": "notify",
+          "type": "flag",
+          "required": false,
+          "description": "Send cancellation to attendees",
+          "default": true
+        },
+        {
+          "name": "human",
+          "type": "flag",
+          "required": false,
+          "description": "Human-readable output"
+        }
+      ]
+    },
+    {
+      "name": "event-respond",
+      "description": "Respond to a meeting invite (queued for RT service execution).",
+      "parameters": [
+        {
+          "name": "event_id",
+          "type": "argument",
+          "required": true,
+          "description": "Event ID"
+        },
+        {
+          "name": "response",
+          "type": "argument",
+          "required": true,
+          "description": "Response: accept, tentative, or decline"
+        },
+        {
+          "name": "human",
+          "type": "flag",
+          "required": false,
+          "description": "Human-readable output"
+        }
+      ]
+    },
+    {
+      "name": "actions-pending",
+      "description": "List pending actions awaiting execution.",
+      "parameters": [
+        {
+          "name": "human",
+          "type": "flag",
+          "required": false,
+          "description": "Human-readable output"
+        }
+      ]
+    },
+    {
+      "name": "actions-history",
+      "description": "Show action execution history.",
+      "parameters": [
+        {
+          "name": "limit",
+          "type": "option",
+          "required": false,
+          "description": "Number of actions to show",
+          "default": 20
+        },
+        {
+          "name": "human",
+          "type": "flag",
+          "required": false,
+          "description": "Human-readable output"
+        }
+      ]
+    },
+    {
       "name": "prefs show",
-      "description": "Show preferences.json (always JSON).",
+      "description": "Show the current preferences.json.",
       "parameters": []
     },
     {
       "name": "prefs set",
-      "description": "Set a key in preferences.json.",
+      "description": "Set a preference key in preferences.json.",
       "parameters": [
-        {"name": "key", "type": "argument", "required": true, "description": "Preference key."},
-        {"name": "value", "type": "argument", "required": true, "description": "Preference value (string/number/bool/JSON)."}
+        {
+          "name": "key",
+          "type": "argument",
+          "required": true,
+          "description": "Preference key"
+        },
+        {
+          "name": "value",
+          "type": "argument",
+          "required": true,
+          "description": "Preference value (string/number/bool/JSON)"
+        }
       ]
     },
     {
       "name": "prefs unset",
-      "description": "Unset a key in preferences.json.",
+      "description": "Remove a preference key from preferences.json.",
       "parameters": [
-        {"name": "key", "type": "argument", "required": true, "description": "Preference key."}
-      ]
-    },
-    {
-      "name": "calendar today",
-      "description": "Show today's agenda from Microsoft Graph calendar.",
-      "parameters": [
-        {"name": "tz", "type": "option", "required": false, "description": "Override timezone (IANA format like America/New_York)."},
-        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
-      ]
-    },
-    {
-      "name": "calendar upcoming",
-      "description": "Show upcoming events in the next N hours.",
-      "parameters": [
-        {"name": "hours", "type": "option", "required": false, "description": "Hours to look ahead (default: 24)."},
-        {"name": "limit", "type": "option", "required": false, "description": "Maximum events to show (default: 10)."},
-        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
-      ]
-    },
-    {
-      "name": "calendar view",
-      "description": "View calendar events in a date range.",
-      "parameters": [
-        {"name": "start", "type": "option", "required": true, "description": "Start date (YYYY-MM-DD or ISO datetime)."},
-        {"name": "end", "type": "option", "required": true, "description": "End date (YYYY-MM-DD or ISO datetime)."},
-        {"name": "limit", "type": "option", "required": false, "description": "Maximum events to return (default: 100)."},
-        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
-      ]
-    },
-    {
-      "name": "calendar free-busy",
-      "description": "Check free/busy status for one or more users via Graph API getSchedule.",
-      "parameters": [
-        {"name": "start", "type": "option", "required": true, "description": "Start datetime (YYYY-MM-DD or ISO)."},
-        {"name": "end", "type": "option", "required": true, "description": "End datetime (YYYY-MM-DD or ISO)."},
-        {"name": "emails", "type": "option", "required": false, "description": "Comma-separated emails to check (default: self)."},
-        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
-      ]
-    },
-    {
-      "name": "calendar find-times",
-      "description": "Find meeting times that work for all attendees via Graph API findMeetingTimes.",
-      "parameters": [
-        {"name": "attendees", "type": "option", "required": true, "description": "Comma-separated attendee emails."},
-        {"name": "duration", "type": "option", "required": false, "description": "Meeting duration in minutes (default: 30)."},
-        {"name": "start", "type": "option", "required": false, "description": "Start date constraint (YYYY-MM-DD)."},
-        {"name": "end", "type": "option", "required": false, "description": "End date constraint (YYYY-MM-DD)."},
-        {"name": "max-results", "type": "option", "required": false, "description": "Maximum suggestions to return (default: 10)."},
-        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
-      ]
-    },
-    {
-      "name": "calendar create-event",
-      "description": "Create a calendar event. Invitations are NOT sent by default - event is created as draft.",
-      "parameters": [
-        {"name": "subject", "type": "option", "required": true, "description": "Event subject/title."},
-        {"name": "start", "type": "option", "required": true, "description": "Start datetime (ISO format)."},
-        {"name": "duration", "type": "option", "required": false, "description": "Duration in minutes (default: 30)."},
-        {"name": "end", "type": "option", "required": false, "description": "End datetime (overrides duration)."},
-        {"name": "attendees", "type": "option", "required": false, "description": "Comma-separated attendee emails."},
-        {"name": "location", "type": "option", "required": false, "description": "Event location."},
-        {"name": "body", "type": "option", "required": false, "description": "Event body/description."},
-        {"name": "online", "type": "flag", "required": false, "description": "Create as Teams meeting."},
-        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
-      ]
-    },
-    {
-      "name": "calendar working-hours",
-      "description": "Get user's working hours from mailbox settings.",
-      "parameters": [
-        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
-      ]
-    },
-    {
-      "name": "calendar prep",
-      "description": "Generate meeting preparation briefing with attendee context from email corpus. Use --next for the next meeting or --event-id for a specific event.",
-      "parameters": [
-        {"name": "event-id", "type": "option", "required": false, "description": "Specific event ID to prepare."},
-        {"name": "next", "type": "flag", "required": false, "description": "Prepare for the next meeting that needs prep."},
-        {"name": "hours", "type": "option", "required": false, "description": "Lookahead hours when using --next (default: 8)."},
-        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
-      ]
-    },
-    {
-      "name": "calendar briefing",
-      "description": "Generate a daily briefing with schedule overview, alerts (back-to-back meetings, early starts), and meeting prep for important meetings.",
-      "parameters": [
-        {"name": "date", "type": "option", "required": false, "description": "Date for briefing (YYYY-MM-DD, default: today)."},
-        {"name": "tz", "type": "option", "required": false, "description": "Override timezone (IANA format)."},
-        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
-      ]
-    },
-    {
-      "name": "calendar prep-config",
-      "description": "Show current meeting prep configuration and rules (which meetings get prep, timing, exclusions).",
-      "parameters": [
-        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
-      ]
-    },
-    {
-      "name": "wm snapshot",
-      "description": "Get complete working memory state: active threads, pending decisions, commitments, and observations. Primary tool for understanding current context.",
-      "parameters": [
-        {"name": "limit-threads", "type": "option", "required": false, "description": "Max active threads to include (default: 10)."},
-        {"name": "limit-decisions", "type": "option", "required": false, "description": "Max pending decisions (default: 5)."},
-        {"name": "limit-observations", "type": "option", "required": false, "description": "Max recent observations (default: 10)."},
-        {"name": "human", "type": "flag", "required": false, "description": "Human-readable terminal output."},
-        {"name": "llm", "type": "flag", "required": false, "description": "LLM-optimized markdown output with full context."}
-      ]
-    },
-    {
-      "name": "wm threads",
-      "description": "Query active email threads with optional filters.",
-      "parameters": [
-        {"name": "status", "type": "option", "required": false, "description": "Filter by status (active/stale/resolved)."},
-        {"name": "urgency", "type": "option", "required": false, "description": "Filter by urgency (immediate/today/this_week/someday)."},
-        {"name": "needs-reply", "type": "flag", "required": false, "description": "Only threads needing reply."},
-        {"name": "limit", "type": "option", "required": false, "description": "Max results (default: 20)."},
-        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
-      ]
-    },
-    {
-      "name": "wm contacts",
-      "description": "Query known contacts and relationship context.",
-      "parameters": [
-        {"name": "relationship", "type": "option", "required": false, "description": "Filter by relationship type."},
-        {"name": "vip", "type": "flag", "required": false, "description": "Only VIP contacts."},
-        {"name": "external", "type": "flag", "required": false, "description": "Only external contacts."},
-        {"name": "search", "type": "option", "required": false, "description": "Search by name or email."},
-        {"name": "limit", "type": "option", "required": false, "description": "Max results (default: 20)."},
-        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
-      ]
-    },
-    {
-      "name": "wm decisions",
-      "description": "List pending decisions awaiting user response.",
-      "parameters": [
-        {"name": "urgency", "type": "option", "required": false, "description": "Filter by urgency."},
-        {"name": "limit", "type": "option", "required": false, "description": "Max results (default: 20)."},
-        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
-      ]
-    },
-    {
-      "name": "wm commitments",
-      "description": "List open commitments the user made to others.",
-      "parameters": [
-        {"name": "overdue", "type": "flag", "required": false, "description": "Only overdue commitments."},
-        {"name": "limit", "type": "option", "required": false, "description": "Max results (default: 20)."},
-        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
-      ]
-    },
-    {
-      "name": "wm observations",
-      "description": "View passive learnings from emails (especially CC'd emails).",
-      "parameters": [
-        {"name": "type", "type": "option", "required": false, "description": "Filter by observation type."},
-        {"name": "days", "type": "option", "required": false, "description": "Only observations from last N days."},
-        {"name": "limit", "type": "option", "required": false, "description": "Max results (default: 20)."},
-        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
-      ]
-    },
-    {
-      "name": "wm projects",
-      "description": "View inferred projects and initiatives from email patterns.",
-      "parameters": [
-        {"name": "status", "type": "option", "required": false, "description": "Filter by status (active/on_hold/completed)."},
-        {"name": "limit", "type": "option", "required": false, "description": "Max results (default: 20)."},
-        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
-      ]
-    },
-    {
-      "name": "setup-categories",
-      "description": "Setup Outlook categories for email organization. Creates master categories in Outlook with correct colors and initializes preferences.",
-      "parameters": [
-        {"name": "create-in-outlook", "type": "flag", "required": false, "description": "Create master categories in Outlook via msgraph CLI (default: true)."},
-        {"name": "no-create-in-outlook", "type": "flag", "required": false, "description": "Skip creating categories in Outlook."},
-        {"name": "reset-defaults", "type": "flag", "required": false, "description": "Reset categories to defaults in preferences.json."},
-        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
-      ]
-    },
-    {
-      "name": "list-categories",
-      "description": "List configured Outlook categories from preferences.",
-      "parameters": [
-        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
-      ]
-    },
-    {
-      "name": "migrate-to-categories",
-      "description": "Migrate emails from folder-based organization (aa_* folders) back to Inbox for recategorization. Uses parallel processing for speed.",
-      "parameters": [
-        {"name": "prefix", "type": "option", "required": false, "description": "Folder prefix to migrate from (default: aa_)."},
-        {"name": "dry-run", "type": "flag", "required": false, "description": "Show what would be done without making changes."},
-        {"name": "recategorize", "type": "flag", "required": false, "description": "Recategorize emails after moving (default: true)."},
-        {"name": "no-recategorize", "type": "flag", "required": false, "description": "Skip recategorization after moving."},
-        {"name": "batch-size", "type": "option", "required": false, "description": "Number of emails to fetch per API call (default: 100)."},
-        {"name": "concurrency", "type": "option", "required": false, "description": "Number of parallel move operations (default: 10)."},
-        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
-      ]
-    },
-    {
-      "name": "categories list",
-      "description": "List all configured categories from your user profile. Categories are auto-populated with defaults on first use.",
-      "parameters": [
-        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
-      ]
-    },
-    {
-      "name": "categories add",
-      "description": "Add a new category to your profile. The name must match what you create in Outlook for colors to display.",
-      "parameters": [
-        {"name": "name", "type": "argument", "required": true, "description": "Category name (must match Outlook master category)."},
-        {"name": "color", "type": "option", "required": false, "description": "Color: red, orange, yellow, green, blue, purple, gray, etc."},
-        {"name": "description", "type": "option", "required": false, "description": "Description of when to use this category."},
-        {"name": "flag", "type": "option", "required": false, "description": "Auto-flag urgency: immediate, today, this_week, someday."},
-        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
-      ]
-    },
-    {
-      "name": "categories remove",
-      "description": "Remove a category from your profile. Existing tags on emails are preserved.",
-      "parameters": [
-        {"name": "name", "type": "argument", "required": true, "description": "Category name to remove."},
-        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
-      ]
-    },
-    {
-      "name": "categories edit",
-      "description": "Edit an existing category. Only specified fields are updated.",
-      "parameters": [
-        {"name": "name", "type": "argument", "required": true, "description": "Category name to edit."},
-        {"name": "new-name", "type": "option", "required": false, "description": "Rename the category."},
-        {"name": "color", "type": "option", "required": false, "description": "New color."},
-        {"name": "description", "type": "option", "required": false, "description": "New description."},
-        {"name": "flag", "type": "option", "required": false, "description": "New flag urgency (use 'none' to clear)."},
-        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
-      ]
-    },
-    {
-      "name": "categories reset",
-      "description": "Reset categories to defaults (Action Required, Follow Up, Work, FYI, Personal).",
-      "parameters": [
-        {"name": "yes", "type": "flag", "required": false, "description": "Skip confirmation prompt."},
-        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
-      ]
-    },
-    {
-      "name": "categories colors",
-      "description": "List available colors for categories.",
-      "parameters": [
-        {"name": "human", "type": "flag", "required": false, "description": "Human-readable output instead of JSON."}
+        {
+          "name": "key",
+          "type": "argument",
+          "required": true,
+          "description": "Preference key"
+        }
       ]
     }
   ],
   "documentation": {
-    "usage": "aech-cli-inbox-assistant <command> [args]",
+    "usage": "aech-cli-inbox-assistant <command> [options]",
     "examples": [
-      "aech-cli-inbox-assistant list --include-read",
-      "aech-cli-inbox-assistant search 'contract renewal' --mode hybrid",
-      "aech-cli-inbox-assistant stats",
-      "aech-cli-inbox-assistant reply-needed",
-      "aech-cli-inbox-assistant calendar today",
-      "aech-cli-inbox-assistant calendar upcoming --hours 48",
-      "aech-cli-inbox-assistant calendar view --start 2025-01-20 --end 2025-01-27",
-      "aech-cli-inbox-assistant calendar free-busy --start 2025-01-20 --end 2025-01-24",
-      "aech-cli-inbox-assistant calendar find-times --attendees 'jane@example.com' --duration 60",
-      "aech-cli-inbox-assistant calendar create-event --subject 'Team Sync' --start 2025-01-20T14:00:00 --duration 30 --online",
-      "aech-cli-inbox-assistant calendar working-hours",
-      "aech-cli-inbox-assistant calendar briefing --human",
-      "aech-cli-inbox-assistant calendar prep --next --human",
-      "aech-cli-inbox-assistant calendar prep --event-id AAMkAG...",
-      "aech-cli-inbox-assistant calendar prep-config --human",
-      "aech-cli-inbox-assistant wm snapshot --llm",
-      "aech-cli-inbox-assistant wm threads --needs-reply",
-      "aech-cli-inbox-assistant wm threads --urgency today",
-      "aech-cli-inbox-assistant wm contacts --external",
-      "aech-cli-inbox-assistant wm contacts --search 'acme'",
-      "aech-cli-inbox-assistant wm decisions",
-      "aech-cli-inbox-assistant wm commitments --overdue",
-      "aech-cli-inbox-assistant wm observations --days 7",
-      "aech-cli-inbox-assistant wm projects",
-      "aech-cli-inbox-assistant setup-categories --human",
-      "aech-cli-inbox-assistant setup-categories --no-create-in-outlook",
-      "aech-cli-inbox-assistant list-categories --human",
-      "aech-cli-inbox-assistant migrate-to-categories --dry-run --human",
-      "aech-cli-inbox-assistant migrate-to-categories --prefix aa_ --human",
-      "aech-cli-inbox-assistant categories list --human",
-      "aech-cli-inbox-assistant categories add 'Urgent' --color red --flag today -d 'Time-sensitive items'",
-      "aech-cli-inbox-assistant categories edit 'Work' --color teal --flag this_week",
-      "aech-cli-inbox-assistant categories remove 'Old Category'",
-      "aech-cli-inbox-assistant categories reset --yes",
-      "aech-cli-inbox-assistant categories colors --human"
+      "aech-cli-inbox-assistant list --human",
+      "aech-cli-inbox-assistant search 'query' --limit 10",
+      "aech-cli-inbox-assistant reply-needed --human"
     ]
+  },
+  "persona": {
+    "exclusive": true,
+    "context_injection": "aech-cli-inbox-assistant wm snapshot --llm",
+    "system_addendum": "You are the user's Executive Assistant with continuous awareness of their email, calendar, commitments, and relationships through working memory.\n\n## Working Memory Context\nYour context includes a Working Memory Snapshot with:\n- **Threads Needing Reply**: Emails awaiting the user's response. STALE means no activity for 3+ days\u2014these are overdue.\n- **Other Active Threads**: Recent conversations the user should be aware of.\n- **Pending Decisions**: Explicit questions from others awaiting the user's decision.\n- **Open Commitments**: Promises the user made to others (with due dates if known).\n- **Observations**: Context learned from CC'd emails\u2014things happening around the user.\n\n## Proactive Behaviors\n- When the user starts a conversation, briefly note any urgent items: \"I see 3 threads need your reply, including an overdue one from National HealthClaim.\"\n- If a user mentions a contact or topic, check if it relates to active threads: \"I see you have an open thread with Erik Kaas about meeting logistics.\"\n- Before meetings, correlate calendar with email: \"Your 2pm with Jane\u2014I found 3 recent email threads with her about the Q1 proposal.\"\n- Surface stale threads periodically: \"The thread with Jon about connecting from LinkedIn has been waiting 5 weeks.\"\n\n## Example Interactions\n\n**User**: \"What do I need to deal with today?\"\n**You**: Check working memory, then: \"You have 4 threads needing reply (2 are stale/overdue). There's also 1 pending decision from Ashi about meeting timing. Want me to draft responses?\"\n\n**User**: \"Tell me about my relationship with Erik Kaas\"\n**You**: Use `wm contacts --search 'erik'` and `search 'erik kaas'` to gather context, then summarize: \"Erik Kaas is from NRC-CNRC. You've exchanged 12 emails. Last thread was about a meeting location issue\u2014he couldn't find your office.\"\n\n**User**: \"Draft a reply to the HealthClaim thread\"\n**You**: Use `search` to get full thread context, then draft a reply that acknowledges the delay and addresses their recommendation.\n\n**User**: \"What's happening with the Aech deployment?\"\n**You**: Check observations and search emails: \"I see several threads about Agent Aech deployment\u2014looks like there's ongoing discussion with multiple parties. Want me to summarize the current state?\"\n\n## Tools for Deeper Context\n- `wm threads --needs-reply` \u2014 Focus on actionable items\n- `wm threads --urgency immediate` \u2014 Filter by urgency\n- `wm contacts --search 'name'` \u2014 Get relationship context\n- `wm decisions` \u2014 Pending decisions\n- `wm commitments --overdue` \u2014 Overdue promises\n- `search 'query'` \u2014 Full-text search across email corpus\n- `calendar today` / `calendar upcoming` \u2014 Schedule awareness\n- `calendar prep --next` \u2014 Prepare for upcoming meetings\n\n## Behavioral Guidelines\n- Be concise but proactive\u2014surface relevant context without being asked.\n- When drafting emails, match the user's tone from past emails.\n- For stale threads, suggest graceful follow-ups that acknowledge the delay.\n- Always offer to take action: \"Want me to draft a response?\" or \"Should I schedule time for this?\"\n- If working memory shows commitments with due dates, remind the user before they're overdue."
   }
 }

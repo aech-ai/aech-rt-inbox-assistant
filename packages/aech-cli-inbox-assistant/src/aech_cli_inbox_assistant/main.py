@@ -57,7 +57,7 @@ def list(
             typer.echo(f"Subject: {email['subject']}")
             typer.echo(f"  From: {email['sender']}")
             typer.echo(f"  Received: {email['received_at']}")
-            typer.echo(f"  Category: {email.get('category', 'N/A')}")
+            typer.echo(f"  Urgency: {email.get('urgency', 'N/A')}")
             link = email.get('web_link')
             if not link and email.get('id'):
                 from urllib.parse import quote
@@ -89,7 +89,7 @@ def history(
 
     if human:
         for log in logs:
-            typer.echo(f"{log['timestamp']} - {log['action']} - {log['subject']} -> {log['destination_folder']} ({log['reason']})")
+            typer.echo(f"{log['timestamp']} - {log['subject']} - urgency: {log.get('urgency', 'N/A')} ({log.get('reason', 'N/A')})")
     else:
         typer.echo(json.dumps(logs, default=str))
 
@@ -110,7 +110,7 @@ def search(
     try:
         cursor.execute(
             """
-            SELECT e.id, e.subject, e.body_preview, e.received_at, e.category, e.is_read,
+            SELECT e.id, e.subject, e.body_preview, e.received_at, e.outlook_categories, e.urgency, e.is_read,
                    e.sender, e.web_link, bm25(emails_fts) AS rank, 'email' as result_type
             FROM emails_fts
             JOIN emails e ON emails_fts.id = e.id
@@ -126,7 +126,7 @@ def search(
         sql_query = f"%{query}%"
         cursor.execute(
             """
-            SELECT id, subject, body_preview, received_at, category, is_read, sender, web_link,
+            SELECT id, subject, body_preview, received_at, outlook_categories, urgency, is_read, sender, web_link,
                    0 as rank, 'email' as result_type
             FROM emails
             WHERE subject LIKE ? OR body_preview LIKE ?
@@ -165,7 +165,7 @@ def search(
             typer.echo(f"[EMAIL] {email['subject']}")
             typer.echo(f"  From: {email.get('sender', 'N/A')}")
             typer.echo(f"  Received: {email['received_at']}")
-            typer.echo(f"  Category: {email.get('category', 'N/A')}")
+            typer.echo(f"  Urgency: {email.get('urgency', 'N/A')}")
             link = email.get('web_link')
             if not link and email.get('id'):
                 from urllib.parse import quote

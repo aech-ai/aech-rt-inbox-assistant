@@ -4,7 +4,7 @@ requires-python = ">=3.10"
 
 [[package]]
 name = "aech-cli-inbox-assistant"
-version = "0.12.0"
+version = "0.14.0"
 source = { editable = "." }
 dependencies = [
     { name = "typer" },
