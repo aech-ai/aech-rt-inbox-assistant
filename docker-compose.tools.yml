@@ -1,0 +1,133 @@
+# Tools for one-shot operations (backfill, CLI, fresh start, etc.)
+# Usage: docker compose -f docker-compose.tools.yml run --rm <service>
+services:
+  # One-shot backfill: docker compose -f docker-compose.tools.yml run --rm backfill
+  # For GPU on Nvidia: requires nvidia-container-toolkit installed on host
+  backfill:
+    image: aech-rt-inbox-assistant
+    env_file:
+      - .env
+    volumes:
+      - ${AECH_HOST_DATA}/users/${DELEGATED_USER}:/home/agentaech
+      - ${AECH_HOST_DATA}/app_context/aech-cli-msgraph/token_cache.json:/app/token_cache.json
+      # Shared HuggingFace cache (embedding models ~2GB, don't download per-user)
+      - ${AECH_HOST_DATA}/app_context/huggingface:/home/agentaech/.cache/huggingface
+    environment:
+      - PYTHONUNBUFFERED=1
+      - OPENAI_API_KEY
+      - DELEGATED_USER
+      - AZURE_CLIENT_ID
+      - AZURE_TENANT_ID
+      - MSGRAPH_TOKEN_CACHE_PATH=/app/token_cache.json
+      # Per-task model configuration
+      - CLASSIFICATION_MODEL=${CLASSIFICATION_MODEL:-openai-responses:gpt-5-nano}
+      - WM_MODEL=${WM_MODEL:-openai-responses:gpt-5-mini}
+      # Embedding model (local, no API cost)
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-BAAI/bge-m3}
+      - EMBEDDING_BATCH_SIZE=${EMBEDDING_BATCH_SIZE:-32}
+      - SYNC_SINCE=${SYNC_SINCE:-}
+    # bge-m3 needs ~4GB RAM; ensure Docker Desktop has 8GB+ memory allocated
+    entrypoint: ["/app/scripts/backfill.sh"]
+    restart: "no"
+
+  # Interactive shell for testing individual commands
+  # Usage: docker compose -f docker-compose.tools.yml run --rm cli aech-cli-inbox-assistant stats --human
+  # Usage: docker compose -f docker-compose.tools.yml run --rm cli aech-cli-inbox-assistant-mgmt embed --limit 50000 --human
+  cli:
+    image: aech-rt-inbox-assistant
+    env_file:
+      - .env
+    volumes:
+      - ${AECH_HOST_DATA}/users/${DELEGATED_USER}:/home/agentaech
+      - ${AECH_HOST_DATA}/app_context/aech-cli-msgraph/token_cache.json:/app/token_cache.json
+      - ${AECH_HOST_DATA}/app_context/huggingface:/home/agentaech/.cache/huggingface
+    environment:
+      - PYTHONUNBUFFERED=1
+      - OPENAI_API_KEY
+      - DELEGATED_USER
+      - AZURE_CLIENT_ID
+      - AZURE_TENANT_ID
+      - MSGRAPH_TOKEN_CACHE_PATH=/app/token_cache.json
+      - CLASSIFICATION_MODEL=${CLASSIFICATION_MODEL:-openai-responses:gpt-5-nano}
+      - WM_MODEL=${WM_MODEL:-openai-responses:gpt-5-mini}
+      - DEFAULT_TIMEZONE=${DEFAULT_TIMEZONE:-America/Los_Angeles}
+    entrypoint: []
+    command: ["bash"]
+    restart: "no"
+
+  # Fresh start - delete DB and rebuild everything from scratch
+  # Usage: docker compose -f docker-compose.tools.yml run --rm pipeline
+  pipeline:
+    image: aech-rt-inbox-assistant
+    env_file:
+      - .env
+    volumes:
+      - ${AECH_HOST_DATA}/users/${DELEGATED_USER}:/home/agentaech
+      - ${AECH_HOST_DATA}/app_context/aech-cli-msgraph/token_cache.json:/app/token_cache.json
+      - ${AECH_HOST_DATA}/app_context/huggingface:/home/agentaech/.cache/huggingface
+    environment:
+      - PYTHONUNBUFFERED=1
+      - OPENAI_API_KEY
+      - DELEGATED_USER
+      - AZURE_CLIENT_ID
+      - AZURE_TENANT_ID
+      - MSGRAPH_TOKEN_CACHE_PATH=/app/token_cache.json
+      - CLASSIFICATION_MODEL=${CLASSIFICATION_MODEL:-openai-responses:gpt-5-nano}
+      - WM_MODEL=${WM_MODEL:-openai-responses:gpt-5-mini}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-BAAI/bge-m3}
+      - EMBEDDING_BATCH_SIZE=${EMBEDDING_BATCH_SIZE:-32}
+      - SYNC_SINCE=${SYNC_SINCE:-}
+    entrypoint: ["/app/scripts/fresh_start.sh"]
+    restart: "no"
+
+  # Test pipeline on 10 emails (uses temp DB, non-destructive)
+  # Usage: docker compose -f docker-compose.tools.yml run --rm test-pipeline
+  test-pipeline:
+    image: aech-rt-inbox-assistant
+    env_file:
+      - .env
+    volumes:
+      - ${AECH_HOST_DATA}/users/${DELEGATED_USER}:/home/agentaech
+      - ${AECH_HOST_DATA}/app_context/aech-cli-msgraph/token_cache.json:/app/token_cache.json
+      - ${AECH_HOST_DATA}/app_context/huggingface:/home/agentaech/.cache/huggingface
+    environment:
+      - PYTHONUNBUFFERED=1
+      - OPENAI_API_KEY
+      - DELEGATED_USER
+      - AZURE_CLIENT_ID
+      - AZURE_TENANT_ID
+      - MSGRAPH_TOKEN_CACHE_PATH=/app/token_cache.json
+      - WM_MODEL=${WM_MODEL:-openai-responses:gpt-5-mini}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-BAAI/bge-m3}
+    entrypoint: ["python", "/app/scripts/test_pipeline.py"]
+    restart: "no"
+
+  # GPU-enabled backfill for Nvidia hosts (GB10, etc.)
+  # Usage: docker compose -f docker-compose.tools.yml run --rm backfill-gpu
+  backfill-gpu:
+    image: aech-rt-inbox-assistant
+    env_file:
+      - .env
+    volumes:
+      - ${AECH_HOST_DATA}/users/${DELEGATED_USER}:/home/agentaech
+      - ${AECH_HOST_DATA}/app_context/aech-cli-msgraph/token_cache.json:/app/token_cache.json
+      - ${AECH_HOST_DATA}/app_context/huggingface:/home/agentaech/.cache/huggingface
+    environment:
+      - PYTHONUNBUFFERED=1
+      - OPENAI_API_KEY
+      - DELEGATED_USER
+      - AZURE_CLIENT_ID
+      - AZURE_TENANT_ID
+      - MSGRAPH_TOKEN_CACHE_PATH=/app/token_cache.json
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-BAAI/bge-m3}
+      - EMBEDDING_BATCH_SIZE=${EMBEDDING_BATCH_SIZE:-32}
+      - SYNC_SINCE=${SYNC_SINCE:-}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    entrypoint: ["/app/scripts/backfill.sh"]
+    restart: "no"
