@@ -456,13 +456,20 @@ class GraphPoller:
 
                 url = data.get("@odata.nextLink")
 
-            delta_url = f"{base_path}/mailFolders/{folder_id}/messages/delta?$select={select_fields}"
-            delta_resp = requests.get(delta_url, headers=headers)
-            if delta_resp.ok:
+            # Establish delta link by following all pages until we get @odata.deltaLink
+            # The first call to /delta returns all existing messages as pages, not the deltaLink
+            delta_url: Optional[str] = f"{base_path}/mailFolders/{folder_id}/messages/delta?$select={select_fields}"
+            while delta_url:
+                delta_resp = requests.get(delta_url, headers=headers)
+                if not delta_resp.ok:
+                    logger.warning(f"Failed to establish delta link for {folder_name}: {delta_resp.status_code}")
+                    break
                 delta_data = delta_resp.json()
-                delta_link = delta_data.get("@odata.deltaLink")
-                if delta_link:
-                    self.save_sync_state(folder_id, delta_link, "initial", messages_synced)
+                if "@odata.deltaLink" in delta_data:
+                    self.save_sync_state(folder_id, delta_data["@odata.deltaLink"], "initial", messages_synced)
+                    logger.debug(f"Delta link established for {folder_name}")
+                    break
+                delta_url = delta_data.get("@odata.nextLink")
 
             logger.info(f"Full sync complete for {folder_name}: {messages_synced} messages")
 

@@ -56,7 +56,8 @@ services:
     restart: "no"
 
   # Interactive shell for testing individual commands
-  # Usage: docker compose run --rm cli aech-cli-inbox-assistant extract-content --limit 10 --human
+  # Usage: docker compose run --rm cli aech-cli-inbox-assistant stats --human
+  # Usage: docker compose run --rm cli aech-cli-inbox-assistant-mgmt embed --limit 50000 --human
   cli:
     profiles: ["tools"]
     image: aech-rt-inbox-assistant

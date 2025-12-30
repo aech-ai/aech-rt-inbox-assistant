@@ -172,6 +172,29 @@ class Organizer:
         self.user_email: str = poller.user_email or ""
         self.agent: Optional[Agent[None, EmailClassification]] = None
         self.backfill = backfill
+        self._agent_email: Optional[str] = None
+
+    def _get_agent_email(self) -> str:
+        """Get the agent's email address (cached) via aech-cli-msgraph me."""
+        if self._agent_email is None:
+            result = subprocess.run(
+                ["aech-cli-msgraph", "me", "--json"],
+                capture_output=True, text=True, timeout=30
+            )
+            if result.returncode != 0:
+                raise RuntimeError(f"Failed to get agent email: {result.stderr or result.stdout}")
+            me = json.loads(result.stdout)
+            self._agent_email = (me.get("mail") or me.get("userPrincipalName") or "").lower()
+            if not self._agent_email:
+                raise RuntimeError("Agent email not found in 'me' response")
+            logger.info(f"Agent email: {self._agent_email}")
+        return self._agent_email
+
+    def _is_from_agent(self, sender: str) -> bool:
+        """Check if email is from the agent."""
+        if not sender:
+            return False
+        return sender.lower().strip() == self._get_agent_email()
 
     def _get_agent(self, prefs: dict) -> Agent[None, EmailClassification]:
         """Get or build the classification agent."""
@@ -213,6 +236,20 @@ class Organizer:
     async def _process_email(self, email, prefs: dict):
         conn = get_connection()
         logger.info(f"Processing email {email['id']}: {email['subject']}")
+
+        # Check if email is from the agent - do light processing only
+        if self._is_from_agent(email.get("sender", "")):
+            logger.info(f"Email {email['id']} is from agent - skipping LLM classification")
+            try:
+                # Just mark as processed, no LLM/WM/triggers
+                conn.execute(
+                    "UPDATE emails SET processed_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (email['id'],)
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            return
 
         # Construct context for AI
         vip_senders = {str(s).strip().lower() for s in (prefs.get("vip_senders") or []) if str(s).strip()}

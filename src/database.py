@@ -436,8 +436,11 @@ def init_db(db_path: Optional[Path] = None) -> None:
 def get_connection(db_path: Optional[Path] = None) -> sqlite3.Connection:
     """Get a connection to the database."""
     db_path = (db_path or get_db_path()).expanduser().resolve()
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=30.0)
     conn.row_factory = sqlite3.Row
+    # NOTE: SQLite pragma settings are per-connection.
+    conn.execute("PRAGMA foreign_keys=ON;")
+    conn.execute("PRAGMA busy_timeout = 30000;")
     return conn
 
 

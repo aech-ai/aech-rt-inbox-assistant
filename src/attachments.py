@@ -267,16 +267,18 @@ class AttachmentProcessor:
         if existing:
             # Copy text from existing attachment
             conn = get_connection()
-            row = conn.execute(
-                "SELECT extracted_text FROM attachments WHERE id = ?", (existing["id"],)
-            ).fetchone()
+            try:
+                row = conn.execute(
+                    "SELECT extracted_text FROM attachments WHERE id = ?", (existing["id"],)
+                ).fetchone()
+            finally:
+                conn.close()
             if row:
                 self._update_attachment_status(
                     att_id, "completed", extracted_text=row["extracted_text"], content_hash=content_hash
                 )
                 logger.info(f"Used cached extraction for {filename}")
                 return True
-            conn.close()
 
         # Extract text
         extracted_text = self._extract_text_with_documents_cli(content, filename, content_type)

@@ -30,9 +30,10 @@ COPY aech-rt-inbox-assistant/src/ src/
 COPY aech-rt-inbox-assistant/manifest.json manifest.json
 COPY aech-rt-inbox-assistant/scripts/ scripts/
 
-# Install the CLI package (provides aech-cli-inbox-assistant command)
+# Install CLI packages
 COPY aech-rt-inbox-assistant/packages/aech-cli-inbox-assistant/ packages/aech-cli-inbox-assistant/
-RUN pip install --no-cache-dir packages/aech-cli-inbox-assistant/
+COPY aech-rt-inbox-assistant/packages/aech-cli-inbox-assistant-mgmt/ packages/aech-cli-inbox-assistant-mgmt/
+RUN pip install --no-cache-dir packages/aech-cli-inbox-assistant/ packages/aech-cli-inbox-assistant-mgmt/
 
 # Install the main package
 COPY aech-rt-inbox-assistant/pyproject.toml .
