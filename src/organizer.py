@@ -234,6 +234,9 @@ class Organizer:
         self._emit_weekly_digest_trigger(prefs)
 
     async def _process_email(self, email, prefs: dict):
+        # Convert sqlite3.Row to dict if needed (Row doesn't support .get())
+        if not isinstance(email, dict):
+            email = dict(email)
         conn = get_connection()
         logger.info(f"Processing email {email['id']}: {email['subject']}")
 
