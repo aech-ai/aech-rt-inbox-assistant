@@ -119,11 +119,8 @@ class CalendarClient:
         return self._graph._get_headers()
 
     def _get_base_path(self) -> str:
-        """Get base path for calendar API calls.
-
-        Uses /me/ for delegated permissions instead of /users/{email}/.
-        """
-        return "https://graph.microsoft.com/v1.0/me"
+        """Get base path for calendar API calls."""
+        return f"https://graph.microsoft.com/v1.0/users/{self.user_email}"
 
     # =========================================================================
     # Working Hours
