@@ -27,7 +27,6 @@ RUN pip install --no-cache-dir -r requirements.txt --find-links /tmp/wheels/
 
 # App source
 COPY aech-rt-inbox-assistant/src/ src/
-COPY aech-rt-inbox-assistant/manifest.json manifest.json
 COPY aech-rt-inbox-assistant/scripts/ scripts/
 
 # Install CLI packages
