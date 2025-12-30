@@ -104,6 +104,8 @@ class CalendarClient:
     Calendar operations via Microsoft Graph API.
 
     Uses direct API calls - no local database sync.
+    For delegated access, uses the shared calendar pattern (/me/calendars/{id})
+    rather than direct user access (/users/{id}).
     """
 
     def __init__(self):
@@ -113,13 +115,47 @@ class CalendarClient:
 
         self._graph = GraphClient()
         self._default_timezone = os.getenv("DEFAULT_TIMEZONE", "UTC")
+        self._shared_calendar_id: Optional[str] = None
 
     def _get_headers(self) -> Dict[str, str]:
         """Get auth headers from Graph client."""
         return self._graph._get_headers()
 
-    def _get_base_path(self) -> str:
-        """Get base path for calendar API calls."""
+    def _get_shared_calendar_id(self) -> Optional[str]:
+        """
+        Find the shared calendar ID for the delegated user.
+
+        When using delegated permissions with calendar sharing/delegation,
+        we must access the calendar via /me/calendars/{id} not /users/{owner}.
+        """
+        if self._shared_calendar_id:
+            return self._shared_calendar_id
+
+        try:
+            calendars = self._graph.list_calendars()
+            for cal in calendars.get("value", []):
+                owner = cal.get("owner", {}).get("address") or ""
+                assert self.user_email is not None
+                if owner and owner.lower() == self.user_email.lower():
+                    self._shared_calendar_id = cal.get("id")
+                    logger.debug(f"Found shared calendar for {self.user_email}: {cal.get('name')}")
+                    return self._shared_calendar_id
+            logger.warning(f"No shared calendar found for {self.user_email}")
+        except Exception as e:
+            logger.error(f"Error finding shared calendar: {e}")
+
+        return None
+
+    def _get_calendar_base_path(self) -> str:
+        """Get base path for calendar API calls using shared calendar pattern."""
+        calendar_id = self._get_shared_calendar_id()
+        if calendar_id:
+            return f"https://graph.microsoft.com/v1.0/me/calendars/{calendar_id}"
+        # Fallback to direct user access (requires Application permissions)
+        return f"https://graph.microsoft.com/v1.0/users/{self.user_email}/calendar"
+
+    def _get_user_base_path(self) -> str:
+        """Get base path for user-level API calls (mailbox settings, etc.)."""
         return f"https://graph.microsoft.com/v1.0/users/{self.user_email}"
 
     # =========================================================================
@@ -133,7 +169,7 @@ class CalendarClient:
         """
         try:
             headers = self._get_headers()
-            url = f"{self._get_base_path()}/mailboxSettings/workingHours"
+            url = f"{self._get_user_base_path()}/mailboxSettings/workingHours"
             resp = requests.get(url, headers=headers)
 
             if resp.ok:
@@ -176,7 +212,7 @@ class CalendarClient:
         Uses calendarView which expands recurring events.
         """
         headers = self._get_headers()
-        base_path = self._get_base_path()
+        base_path = self._get_calendar_base_path()
 
         # Ensure timezone info
         if start.tzinfo is None:
@@ -297,7 +333,7 @@ class CalendarClient:
         Uses POST /calendar/getSchedule.
         """
         headers = self._get_headers()
-        base_path = self._get_base_path()
+        base_path = self._get_user_base_path()
 
         # Default to self if no emails provided
         schedule_emails = emails or [self.user_email]
@@ -384,7 +420,7 @@ class CalendarClient:
         Uses POST /findMeetingTimes.
         """
         headers = self._get_headers()
-        base_path = self._get_base_path()
+        base_path = self._get_user_base_path()
 
         # Default time window: next 7 days
         if start is None:
@@ -473,7 +509,7 @@ class CalendarClient:
         The event is created as a placeholder that the user can review.
         """
         headers = self._get_headers()
-        base_path = self._get_base_path()
+        base_path = self._get_calendar_base_path()
 
         # Ensure timezone info
         if start.tzinfo is None:
@@ -543,7 +579,7 @@ class CalendarClient:
     ) -> CalendarEvent:
         """Update an existing calendar event."""
         headers = self._get_headers()
-        base_path = self._get_base_path()
+        base_path = self._get_calendar_base_path()
 
         data: Dict[str, Any] = {}
 
@@ -583,7 +619,7 @@ class CalendarClient:
     def delete_event(self, event_id: str) -> bool:
         """Delete a calendar event."""
         headers = self._get_headers()
-        base_path = self._get_base_path()
+        base_path = self._get_calendar_base_path()
 
         url = f"{base_path}/events/{event_id}"
         resp = requests.delete(url, headers=headers)

@@ -74,7 +74,81 @@ Triggers are written to `/triggers/outbox/*.json` for the Agent Aech worker to c
 ## Prerequisites
 
 1. **aech-cli-msgraph**: Must be installed and available in PATH (version 0.1.22+)
-2. **Delegate Access**: The Agent's M365 account must have delegate access to the target mailbox
+2. **Delegate Access**: The Agent's M365 account must have delegate access to the target mailbox and calendar
+
+## Delegated User Setup
+
+For each user whose mailbox/calendar will be managed by Agent Aech, the following one-time setup steps are required:
+
+### 1. Azure AD App Permissions
+
+The Agent Aech app registration must have these **Delegated** permissions (with admin consent):
+
+| Permission                   | Type      | Purpose                                  |
+|------------------------------|-----------|------------------------------------------|
+| `Mail.ReadWrite`             | Delegated | Read/write access to delegated mailboxes |
+| `Mail.Send`                  | Delegated | Send emails on behalf of users           |
+| `Calendars.ReadWrite`        | Delegated | Full access to user calendars            |
+| `Calendars.ReadWrite.Shared` | Delegated | Access shared/delegated calendars        |
+
+### 2. Mailbox Delegation (Exchange Admin)
+
+Grant Agent Aech's M365 account (`agent@yourdomain.com`) delegate access to the user's mailbox:
+
+```powershell
+# Via Exchange Online PowerShell
+Add-MailboxPermission -Identity "user@yourdomain.com" -User "agent@yourdomain.com" -AccessRights FullAccess -InheritanceType All
+```
+
+Or via Microsoft 365 Admin Center: **Users** → **Active users** → Select user → **Mail** → **Mailbox permissions** → **Read and manage (Full Access)** → Add agent account.
+
+### 3. Calendar Delegation (User Action Required)
+
+The user must delegate their calendar to Agent Aech. This **cannot** be done programmatically.
+
+**User steps (Outlook Web):**
+
+1. Go to **Calendar** → **Settings** (gear icon) → **Calendar** → **Shared calendars**
+2. Under "Share a calendar", select their primary calendar
+3. Enter `agent@yourdomain.com`
+4. Set permission level to **Delegate** (can view, edit, and delete)
+5. Click **Share**
+
+### 4. Accept Calendar Share (Agent Account)
+
+After the user shares their calendar, Agent Aech's account must accept the invitation:
+
+**Agent steps (one-time per user):**
+
+1. Log into Outlook (web or desktop) as `agent@yourdomain.com`
+2. Open the calendar sharing invitation email from the user
+3. Click **"Accept and add this calendar"**
+
+> ⚠️ **This step cannot be automated** - Microsoft Graph API does not support programmatically accepting calendar share invitations. The invitation must be accepted through an Outlook client.
+
+### 5. Verify Setup
+
+After completing the above steps, verify the setup:
+
+```bash
+# Check that the shared calendar appears
+docker compose exec inbox-assistant python3 -c "
+from aech_cli_msgraph.graph import GraphClient
+client = GraphClient()
+for cal in client.list_calendars().get('value', []):
+    owner = cal.get('owner', {}).get('address', 'self')
+    print(f'{cal.get(\"name\")} (owner: {owner})')
+"
+
+# Test calendar sync
+docker compose exec inbox-assistant python3 -c "
+from src.calendar_sync import sync_calendar
+result = sync_calendar()
+print(f'Synced {result[\"events_synced\"]} events')
+"
+```
+
+The delegated user's calendar should appear in the list with their email as the owner.
 
 ## Running the Service
 
