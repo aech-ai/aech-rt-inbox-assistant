@@ -1,4 +1,7 @@
-FROM python:3.11-slim
+# MacOS
+# FROM python:3.11-slim
+# DGX Spark
+FROM nvcr.io/nvidia/pytorch:25.11-py3
 
 WORKDIR /app
 
@@ -21,30 +24,34 @@ COPY aech-cli-msgraph/dist/*.whl /tmp/wheels/
 COPY aech-cli-documents/dist/*.whl /tmp/wheels/
 COPY aech-main/packages/aech-llm-observability/dist/*.whl /tmp/wheels/
 
-# Install Python deps (--find-links looks in /tmp/wheels/ first, then PyPI)
+# Install Python deps as root (--find-links looks in /tmp/wheels/ first, then PyPI)
 COPY aech-rt-inbox-assistant/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt --find-links /tmp/wheels/
 
+# Create non-root user (align with aech-main UID/GID 1001)
+RUN groupadd -r agentaech -g 1001 && \
+    useradd -r -g agentaech -u 1001 -m -d /home/agentaech -s /bin/bash agentaech && \
+    mkdir -p /home/agentaech/.inbox-assistant /data/users && \
+    chown -R agentaech:agentaech /home/agentaech /app
+
+# Switch to agentaech user for application code
+USER agentaech
+
+# Add user's local bin to PATH for CLI tools
+ENV PATH="/home/agentaech/.local/bin:${PATH}"
+
 # App source
-COPY aech-rt-inbox-assistant/src/ src/
-COPY aech-rt-inbox-assistant/scripts/ scripts/
+COPY --chown=agentaech:agentaech aech-rt-inbox-assistant/src/ src/
+COPY --chown=agentaech:agentaech aech-rt-inbox-assistant/scripts/ scripts/
 
 # Install CLI packages
-COPY aech-rt-inbox-assistant/packages/aech-cli-inbox-assistant/ packages/aech-cli-inbox-assistant/
-COPY aech-rt-inbox-assistant/packages/aech-cli-inbox-assistant-mgmt/ packages/aech-cli-inbox-assistant-mgmt/
-RUN pip install --no-cache-dir packages/aech-cli-inbox-assistant/ packages/aech-cli-inbox-assistant-mgmt/
+COPY --chown=agentaech:agentaech aech-rt-inbox-assistant/packages/aech-cli-inbox-assistant/ packages/aech-cli-inbox-assistant/
+COPY --chown=agentaech:agentaech aech-rt-inbox-assistant/packages/aech-cli-inbox-assistant-mgmt/ packages/aech-cli-inbox-assistant-mgmt/
+RUN pip install --no-cache-dir --user packages/aech-cli-inbox-assistant/ packages/aech-cli-inbox-assistant-mgmt/
 
 # Install the main package
-COPY aech-rt-inbox-assistant/pyproject.toml .
-RUN pip install --no-cache-dir -e .
-
-# Create non-root user
-RUN useradd -m -s /bin/bash agentaech && \
-    mkdir -p /home/agentaech/.inbox-assistant && \
-    chown -R agentaech:agentaech /home/agentaech /app && \
-    mkdir -p /data/users
-
-USER agentaech
+COPY --chown=agentaech:agentaech aech-rt-inbox-assistant/pyproject.toml .
+RUN pip install --no-cache-dir --user -e .
 
 # Set python path and start the service
 ENV PYTHONPATH=/app

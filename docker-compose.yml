@@ -4,6 +4,13 @@ services:
       context: ..
       dockerfile: aech-rt-inbox-assistant/Dockerfile
     image: aech-rt-inbox-assistant
+    gpus: all
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+              count: 1 # or 'all' to use all available GPUs
     env_file:
       - .env
     volumes:
@@ -24,8 +31,10 @@ services:
       - AZURE_CLIENT_ID
       - AZURE_TENANT_ID
       - MSGRAPH_TOKEN_CACHE_PATH=/app/token_cache.json
-      # User's timezone for calendar queries (e.g., America/Los_Angeles, America/New_York)
-      - DEFAULT_TIMEZONE=${DEFAULT_TIMEZONE:-America/Los_Angeles}
+      # User's timezone for calendar queries (e.g., America/Vancouver)
+      - DEFAULT_TIMEZONE=${DEFAULT_TIMEZONE:-America/Vancouver}
+       # Optional: set specific environment variables for Spark/CUDA if needed
+      - NVIDIA_VISIBLE_DEVICES=all
 
   # One-shot backfill: docker compose run --rm backfill
   # For GPU on Nvidia: requires nvidia-container-toolkit installed on host
