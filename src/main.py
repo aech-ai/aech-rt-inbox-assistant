@@ -31,11 +31,13 @@ async def process_pending_content():
     try:
         poller = GraphPoller()
 
-        # 1. Fetch full bodies for emails missing them
+        # 1. Fetch full bodies for emails we haven't tried to fetch yet
+        # We check body_html IS NULL to avoid re-fetching calendar accepts/auto-replies
+        # that have empty bodies (body_markdown would be '' but we've already tried)
         conn = get_connection()
         emails_needing_body = conn.execute("""
             SELECT id FROM emails
-            WHERE (body_markdown IS NULL OR body_markdown = '')
+            WHERE body_html IS NULL
             LIMIT 20
         """).fetchall()
         conn.close()
@@ -46,16 +48,16 @@ async def process_pending_content():
             for row in emails_needing_body:
                 email_id = row["id"]
                 body_html = poller._get_message_body(email_id)
-                if body_html:
-                    body_markdown = html_to_markdown(body_html)
-                    conn = get_connection()
-                    conn.execute(
-                        "UPDATE emails SET body_markdown = ?, body_html = ? WHERE id = ?",
-                        (body_markdown, body_html, email_id)
-                    )
-                    conn.commit()
-                    conn.close()
-                    fetched += 1
+                # Always update to mark we've tried, even if body is empty
+                body_markdown = html_to_markdown(body_html) if body_html else ""
+                conn = get_connection()
+                conn.execute(
+                    "UPDATE emails SET body_markdown = ?, body_html = ? WHERE id = ?",
+                    (body_markdown, body_html or "", email_id)
+                )
+                conn.commit()
+                conn.close()
+                fetched += 1
             if fetched > 0:
                 logger.info(f"Fetched {fetched} email bodies")
 
