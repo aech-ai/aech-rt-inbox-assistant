@@ -72,6 +72,10 @@ def sync_calendar(
 
     logger.info(f"Calendar sync complete: {upserted} events synced")
 
+    # Evaluate alert rules for new/changed calendar events
+    if upserted > 0:
+        _evaluate_calendar_alerts(events)
+
     return {
         "events_synced": upserted,
         "start_date": start.isoformat(),
@@ -170,3 +174,53 @@ def needs_sync(interval_seconds: int = 300) -> bool:
 
     now = datetime.now(dt_timezone.utc)
     return (now - last_sync).total_seconds() >= interval_seconds
+
+
+def _evaluate_calendar_alerts(events: list[CalendarEvent]) -> None:
+    """Evaluate alert rules against calendar events."""
+    import asyncio
+    import os
+
+    try:
+        from .alerts import AlertRulesEngine
+
+        user_email = os.environ.get("DELEGATED_USER", "")
+        if not user_email:
+            return
+
+        alert_engine = AlertRulesEngine(user_email)
+
+        async def evaluate_events():
+            for event in events:
+                # Convert CalendarEvent to dict for alert evaluation
+                event_dict = {
+                    "id": event.event_id,
+                    "subject": event.subject,
+                    "start_at": event.start.isoformat(),
+                    "end_at": event.end.isoformat(),
+                    "organizer_email": event.organizer_email,
+                    "organizer_name": event.organizer_name,
+                    "attendees": [
+                        {"email": att.email, "name": att.name}
+                        for att in event.attendees
+                    ],
+                    "attendee_count": len(event.attendees),
+                    "is_online_meeting": event.is_online_meeting,
+                    "location": event.location,
+                }
+
+                triggered = await alert_engine.evaluate_calendar_rules(event_dict)
+
+                for t in triggered:
+                    alert_engine.emit_alert_trigger(
+                        t["rule"],
+                        "calendar_event",
+                        event.event_id,
+                        event_dict,
+                        t["match_reason"],
+                    )
+
+        asyncio.run(evaluate_events())
+
+    except Exception as e:
+        logger.warning(f"Calendar alert evaluation error: {e}")

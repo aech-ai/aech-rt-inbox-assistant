@@ -533,6 +533,173 @@ Body: {str(email.get('body_preview') or '')[:500]}
         finally:
             conn.close()
 
+    def _fast_match_calendar(
+        self,
+        conditions: ParsedConditions,
+        event: dict[str, Any],
+    ) -> tuple[bool, str]:
+        """Fast pre-filter for calendar events. Returns (matches, reason)."""
+        matches: list[bool] = []
+        reasons: list[str] = []
+
+        subject = str(event.get("subject") or "").lower()
+        organizer_email = str(event.get("organizer_email") or "").lower()
+        organizer_name = str(event.get("organizer_name") or "").lower()
+        attendee_count = event.get("attendee_count") or len(event.get("attendees") or [])
+        location = str(event.get("location") or "").lower()
+
+        # Check organizer patterns
+        for pattern in conditions.organizer_patterns:
+            if self._pattern_matches(pattern, organizer_email) or self._pattern_matches(pattern, organizer_name):
+                matches.append(True)
+                reasons.append(f"Organizer matches '{pattern}'")
+
+        # Check subject keywords
+        for kw in conditions.subject_keywords:
+            if kw.lower() in subject:
+                matches.append(True)
+                reasons.append(f"Subject contains '{kw}'")
+
+        # Check body keywords in location (calendar events don't have body typically)
+        for kw in conditions.body_keywords:
+            if kw.lower() in location:
+                matches.append(True)
+                reasons.append(f"Location contains '{kw}'")
+
+        # Check minimum attendees
+        if conditions.min_attendees is not None:
+            if attendee_count >= conditions.min_attendees:
+                matches.append(True)
+                reasons.append(f"Has {attendee_count} attendees (>= {conditions.min_attendees})")
+            elif conditions.match_mode == "all":
+                return False, f"Only {attendee_count} attendees (< {conditions.min_attendees})"
+
+        if not matches:
+            # If no specific conditions matched but rule is for calendar events,
+            # check if rule has any calendar-specific conditions at all
+            has_calendar_conditions = (
+                conditions.organizer_patterns or
+                conditions.min_attendees is not None or
+                conditions.subject_keywords or
+                conditions.body_keywords
+            )
+            if not has_calendar_conditions:
+                # Rule matches all calendar events (e.g., "alert on all meetings")
+                return True, "Matches calendar event"
+            return False, "No conditions matched"
+
+        if conditions.match_mode == "all":
+            # Count expected matches
+            expected = (
+                len(conditions.organizer_patterns)
+                + len(conditions.subject_keywords)
+                + len(conditions.body_keywords)
+                + (1 if conditions.min_attendees is not None else 0)
+            )
+            if len(matches) >= expected:
+                return True, "; ".join(reasons)
+            return False, f"Only {len(matches)}/{expected} conditions matched"
+        else:
+            # Any condition matching is sufficient
+            return True, "; ".join(reasons)
+
+    async def evaluate_calendar_rules(
+        self,
+        event: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """Evaluate all enabled rules against a calendar event. Returns list of triggered rules."""
+        conn = get_connection()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM alert_rules WHERE enabled = 1"
+            ).fetchall()
+
+            triggered = []
+            now = datetime.now(timezone.utc)
+            event_id = event.get("id")
+
+            for row in rows:
+                rule = dict(row)
+                rule_id = rule["id"]
+
+                # Check if rule applies to calendar events
+                try:
+                    rule_event_types = json.loads(rule.get("event_types") or '["email_received"]')
+                except Exception:
+                    rule_event_types = ["email_received"]
+
+                if "calendar_event" not in rule_event_types:
+                    continue
+
+                # Check if already triggered for this event
+                existing = conn.execute(
+                    "SELECT 1 FROM alert_triggers WHERE rule_id = ? AND event_type = ? AND event_id = ?",
+                    (rule_id, "calendar_event", event_id),
+                ).fetchone()
+                if existing:
+                    continue
+
+                # Check cooldown
+                last_triggered = rule.get("last_triggered_at")
+                if last_triggered:
+                    try:
+                        last_dt = datetime.fromisoformat(str(last_triggered).replace("Z", "+00:00"))
+                        cooldown = timedelta(minutes=rule.get("cooldown_minutes") or 30)
+                        if now - last_dt < cooldown:
+                            continue
+                    except Exception:
+                        pass
+
+                # Parse conditions
+                try:
+                    conditions = ParsedConditions.model_validate_json(
+                        rule.get("parsed_conditions_json") or "{}"
+                    )
+                except Exception:
+                    conditions = ParsedConditions()
+
+                # Fast match
+                matches, reason = self._fast_match_calendar(conditions, event)
+
+                # Semantic match if needed
+                if matches and conditions.requires_semantic_match:
+                    if self._matcher_agent is None:
+                        self._matcher_agent = _build_semantic_matcher_agent()
+                    assert self._matcher_agent is not None
+
+                    attendees_str = ", ".join(
+                        f"{a.get('name', '')} <{a.get('email', '')}>"
+                        for a in (event.get("attendees") or [])[:5]
+                    )
+                    context = f"""
+Rule: {rule['natural_language_rule']}
+
+Calendar Event:
+Subject: {event.get('subject')}
+Organizer: {event.get('organizer_name')} <{event.get('organizer_email')}>
+Start: {event.get('start_at')}
+Location: {event.get('location')}
+Attendees ({event.get('attendee_count', 0)}): {attendees_str}
+"""
+                    try:
+                        result = await self._matcher_agent.run(context)
+                        if not result.output.matches:
+                            continue
+                        reason = result.output.match_reason
+                    except Exception as e:
+                        logger.warning(f"Semantic matching failed for calendar: {e}")
+                        continue
+
+                if matches:
+                    triggered.append({
+                        "rule": rule,
+                        "match_reason": reason,
+                    })
+
+            return triggered
+        finally:
+            conn.close()
+
     def emit_alert_trigger(
         self,
         rule: dict[str, Any],
