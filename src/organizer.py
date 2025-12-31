@@ -344,6 +344,9 @@ class Organizer:
             if not self.backfill:
                 self._emit_triggers_for_email(email, decision, prefs)
 
+                # Evaluate user-defined alert rules
+                await self._evaluate_alert_rules(email, decision)
+
         except Exception as e:
             conn.rollback()
             logger.error(f"Error processing email {email['id']}: {e}", exc_info=True)
@@ -414,6 +417,33 @@ class Organizer:
                     dedupe_key=make_dedupe_key("availability_requested", self.user_email, email["id"]),
                     routing={"channel": "teams"},
                 )
+
+    async def _evaluate_alert_rules(self, email: dict, decision: EmailClassification) -> None:
+        """Evaluate user-defined alert rules against the email."""
+        try:
+            from .alerts import AlertRulesEngine
+
+            alert_engine = AlertRulesEngine(self.user_email)
+            classification = {
+                "labels": decision.labels,
+                "urgency": decision.urgency,
+                "outlook_categories": decision.outlook_categories,
+            }
+
+            triggered = await alert_engine.evaluate_email_rules(
+                email, classification, event_type="email_received"
+            )
+
+            for t in triggered:
+                alert_engine.emit_alert_trigger(
+                    t["rule"],
+                    "email_received",
+                    email["id"],
+                    email,
+                    t["match_reason"],
+                )
+        except Exception as e:
+            logger.warning(f"Alert rule evaluation failed for {email.get('id')}: {e}")
 
     def _apply_categories_and_flags(self, message_id: str, decision: EmailClassification):
         """Apply Outlook categories and flags via msgraph CLI."""

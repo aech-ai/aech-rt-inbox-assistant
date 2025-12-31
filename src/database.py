@@ -416,6 +416,44 @@ def init_db(db_path: Optional[Path] = None) -> None:
     """)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_actions_status ON actions(status)")
 
+    # === Alert Rules Tables ===
+    # User-defined alert rules for custom notifications
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS alert_rules (
+        id TEXT PRIMARY KEY,
+        natural_language_rule TEXT NOT NULL,
+        parsed_conditions_json TEXT NOT NULL DEFAULT '{}',
+        event_types TEXT NOT NULL DEFAULT '["email_received"]',
+        channel TEXT NOT NULL DEFAULT 'teams',
+        channel_target TEXT,
+        enabled BOOLEAN DEFAULT 1,
+        cooldown_minutes INTEGER DEFAULT 30,
+        last_triggered_at DATETIME,
+        trigger_count INTEGER DEFAULT 0,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        created_by TEXT DEFAULT 'user'
+    )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_alert_rules_enabled ON alert_rules(enabled)")
+
+    # Alert trigger history for deduplication and auditing
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS alert_triggers (
+        id TEXT PRIMARY KEY,
+        rule_id TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        event_id TEXT NOT NULL,
+        triggered_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        match_reason TEXT,
+        trigger_payload_json TEXT,
+        FOREIGN KEY(rule_id) REFERENCES alert_rules(id) ON DELETE CASCADE,
+        UNIQUE(rule_id, event_type, event_id)
+    )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_alert_triggers_rule ON alert_triggers(rule_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_alert_triggers_event ON alert_triggers(event_type, event_id)")
+
     conn.commit()
     _ensure_fts(cursor)
     conn.commit()
