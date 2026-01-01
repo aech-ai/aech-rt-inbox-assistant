@@ -81,7 +81,6 @@ def init_db(db_path: Optional[Path] = None) -> None:
         body_preview TEXT,
         body_html TEXT,
         body_markdown TEXT,        -- Semantic markdown main content
-        extracted_body TEXT,       -- LLM-cleaned body (quotes/signatures removed)
         signature_block TEXT,      -- Preserved sender signature
         thread_summary TEXT,       -- LLM-generated thread summary
         body_hash TEXT,
@@ -94,6 +93,7 @@ def init_db(db_path: Optional[Path] = None) -> None:
         urgency TEXT DEFAULT 'someday' CHECK(urgency IN ('immediate', 'today', 'this_week', 'someday')),
         suggested_action TEXT DEFAULT 'keep' CHECK(suggested_action IN ('keep', 'archive', 'delete')),
         processed_at DATETIME,
+        wm_processed_at DATETIME,  -- When working memory analysis was done
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
     """)
@@ -104,7 +104,7 @@ def init_db(db_path: Optional[Path] = None) -> None:
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_emails_urgency ON emails(urgency)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_emails_processed ON emails(processed_at)")
     # Migrate existing databases
-    _ensure_columns(cursor, "emails", {"extracted_body": "TEXT"})
+    _ensure_columns(cursor, "emails", {"wm_processed_at": "DATETIME"})
 
     # Triage Log table - categories mode
     cursor.execute("""
@@ -454,6 +454,101 @@ def init_db(db_path: Optional[Path] = None) -> None:
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_alert_triggers_rule ON alert_triggers(rule_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_alert_triggers_event ON alert_triggers(event_type, event_id)")
 
+    # === Unified Facts Table ===
+    # Consolidates: wm_decisions, wm_commitments, wm_observations, plus key business facts
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS facts (
+        id TEXT PRIMARY KEY,
+        source_type TEXT NOT NULL CHECK(source_type IN ('email', 'attachment', 'calendar')),
+        source_id TEXT NOT NULL,
+        fact_type TEXT NOT NULL CHECK(fact_type IN (
+            -- Action items (from WM)
+            'decision',        -- Pending decision requiring response
+            'commitment',      -- Promise made by user
+            'action_item',     -- Task extracted from email
+
+            -- Key details
+            'tax_id', 'business_number', 'account_number',
+            'amount', 'address', 'phone', 'deadline',
+            'person_name', 'company_name', 'contract_number',
+
+            -- Observations
+            'preference',      -- User preference learned
+            'relationship',    -- Org structure insight
+            'pattern',         -- Recurring pattern
+
+            'other'
+        )),
+        fact_value TEXT NOT NULL,
+        context TEXT,                    -- Surrounding text for disambiguation
+        confidence REAL DEFAULT 0.8 CHECK(confidence >= 0.0 AND confidence <= 1.0),
+        entity_normalized TEXT,          -- Normalized form (dates, phones, etc)
+        metadata_json TEXT,              -- Additional structured data
+        status TEXT DEFAULT 'active' CHECK(status IN ('active', 'resolved', 'expired')),
+        due_date DATETIME,               -- For deadlines, commitments
+        extracted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        resolved_at DATETIME,
+        FOREIGN KEY(source_id) REFERENCES emails(id) ON DELETE CASCADE
+    )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_facts_source ON facts(source_type, source_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_facts_type ON facts(fact_type)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_facts_status ON facts(status)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_facts_due ON facts(due_date)")
+
+    # === Derived Views (replace wm_threads and wm_contacts) ===
+
+    # Active threads view - computed from emails on demand
+    # Note: needs_reply logic should be done in application code (requires user_email)
+    cursor.execute("""
+    CREATE VIEW IF NOT EXISTS active_threads AS
+    SELECT
+        e.conversation_id,
+        MAX(e.received_at) as last_activity,
+        COUNT(*) as message_count,
+        GROUP_CONCAT(DISTINCT e.sender) as participants,
+        (SELECT e2.subject FROM emails e2
+         WHERE e2.conversation_id = e.conversation_id
+         ORDER BY e2.received_at DESC LIMIT 1) as subject,
+        (SELECT e3.sender FROM emails e3
+         WHERE e3.conversation_id = e.conversation_id
+         ORDER BY e3.received_at DESC LIMIT 1) as last_sender,
+        (SELECT e4.id FROM emails e4
+         WHERE e4.conversation_id = e.conversation_id
+         ORDER BY e4.received_at DESC LIMIT 1) as latest_email_id,
+        (SELECT e5.web_link FROM emails e5
+         WHERE e5.conversation_id = e.conversation_id
+         ORDER BY e5.received_at DESC LIMIT 1) as latest_web_link,
+        (SELECT e6.urgency FROM emails e6
+         WHERE e6.conversation_id = e.conversation_id
+         ORDER BY e6.received_at DESC LIMIT 1) as urgency,
+        EXISTS(SELECT 1 FROM facts f
+               WHERE f.source_id IN (SELECT id FROM emails WHERE conversation_id = e.conversation_id)
+               AND f.fact_type IN ('decision', 'commitment', 'action_item')
+               AND f.status = 'active') as has_action_items
+    FROM emails e
+    WHERE datetime(e.received_at) > datetime('now', '-30 days')
+      AND e.conversation_id IS NOT NULL
+    GROUP BY e.conversation_id
+    """)
+
+    # Contacts view - computed from emails on demand
+    cursor.execute("""
+    CREATE VIEW IF NOT EXISTS contacts AS
+    SELECT
+        e.sender as email,
+        CASE
+            WHEN e.sender LIKE '%<%>' THEN TRIM(SUBSTR(e.sender, 1, INSTR(e.sender, '<')-1))
+            ELSE e.sender
+        END as name,
+        COUNT(*) as email_count,
+        MAX(e.received_at) as last_interaction,
+        MIN(e.received_at) as first_interaction,
+        COUNT(DISTINCT e.conversation_id) as thread_count
+    FROM emails e
+    GROUP BY e.sender
+    """)
+
     conn.commit()
     _ensure_fts(cursor)
     conn.commit()
@@ -554,6 +649,43 @@ def _ensure_fts(cursor: sqlite3.Cursor) -> None:
         VALUES (new.id, new.content);
     END;
     """)
+
+    # Create FTS5 index for facts
+    cursor.execute("""
+    CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts
+    USING fts5(
+        id UNINDEXED,
+        fact_value,
+        context,
+        entity_normalized,
+        tokenize = 'porter'
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TRIGGER IF NOT EXISTS facts_ai_fts
+    AFTER INSERT ON facts BEGIN
+        INSERT OR REPLACE INTO facts_fts(id, fact_value, context, entity_normalized)
+        VALUES (new.id, new.fact_value, new.context, new.entity_normalized);
+    END;
+    """)
+
+    cursor.execute("""
+    CREATE TRIGGER IF NOT EXISTS facts_ad_fts
+    AFTER DELETE ON facts BEGIN
+        DELETE FROM facts_fts WHERE id = old.id;
+    END;
+    """)
+
+    cursor.execute("""
+    CREATE TRIGGER IF NOT EXISTS facts_au_fts
+    AFTER UPDATE ON facts BEGIN
+        DELETE FROM facts_fts WHERE id = old.id;
+        INSERT OR REPLACE INTO facts_fts(id, fact_value, context, entity_normalized)
+        VALUES (new.id, new.fact_value, new.context, new.entity_normalized);
+    END;
+    """)
+
 
 def setup_query_library(db_path: Path) -> None:
     """

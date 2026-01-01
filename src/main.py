@@ -44,7 +44,11 @@ async def process_pending_content():
 
         if emails_needing_body:
             from src.body_parser import html_to_markdown
+            from src.chunker import create_email_chunks
+            from src.embeddings import embed_chunks_for_source
+
             fetched = 0
+            indexed = 0
             for row in emails_needing_body:
                 email_id = row["id"]
                 body_html = poller._get_message_body(email_id)
@@ -58,8 +62,19 @@ async def process_pending_content():
                 conn.commit()
                 conn.close()
                 fetched += 1
+
+                # ATOMIC: Index email immediately after body is stored
+                if body_markdown:
+                    try:
+                        chunks_created = create_email_chunks(email_id)
+                        if chunks_created > 0:
+                            embed_chunks_for_source("email", email_id)
+                            indexed += 1
+                    except Exception as e:
+                        logger.debug(f"Email indexing deferred for {email_id}: {e}")
+
             if fetched > 0:
-                logger.info(f"Fetched {fetched} email bodies")
+                logger.info(f"Fetched {fetched} email bodies, indexed {indexed}")
 
         # 2. Extract attachments (download + OCR/text extraction)
         processor = AttachmentProcessor()
@@ -73,7 +88,7 @@ async def process_pending_content():
             SELECT id, conversation_id, subject, sender, received_at,
                    body_markdown, body_preview, to_emails, cc_emails
             FROM emails
-            WHERE extracted_body IS NULL
+            WHERE wm_processed_at IS NULL
               AND (body_markdown IS NOT NULL OR body_preview IS NOT NULL)
               AND datetime(received_at) > datetime('now', '-30 days')
             LIMIT 50
@@ -92,33 +107,34 @@ async def process_pending_content():
                         await updater.process_email(email)
                         conn = get_connection()
                         conn.execute(
-                            "UPDATE emails SET extracted_body = COALESCE(body_markdown, body_preview, '') WHERE id = ?",
+                            "UPDATE emails SET wm_processed_at = datetime('now') WHERE id = ?",
                             (email["id"],)
                         )
                         conn.commit()
                         conn.close()
                         return True
                     except Exception as e:
-                        logger.warning(f"Content extraction failed for {email['id']}: {e}")
+                        logger.warning(f"WM analysis failed for {email['id']}: {e}")
                         return False
 
             logger.info(f"Processing {len(pending_emails)} emails for working memory (concurrency={wm_concurrency})")
             results = await asyncio.gather(*[process_one(dict(row)) for row in pending_emails])
-            extracted = sum(1 for r in results if r)
-            if extracted > 0:
-                logger.info(f"Extracted content from {extracted} emails")
+            processed = sum(1 for r in results if r)
+            if processed > 0:
+                logger.info(f"WM analyzed {processed} emails")
 
-        # 4. Index for search (chunking)
-        email_results = process_unindexed_emails(limit=100)
-        att_chunk_results = process_unindexed_attachments(limit=100)
-        total_chunks = email_results.get("chunks_created", 0) + att_chunk_results.get("chunks_created", 0)
-        if total_chunks > 0:
-            logger.info(f"Created {total_chunks} search chunks")
+        # 4. Fallback: Index any content that was missed by inline indexing
+        # (This catches emails/attachments from before atomic indexing was added)
+        email_results = process_unindexed_emails(limit=50)
+        att_chunk_results = process_unindexed_attachments(limit=50)
+        fallback_chunks = email_results.get("chunks_created", 0) + att_chunk_results.get("chunks_created", 0)
+        if fallback_chunks > 0:
+            logger.info(f"Fallback indexing: {fallback_chunks} chunks created")
 
-        # 5. Generate embeddings
-        embed_results = embed_pending_chunks(limit=100, batch_size=32)
+        # 5. Fallback: Embed any chunks that were missed
+        embed_results = embed_pending_chunks(limit=50, batch_size=32)
         if embed_results["processed"] > 0:
-            logger.info(f"Generated {embed_results['processed']} embeddings")
+            logger.info(f"Fallback embedding: {embed_results['processed']} embeddings")
 
     except Exception as e:
         logger.warning(f"Content processing error (non-fatal): {e}")

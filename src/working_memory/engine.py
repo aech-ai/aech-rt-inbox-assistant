@@ -1,6 +1,9 @@
-"""Working Memory Engine - periodic processing for state maintenance and nudges."""
+"""Working Memory Engine - periodic processing for state maintenance and nudges.
 
-import json
+Uses derived views (active_threads, contacts) and unified facts table for state.
+Thread and contact state is computed on-demand - no mutable state to maintain.
+"""
+
 import logging
 import os
 from datetime import datetime, timedelta, timezone
@@ -8,7 +11,7 @@ from typing import Any
 
 from ..database import get_connection
 from ..triggers import make_dedupe_key, write_trigger
-from .models import ThreadStatus, UrgencyLevel
+from .models import UrgencyLevel
 
 logger = logging.getLogger(__name__)
 
@@ -17,11 +20,14 @@ class WorkingMemoryEngine:
     """
     Periodic engine for working memory maintenance.
 
+    Uses the new architecture:
+    - active_threads view: computed thread state from emails
+    - contacts view: computed contact stats from emails
+    - facts table: unified storage for decisions, commitments, observations
+
     Runs alongside the email polling loop to:
-    - Re-evaluate urgency as time passes
-    - Mark stale threads
+    - Prune expired facts
     - Generate proactive nudges
-    - Prune old data
     """
 
     def __init__(self, user_email: str):
@@ -35,9 +41,7 @@ class WorkingMemoryEngine:
         Returns stats about what was updated.
         """
         stats = {
-            "threads_marked_stale": 0,
-            "urgency_escalated": 0,
-            "observations_pruned": 0,
+            "facts_pruned": 0,
             "nudges_emitted": 0,
         }
 
@@ -46,18 +50,12 @@ class WorkingMemoryEngine:
 
         conn = get_connection()
         try:
-            # 1. Mark stale threads
-            stats["threads_marked_stale"] = self._mark_stale_threads(conn, now)
-
-            # 2. Escalate urgency for overdue items
-            stats["urgency_escalated"] = self._escalate_urgency(conn, now)
-
-            # 3. Prune old observations
-            stats["observations_pruned"] = self._prune_observations(conn, now)
+            # 1. Prune expired facts (observations with limited relevance)
+            stats["facts_pruned"] = self._prune_expired_facts(conn, now)
 
             conn.commit()
 
-            # 4. Generate and emit nudges (after commit so we see current state)
+            # 2. Generate and emit nudges (after commit so we see current state)
             stats["nudges_emitted"] = self._emit_nudges(now)
 
         except Exception as e:
@@ -71,82 +69,20 @@ class WorkingMemoryEngine:
 
         return stats
 
-    def _mark_stale_threads(self, conn, now: datetime) -> int:
-        """Mark threads as stale after N days of no activity."""
-        stale_days = int(os.getenv("WM_STALE_THRESHOLD_DAYS", "3"))
-        stale_threshold = (now - timedelta(days=stale_days)).isoformat()
-
-        result = conn.execute(
-            """
-            UPDATE wm_threads
-            SET status = ?, updated_at = ?
-            WHERE status = ?
-            AND last_activity_at < ?
-            """,
-            (
-                ThreadStatus.STALE.value,
-                now.isoformat(),
-                ThreadStatus.ACTIVE.value,
-                stale_threshold,
-            ),
-        )
-        return result.rowcount
-
-    def _escalate_urgency(self, conn, now: datetime) -> int:
-        """Escalate urgency for threads awaiting reply too long."""
-        escalation_days = int(os.getenv("WM_URGENCY_ESCALATION_DAYS", "2"))
-        escalate_threshold = (now - timedelta(days=escalation_days)).isoformat()
-
-        # Escalate threads needing reply
-        result = conn.execute(
-            """
-            UPDATE wm_threads
-            SET urgency = ?, updated_at = ?
-            WHERE needs_reply = 1
-            AND status NOT IN (?, ?)
-            AND urgency IN (?, ?)
-            AND last_activity_at < ?
-            """,
-            (
-                UrgencyLevel.TODAY.value,
-                now.isoformat(),
-                ThreadStatus.RESOLVED.value,
-                ThreadStatus.STALE.value,
-                UrgencyLevel.THIS_WEEK.value,
-                UrgencyLevel.SOMEDAY.value,
-                escalate_threshold,
-            ),
-        )
-        count = result.rowcount
-
-        # Escalate pending decisions
-        result = conn.execute(
-            """
-            UPDATE wm_decisions
-            SET urgency = ?, updated_at = ?
-            WHERE is_resolved = 0
-            AND urgency IN (?, ?)
-            AND created_at < ?
-            """,
-            (
-                UrgencyLevel.TODAY.value,
-                now.isoformat(),
-                UrgencyLevel.THIS_WEEK.value,
-                UrgencyLevel.SOMEDAY.value,
-                escalate_threshold,
-            ),
-        )
-        count += result.rowcount
-
-        return count
-
-    def _prune_observations(self, conn, now: datetime) -> int:
-        """Prune observations older than retention period."""
+    def _prune_expired_facts(self, conn, now: datetime) -> int:
+        """Mark observation-type facts as expired after retention period."""
         retention_days = int(os.getenv("WM_OBSERVATION_RETENTION_DAYS", "30"))
         prune_threshold = (now - timedelta(days=retention_days)).isoformat()
 
+        # Mark old preference/pattern observations as expired
         result = conn.execute(
-            "DELETE FROM wm_observations WHERE observed_at < ?",
+            """
+            UPDATE facts
+            SET status = 'expired'
+            WHERE status = 'active'
+            AND fact_type IN ('preference', 'relationship', 'pattern')
+            AND extracted_at < ?
+            """,
             (prune_threshold,),
         )
         return result.rowcount
@@ -255,27 +191,27 @@ class WorkingMemoryEngine:
         conn,
         now: datetime,
     ) -> list[dict[str, Any]]:
-        """Find threads awaiting reply for too long."""
+        """Find threads awaiting reply for too long using active_threads view."""
         nudges: list[dict[str, Any]] = []
         reply_days = int(os.getenv("WM_REPLY_NUDGE_DAYS", "2"))
         threshold = (now - timedelta(days=reply_days)).isoformat()
 
+        # Use active_threads view - needs_reply is computed as last_sender != user_email
         threads = conn.execute(
             """
-            SELECT * FROM wm_threads
-            WHERE needs_reply = 1
-            AND status NOT IN (?, ?)
-            AND last_activity_at < ?
-            ORDER BY last_activity_at ASC
+            SELECT * FROM active_threads
+            WHERE last_sender != ?
+            AND last_activity < ?
+            ORDER BY last_activity ASC
             LIMIT 5
             """,
-            (ThreadStatus.RESOLVED.value, ThreadStatus.STALE.value, threshold),
+            (self.user_email, threshold),
         ).fetchall()
 
         for t in threads:
             try:
                 last_activity = datetime.fromisoformat(
-                    str(t["last_activity_at"]).replace("Z", "+00:00")
+                    str(t["last_activity"]).replace("Z", "+00:00")
                 )
                 if last_activity.tzinfo is None:
                     last_activity = last_activity.replace(tzinfo=timezone.utc)
@@ -286,12 +222,11 @@ class WorkingMemoryEngine:
             nudges.append({
                 "type": "reply_overdue",
                 "urgency": UrgencyLevel.TODAY.value,
-                "subject": t["subject"],
-                "thread_id": t["id"],
+                "subject": t["subject"] or "(no subject)",
+                "thread_id": t["conversation_id"],
                 "conversation_id": t["conversation_id"],
                 "days_waiting": days_waiting,
-                "summary": t.get("summary") or "",
-                "message": f"No reply sent for {days_waiting} days: {t['subject'][:50]}",
+                "message": f"No reply sent for {days_waiting} days: {(t['subject'] or '(no subject)')[:50]}",
             })
 
         return nudges
@@ -301,15 +236,19 @@ class WorkingMemoryEngine:
         conn,
         now: datetime,
     ) -> list[dict[str, Any]]:
-        """Find commitments past their due date."""
+        """Find commitments past their due date using facts table."""
         nudges: list[dict[str, Any]] = []
 
+        # Query facts table for overdue commitments
         commitments = conn.execute(
             """
-            SELECT * FROM wm_commitments
-            WHERE is_completed = 0
-            AND due_by IS NOT NULL
-            AND due_by < ?
+            SELECT f.*, e.sender
+            FROM facts f
+            LEFT JOIN emails e ON f.source_id = e.id
+            WHERE f.fact_type = 'commitment'
+            AND f.status = 'active'
+            AND f.due_date IS NOT NULL
+            AND f.due_date < ?
             LIMIT 5
             """,
             (now.isoformat(),),
@@ -320,10 +259,10 @@ class WorkingMemoryEngine:
                 "type": "commitment_overdue",
                 "urgency": UrgencyLevel.IMMEDIATE.value,
                 "commitment_id": c["id"],
-                "description": c["description"],
-                "to_whom": c["to_whom"],
-                "due_by": c["due_by"],
-                "message": f"Overdue commitment to {c['to_whom']}: {c['description'][:50]}",
+                "description": c["fact_value"],
+                "to_whom": c["sender"] or "unknown",
+                "due_by": c["due_date"],
+                "message": f"Overdue commitment: {c['fact_value'][:50]}",
             })
 
         return nudges
@@ -333,22 +272,21 @@ class WorkingMemoryEngine:
         conn,
         now: datetime,
     ) -> list[dict[str, Any]]:
-        """Find urgent threads going stale (no activity for 24h)."""
+        """Find urgent threads going stale (no activity for 24h) using active_threads view."""
         nudges: list[dict[str, Any]] = []
         threshold = (now - timedelta(hours=24)).isoformat()
 
+        # Use active_threads view
         threads = conn.execute(
             """
-            SELECT * FROM wm_threads
+            SELECT * FROM active_threads
             WHERE urgency IN (?, ?)
-            AND status = ?
-            AND last_activity_at < ?
+            AND last_activity < ?
             LIMIT 3
             """,
             (
                 UrgencyLevel.IMMEDIATE.value,
                 UrgencyLevel.TODAY.value,
-                ThreadStatus.ACTIVE.value,
                 threshold,
             ),
         ).fetchall()
@@ -357,9 +295,9 @@ class WorkingMemoryEngine:
             nudges.append({
                 "type": "urgent_thread_stale",
                 "urgency": t["urgency"],
-                "thread_id": t["id"],
-                "subject": t["subject"],
-                "message": f"Urgent thread has no activity for 24h: {t['subject'][:50]}",
+                "thread_id": t["conversation_id"],
+                "subject": t["subject"] or "(no subject)",
+                "message": f"Urgent thread has no activity for 24h: {(t['subject'] or '(no subject)')[:50]}",
             })
 
         return nudges
@@ -369,16 +307,20 @@ class WorkingMemoryEngine:
         conn,
         now: datetime,
     ) -> list[dict[str, Any]]:
-        """Find decisions waiting too long."""
+        """Find decisions waiting too long using facts table."""
         nudges: list[dict[str, Any]] = []
         decision_days = int(os.getenv("WM_DECISION_NUDGE_DAYS", "3"))
         threshold = (now - timedelta(days=decision_days)).isoformat()
 
+        # Query facts table for pending decisions
         decisions = conn.execute(
             """
-            SELECT * FROM wm_decisions
-            WHERE is_resolved = 0
-            AND created_at < ?
+            SELECT f.*, e.sender
+            FROM facts f
+            LEFT JOIN emails e ON f.source_id = e.id
+            WHERE f.fact_type = 'decision'
+            AND f.status = 'active'
+            AND f.extracted_at < ?
             LIMIT 3
             """,
             (threshold,),
@@ -389,9 +331,9 @@ class WorkingMemoryEngine:
                 "type": "decision_pending",
                 "urgency": UrgencyLevel.TODAY.value,
                 "decision_id": d["id"],
-                "question": d["question"],
-                "requester": d["requester"],
-                "message": f"Decision pending from {d['requester']}: {d['question'][:50]}",
+                "question": d["fact_value"],
+                "requester": d["sender"] or "unknown",
+                "message": f"Decision pending from {d['sender'] or 'unknown'}: {d['fact_value'][:50]}",
             })
 
         return nudges

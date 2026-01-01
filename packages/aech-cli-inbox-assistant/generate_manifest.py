@@ -28,6 +28,10 @@ MANIFEST_PATH = SRC_DIR / "manifest.json"
 
 def introspect_parameter(param_name: str, param: inspect.Parameter) -> dict[str, Any] | None:
     """Extract parameter metadata from a Typer parameter."""
+    # Skip 'human' parameter - it's for terminal output, not agent use
+    if param_name == "human":
+        return None
+
     if param.default is inspect.Parameter.empty:
         return None
 
@@ -148,9 +152,9 @@ def introspect_typer_app(app: typer.Typer, name: str, command: str) -> dict[str,
         "documentation": {
             "usage": f"{command} <command> [options]",
             "examples": [
-                f"{command} list --human",
+                f"{command} list --limit 10",
                 f"{command} search 'query' --limit 10",
-                f"{command} reply-needed --human",
+                f"{command} reply-needed",
             ],
         },
     }

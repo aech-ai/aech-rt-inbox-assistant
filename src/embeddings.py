@@ -199,6 +199,110 @@ def embed_chunk(chunk_id: str) -> bool:
         return False
 
 
+def embed_chunks_for_source(source_type: str, source_id: str, enrich: bool = True) -> int:
+    """
+    Generate embeddings for all chunks belonging to a specific source.
+    Used for atomic indexing - call immediately after creating chunks.
+
+    Args:
+        source_type: 'email' or 'attachment'
+        source_id: The email or attachment ID
+
+    Returns:
+        Number of chunks embedded
+    """
+    conn = get_connection()
+
+    # Get chunks for this source that need embeddings
+    rows = conn.execute(
+        """
+        SELECT
+            c.id, c.content, c.metadata_json,
+            e.subject as email_subject, e.sender as email_sender, e.received_at,
+            a.filename as attachment_filename,
+            ae.subject as attachment_email_subject, ae.sender as attachment_email_sender
+        FROM chunks c
+        LEFT JOIN emails e ON c.source_type = 'email' AND c.source_id = e.id
+        LEFT JOIN attachments a ON c.source_type = 'attachment' AND c.source_id = a.id
+        LEFT JOIN emails ae ON a.email_id = ae.id
+        WHERE c.source_type = ? AND c.source_id = ? AND c.embedding IS NULL
+        """,
+        (source_type, source_id),
+    ).fetchall()
+    conn.close()
+
+    if not rows:
+        return 0
+
+    # Prepare texts for batch embedding
+    chunk_ids = []
+    texts = []
+
+    for row in rows:
+        chunk_ids.append(row["id"])
+        content = row["content"] or ""
+
+        if enrich:
+            if source_type == "email":
+                text = prepare_email_text_for_embedding(
+                    content=content,
+                    subject=row["email_subject"],
+                    sender=row["email_sender"],
+                    received_at=row["received_at"],
+                )
+            elif source_type == "attachment":
+                text = prepare_attachment_text_for_embedding(
+                    content=content,
+                    filename=row["attachment_filename"],
+                    email_subject=row["attachment_email_subject"],
+                    email_sender=row["attachment_email_sender"],
+                )
+            else:
+                # Virtual emails - use metadata
+                metadata = {}
+                if row["metadata_json"]:
+                    try:
+                        metadata = json.loads(row["metadata_json"])
+                    except json.JSONDecodeError:
+                        pass
+                text = prepare_email_text_for_embedding(
+                    content=content,
+                    subject=metadata.get("extracted_subject"),
+                    sender=metadata.get("extracted_sender"),
+                    received_at=metadata.get("extracted_date"),
+                )
+        else:
+            text = content
+
+        texts.append(text)
+
+    # Generate embeddings
+    try:
+        embeddings = encode_batch(texts)
+    except Exception as e:
+        logger.error(f"Embedding generation failed for {source_type}:{source_id}: {e}")
+        return 0
+
+    # Store embeddings
+    conn = get_connection()
+    embedded = 0
+    for chunk_id, embedding in zip(chunk_ids, embeddings):
+        try:
+            conn.execute(
+                "UPDATE chunks SET embedding = ? WHERE id = ?",
+                (embedding, chunk_id),
+            )
+            embedded += 1
+        except Exception as e:
+            logger.error(f"Failed to store embedding for {chunk_id}: {e}")
+
+    conn.commit()
+    conn.close()
+
+    logger.debug(f"Embedded {embedded} chunks for {source_type}:{source_id}")
+    return embedded
+
+
 def embed_pending_chunks(
     limit: int = 1000,
     enrich: bool = True,

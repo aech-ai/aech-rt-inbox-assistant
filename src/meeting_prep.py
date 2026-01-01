@@ -519,24 +519,24 @@ class MeetingPrepService:
 
         briefing.alerts = alerts
 
-        # Get inbox status from Working Memory
+        # Get inbox status from active_threads view
         try:
             inbox_conn = get_connection()
-            # New replies needed (last 48h)
+            user_email = self.user_email.lower() if self.user_email else ""
+
+            # New replies needed (last 48h) - computed from active_threads view
             result = inbox_conn.execute("""
-                SELECT COUNT(*) FROM wm_threads
-                WHERE needs_reply = 1
-                  AND status = 'active'
-                  AND last_activity_at >= datetime('now', '-2 days')
-            """).fetchone()
+                SELECT COUNT(*) FROM active_threads
+                WHERE LOWER(last_sender) != ?
+                  AND last_activity >= datetime('now', '-2 days')
+            """, (user_email,)).fetchone()
             briefing.new_replies_needed = result[0] if result else 0
 
             # Total active threads needing reply
             result = inbox_conn.execute("""
-                SELECT COUNT(*) FROM wm_threads
-                WHERE needs_reply = 1
-                  AND status = 'active'
-            """).fetchone()
+                SELECT COUNT(*) FROM active_threads
+                WHERE LOWER(last_sender) != ?
+            """, (user_email,)).fetchone()
             briefing.total_active_threads = result[0] if result else 0
             inbox_conn.close()
         except Exception as e:
