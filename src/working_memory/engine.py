@@ -180,7 +180,52 @@ class WorkingMemoryEngine:
             )
             emitted += 1
 
+            # Evaluate user-defined alert rules for WM events
+            self._evaluate_alert_rules_for_nudge(nudge, nudge_type, nudge_id)
+
         return emitted
+
+    def _evaluate_alert_rules_for_nudge(
+        self,
+        nudge: dict[str, Any],
+        nudge_type: str,
+        nudge_id: str,
+    ) -> None:
+        """Evaluate user alert rules against a working memory nudge."""
+        try:
+            from ..alerts import AlertRulesEngine
+            import asyncio
+
+            # Map nudge type to event type
+            event_type_map = {
+                "reply_overdue": "wm_thread",
+                "urgent_thread_stale": "wm_thread",
+                "commitment_overdue": "wm_commitment",
+                "decision_pending": "wm_decision",
+            }
+            event_type = event_type_map.get(nudge_type, "wm_thread")
+
+            alert_engine = AlertRulesEngine(self.user_email)
+
+            # Run async evaluation
+            loop = asyncio.new_event_loop()
+            try:
+                triggered = loop.run_until_complete(
+                    alert_engine.evaluate_wm_rules(nudge, event_type)
+                )
+            finally:
+                loop.close()
+
+            for t in triggered:
+                alert_engine.emit_alert_trigger(
+                    t["rule"],
+                    event_type,
+                    nudge_id,
+                    nudge,
+                    t["match_reason"],
+                )
+        except Exception as e:
+            logger.warning(f"Alert rule evaluation failed for WM nudge {nudge_id}: {e}")
 
     def _generate_nudges(self, now: datetime) -> list[dict[str, Any]]:
         """Analyze working memory and generate appropriate nudges."""

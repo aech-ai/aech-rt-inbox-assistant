@@ -69,6 +69,9 @@ app.add_typer(prefs_app, name="prefs")
 wm_app = typer.Typer(help="Working Memory - EA cognitive state.", add_completion=False)
 app.add_typer(wm_app, name="wm")
 
+alerts_app = typer.Typer(help="Manage user-defined alert rules.", add_completion=False)
+app.add_typer(alerts_app, name="alerts")
+
 
 @app.command()
 def list(
@@ -1701,6 +1704,290 @@ def prefs_unset(
         typer.echo(str(path))
     else:
         raise typer.Exit(1)
+
+
+# =============================================================================
+# Alerts Commands
+# =============================================================================
+
+
+@alerts_app.command("list")
+def alerts_list(
+    enabled_only: bool = typer.Option(False, "--enabled-only", help="Only show enabled rules"),
+    human: bool = typer.Option(False, "--human", help="Human-readable output"),
+):
+    """List all alert rules."""
+    conn = connect_db()
+    query = "SELECT * FROM alert_rules"
+    if enabled_only:
+        query += " WHERE enabled = 1"
+    query += " ORDER BY created_at DESC"
+
+    rows = conn.execute(query).fetchall()
+    conn.close()
+
+    rules = [dict(r) for r in rows]
+
+    if human:
+        if not rules:
+            typer.echo("No alert rules configured.")
+            typer.echo("\nCreate one with: alerts add \"alert me when CFO emails about budget\"")
+            return
+        typer.echo(f"=== Alert Rules ({len(rules)}) ===\n")
+        for r in rules:
+            status = "ENABLED" if r.get("enabled") else "DISABLED"
+            typer.echo(f"[{status}] {r['id'][:8]}...")
+            typer.echo(f"  Rule: {r['natural_language_rule']}")
+            typer.echo(f"  Channel: {r.get('channel', 'teams')}")
+            event_types = r.get("event_types", '["email_received"]')
+            typer.echo(f"  Events: {event_types}")
+            typer.echo(f"  Triggers: {r.get('trigger_count', 0)}")
+            if r.get("last_triggered_at"):
+                typer.echo(f"  Last triggered: {r['last_triggered_at']}")
+            typer.echo()
+    else:
+        typer.echo(json.dumps(rules, default=str))
+
+
+@alerts_app.command("add")
+def alerts_add(
+    rule: str = typer.Argument(..., help="Natural language alert rule"),
+    channel: str = typer.Option("teams", help="Notification channel: teams, email"),
+    target: str = typer.Option(None, help="Channel target (chat ID, email address)"),
+    cooldown: int = typer.Option(30, help="Cooldown between triggers (minutes)"),
+    human: bool = typer.Option(False, "--human", help="Human-readable output"),
+):
+    """Add a new alert rule.
+
+    Examples:
+        alerts add "alert me when CFO emails about budget"
+        alerts add "notify when I send email to legal@" --channel email
+        alerts add "alert when commitment is overdue" --cooldown 60
+    """
+    import asyncio
+    import sys
+    from pathlib import Path
+
+    # Add src to path for imports
+    src_path = Path(__file__).parent.parent.parent.parent.parent / "src"
+    if str(src_path) not in sys.path:
+        sys.path.insert(0, str(src_path))
+
+    try:
+        from alerts import create_alert_rule
+
+        result = asyncio.run(create_alert_rule(
+            natural_language_rule=rule,
+            channel=channel,
+            channel_target=target,
+            cooldown_minutes=cooldown,
+            created_by="user",
+        ))
+
+        if human:
+            typer.echo(f"Created alert rule: {result['id']}")
+            typer.echo(f"  Rule: {rule}")
+            typer.echo(f"  Channel: {channel}")
+            typer.echo(f"  Event types: {result.get('event_types', ['email_received'])}")
+            parsed = result.get("parsed_conditions", {})
+            if parsed:
+                typer.echo(f"  Parsed conditions:")
+                if parsed.get("sender_patterns"):
+                    typer.echo(f"    Sender patterns: {parsed['sender_patterns']}")
+                if parsed.get("subject_keywords"):
+                    typer.echo(f"    Subject keywords: {parsed['subject_keywords']}")
+                if parsed.get("body_keywords"):
+                    typer.echo(f"    Body keywords: {parsed['body_keywords']}")
+                if parsed.get("urgency_levels"):
+                    typer.echo(f"    Urgency levels: {parsed['urgency_levels']}")
+        else:
+            typer.echo(json.dumps(result, default=str))
+    except Exception as e:
+        typer.echo(f"Error creating rule: {e}", err=True)
+        raise typer.Exit(1)
+
+
+@alerts_app.command("remove")
+def alerts_remove(
+    rule_id: str = typer.Argument(..., help="Rule ID to remove (can be partial)"),
+):
+    """Remove an alert rule."""
+    conn = connect_db()
+
+    # Support partial ID matching
+    if len(rule_id) < 36:
+        row = conn.execute(
+            "SELECT id FROM alert_rules WHERE id LIKE ?",
+            (f"{rule_id}%",)
+        ).fetchone()
+        if row:
+            rule_id = row["id"]
+
+    conn.execute("DELETE FROM alert_rules WHERE id = ?", (rule_id,))
+    conn.commit()
+    deleted = conn.total_changes > 0
+    conn.close()
+
+    if deleted:
+        typer.echo(json.dumps({"status": "deleted", "id": rule_id}))
+    else:
+        typer.echo(json.dumps({"status": "not_found", "id": rule_id}))
+        raise typer.Exit(1)
+
+
+@alerts_app.command("enable")
+def alerts_enable(
+    rule_id: str = typer.Argument(..., help="Rule ID to enable (can be partial)"),
+):
+    """Enable an alert rule."""
+    conn = connect_db()
+
+    # Support partial ID matching
+    if len(rule_id) < 36:
+        row = conn.execute(
+            "SELECT id FROM alert_rules WHERE id LIKE ?",
+            (f"{rule_id}%",)
+        ).fetchone()
+        if row:
+            rule_id = row["id"]
+
+    conn.execute(
+        "UPDATE alert_rules SET enabled = 1, updated_at = ? WHERE id = ?",
+        (datetime.now().isoformat(), rule_id)
+    )
+    conn.commit()
+    updated = conn.total_changes > 0
+    conn.close()
+
+    typer.echo(json.dumps({"status": "enabled" if updated else "not_found", "id": rule_id}))
+
+
+@alerts_app.command("disable")
+def alerts_disable(
+    rule_id: str = typer.Argument(..., help="Rule ID to disable (can be partial)"),
+):
+    """Disable an alert rule."""
+    conn = connect_db()
+
+    # Support partial ID matching
+    if len(rule_id) < 36:
+        row = conn.execute(
+            "SELECT id FROM alert_rules WHERE id LIKE ?",
+            (f"{rule_id}%",)
+        ).fetchone()
+        if row:
+            rule_id = row["id"]
+
+    conn.execute(
+        "UPDATE alert_rules SET enabled = 0, updated_at = ? WHERE id = ?",
+        (datetime.now().isoformat(), rule_id)
+    )
+    conn.commit()
+    updated = conn.total_changes > 0
+    conn.close()
+
+    typer.echo(json.dumps({"status": "disabled" if updated else "not_found", "id": rule_id}))
+
+
+@alerts_app.command("history")
+def alerts_history(
+    rule_id: str = typer.Option(None, "--rule-id", help="Filter by rule ID"),
+    limit: int = typer.Option(20, help="Number of entries"),
+    human: bool = typer.Option(False, "--human", help="Human-readable output"),
+):
+    """View alert trigger history."""
+    conn = connect_db()
+
+    query = """
+        SELECT at.*, ar.natural_language_rule
+        FROM alert_triggers at
+        JOIN alert_rules ar ON at.rule_id = ar.id
+    """
+    params = []
+
+    if rule_id:
+        # Support partial ID matching
+        if len(rule_id) < 36:
+            query += " WHERE at.rule_id LIKE ?"
+            params.append(f"{rule_id}%")
+        else:
+            query += " WHERE at.rule_id = ?"
+            params.append(rule_id)
+
+    query += " ORDER BY at.triggered_at DESC LIMIT ?"
+    params.append(limit)
+
+    rows = conn.execute(query, params).fetchall()
+    conn.close()
+
+    triggers = [dict(r) for r in rows]
+
+    if human:
+        if not triggers:
+            typer.echo("No alert triggers found.")
+            return
+        typer.echo(f"=== Alert History ({len(triggers)} entries) ===\n")
+        for t in triggers:
+            rule_text = t.get("natural_language_rule", "Unknown")[:50]
+            typer.echo(f"{t['triggered_at']} - {rule_text}")
+            typer.echo(f"  Event: {t.get('event_type', 'email_received')} / {t.get('event_id', 'N/A')[:20]}...")
+            typer.echo(f"  Reason: {t.get('match_reason', 'N/A')}")
+            typer.echo()
+    else:
+        typer.echo(json.dumps(triggers, default=str))
+
+
+@alerts_app.command("show")
+def alerts_show(
+    rule_id: str = typer.Argument(..., help="Rule ID to show (can be partial)"),
+    human: bool = typer.Option(False, "--human", help="Human-readable output"),
+):
+    """Show details of a specific alert rule."""
+    conn = connect_db()
+
+    # Support partial ID matching
+    if len(rule_id) < 36:
+        row = conn.execute(
+            "SELECT * FROM alert_rules WHERE id LIKE ?",
+            (f"{rule_id}%",)
+        ).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT * FROM alert_rules WHERE id = ?",
+            (rule_id,)
+        ).fetchone()
+
+    conn.close()
+
+    if not row:
+        typer.echo(f"Rule not found: {rule_id}", err=True)
+        raise typer.Exit(1)
+
+    rule = dict(row)
+
+    if human:
+        typer.echo(f"=== Alert Rule ===\n")
+        typer.echo(f"ID: {rule['id']}")
+        typer.echo(f"Rule: {rule['natural_language_rule']}")
+        typer.echo(f"Status: {'ENABLED' if rule.get('enabled') else 'DISABLED'}")
+        typer.echo(f"Channel: {rule.get('channel', 'teams')}")
+        if rule.get("channel_target"):
+            typer.echo(f"Target: {rule['channel_target']}")
+        typer.echo(f"Event types: {rule.get('event_types', '[]')}")
+        typer.echo(f"Cooldown: {rule.get('cooldown_minutes', 30)} minutes")
+        typer.echo(f"Trigger count: {rule.get('trigger_count', 0)}")
+        if rule.get("last_triggered_at"):
+            typer.echo(f"Last triggered: {rule['last_triggered_at']}")
+        typer.echo(f"\nParsed conditions:")
+        try:
+            conditions = json.loads(rule.get("parsed_conditions_json", "{}"))
+            for key, value in conditions.items():
+                if value and value != [] and value != False:
+                    typer.echo(f"  {key}: {value}")
+        except Exception:
+            typer.echo(f"  {rule.get('parsed_conditions_json', '{}')}")
+    else:
+        typer.echo(json.dumps(rule, default=str))
 
 
 def run():

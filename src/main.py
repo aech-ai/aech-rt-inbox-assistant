@@ -124,6 +124,55 @@ async def process_pending_content():
         logger.warning(f"Content processing error (non-fatal): {e}")
 
 
+async def _evaluate_sent_email_alerts(user_email: str, count: int) -> None:
+    """Evaluate alert rules against recently synced sent emails."""
+    try:
+        from src.alerts import AlertRulesEngine
+
+        conn = get_connection()
+        # Get recently synced sent emails (last few minutes)
+        sent_emails = conn.execute(
+            """
+            SELECT id, subject, sender, to_emails, cc_emails, received_at, body_preview
+            FROM emails
+            WHERE datetime(created_at) > datetime('now', '-5 minutes')
+            ORDER BY received_at DESC
+            LIMIT ?
+            """,
+            (count,),
+        ).fetchall()
+        conn.close()
+
+        if not sent_emails:
+            return
+
+        alert_engine = AlertRulesEngine(user_email)
+
+        for email in sent_emails:
+            email_dict = dict(email)
+            # For sent emails, classification is minimal (no LLM classification done)
+            classification = {"labels": [], "urgency": "someday", "outlook_categories": []}
+
+            triggered = await alert_engine.evaluate_email_rules(
+                email_dict, classification, event_type="email_sent"
+            )
+
+            for t in triggered:
+                alert_engine.emit_alert_trigger(
+                    t["rule"],
+                    "email_sent",
+                    email_dict["id"],
+                    email_dict,
+                    t["match_reason"],
+                )
+
+        if sent_emails:
+            logger.debug(f"Evaluated {len(sent_emails)} sent emails against alert rules")
+
+    except Exception as e:
+        logger.warning(f"Sent email alert evaluation error: {e}")
+
+
 def service_loop(user_email: str, poll_interval: int, run_once: bool, concurrency: int = 5, backfill: bool = False):
     logger.info("Initializing database...")
     init_db()
@@ -144,6 +193,11 @@ def service_loop(user_email: str, poll_interval: int, run_once: bool, concurrenc
     delta_sync_interval = int(os.environ.get("DELTA_SYNC_INTERVAL", 300))  # Default 5 minutes
     last_delta_sync = 0.0
     inbox_folder_id = None  # Cached Inbox folder ID
+
+    # Sent items sync for alert rules
+    sent_sync_interval = int(os.environ.get("SENT_SYNC_INTERVAL", 300))  # Default 5 minutes
+    last_sent_sync = 0.0
+    sent_items_folder_id = None  # Cached Sent Items folder ID
 
     logger.info("Starting Inbox Assistant Service")
     logger.info(f"User: {user_email}")
@@ -197,6 +251,35 @@ def service_loop(user_email: str, poll_interval: int, run_once: bool, concurrenc
                     last_delta_sync = now
                 except Exception as sync_err:
                     logger.warning(f"Delta sync error: {sync_err}")
+
+            # Sync sent items for alert rules (email_sent events)
+            now = time.time()
+            if now - last_sent_sync >= sent_sync_interval:
+                try:
+                    # Get Sent Items folder ID (cache it)
+                    if sent_items_folder_id is None:
+                        folders = poller.get_all_folders() if inbox_folder_id is None else None
+                        if folders is None:
+                            folders = poller.get_all_folders()
+                        sent_folder = next(
+                            (f for f in folders if f.get("displayName", "").lower() in ("sent items", "sent")),
+                            None
+                        )
+                        if sent_folder:
+                            sent_items_folder_id = sent_folder["id"]
+                            logger.info(f"Cached Sent Items folder ID: {sent_items_folder_id[:20]}...")
+
+                    if sent_items_folder_id and not backfill:
+                        updated, deleted = poller.delta_sync_folder(
+                            sent_items_folder_id, "Sent Items", fetch_body=False
+                        )
+                        if updated > 0:
+                            logger.info(f"Sent items sync: {updated} new/updated")
+                            # Evaluate alert rules for sent emails
+                            asyncio.run(_evaluate_sent_email_alerts(user_email, updated))
+                    last_sent_sync = now
+                except Exception as sent_err:
+                    logger.warning(f"Sent items sync error: {sent_err}")
 
             # Execute pending actions (from CLI)
             if has_pending_actions():
