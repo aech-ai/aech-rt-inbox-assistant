@@ -153,14 +153,39 @@ class GraphPoller:
     # =========================================================================
 
     def get_all_folders(self) -> List[Dict[str, Any]]:
-        """Get all mail folders with their IDs for sync operations."""
+        """Get all mail folders with their IDs for sync operations.
+
+        Falls back to well-known folder names if folder enumeration fails
+        (some mailboxes have issues with GET /mailFolders but work with
+        GET /mailFolders/{well-known-name}).
+        """
         try:
             assert self.user_email is not None
             folders_data = self._graph_client.get_mail_folders(user_id=self.user_email)
             return folders_data.get("value", [])
         except Exception as e:
-            logger.error(f"Error fetching folders: {e}")
-            return []
+            logger.warning(f"Folder enumeration failed, trying well-known folders: {e}")
+            # Fall back to well-known folder names
+            # See: https://learn.microsoft.com/en-us/graph/api/resources/mailfolder
+            well_known_folders = ["inbox", "sentitems", "drafts", "deleteditems", "junkemail", "archive"]
+            folders = []
+            headers = self._graph_client._get_headers()
+            base_path = self._graph_client._get_base_path(self.user_email)
+            for folder_name in well_known_folders:
+                try:
+                    url = f"{base_path}/mailFolders/{folder_name}"
+                    resp = requests.get(url, headers=headers)
+                    if resp.ok:
+                        folder_data = resp.json()
+                        folders.append(folder_data)
+                        logger.debug(f"Found well-known folder: {folder_name} -> {folder_data.get('displayName')}")
+                except Exception as folder_err:
+                    logger.debug(f"Well-known folder {folder_name} not accessible: {folder_err}")
+            if folders:
+                logger.info(f"Recovered {len(folders)} folders via well-known names")
+            else:
+                logger.error("Could not access any mail folders")
+            return folders
 
     def get_sync_state(self, folder_id: str) -> Optional[Tuple[str, str]]:
         """Get the delta link and sync type for a folder."""
