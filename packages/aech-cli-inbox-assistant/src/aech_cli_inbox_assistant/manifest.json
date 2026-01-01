@@ -505,6 +505,11 @@
       ]
     },
     {
+      "name": "timezone",
+      "description": "Show the current timezone being used for calendar queries.",
+      "parameters": []
+    },
+    {
       "name": "prefs show",
       "description": "Show the current preferences.json.",
       "parameters": []
@@ -543,6 +548,282 @@
           "description": "Preference key"
         }
       ]
+    },
+    {
+      "name": "wm snapshot",
+      "description": "Get complete working memory snapshot for context injection. Shows active threads, pending decisions, open commitments, and today's calendar.",
+      "parameters": [
+        {
+          "name": "human",
+          "type": "flag",
+          "required": false,
+          "description": "Human-readable output"
+        },
+        {
+          "name": "llm",
+          "type": "flag",
+          "required": false,
+          "description": "LLM-optimized output for context injection"
+        }
+      ]
+    },
+    {
+      "name": "wm threads",
+      "description": "Query active email threads from working memory.",
+      "parameters": [
+        {
+          "name": "needs-reply",
+          "type": "flag",
+          "required": false,
+          "description": "Only show threads needing reply"
+        },
+        {
+          "name": "urgency",
+          "type": "option",
+          "required": false,
+          "description": "Filter by urgency (immediate/today/this_week/someday)"
+        },
+        {
+          "name": "limit",
+          "type": "option",
+          "required": false,
+          "description": "Number of threads to show",
+          "default": 20
+        },
+        {
+          "name": "human",
+          "type": "flag",
+          "required": false,
+          "description": "Human-readable output"
+        }
+      ]
+    },
+    {
+      "name": "wm decisions",
+      "description": "List pending decisions awaiting response.",
+      "parameters": [
+        {
+          "name": "human",
+          "type": "flag",
+          "required": false,
+          "description": "Human-readable output"
+        }
+      ]
+    },
+    {
+      "name": "wm commitments",
+      "description": "List open commitments made by the user.",
+      "parameters": [
+        {
+          "name": "overdue",
+          "type": "flag",
+          "required": false,
+          "description": "Only show overdue commitments"
+        },
+        {
+          "name": "human",
+          "type": "flag",
+          "required": false,
+          "description": "Human-readable output"
+        }
+      ]
+    },
+    {
+      "name": "wm contacts",
+      "description": "Query known contacts from working memory.",
+      "parameters": [
+        {
+          "name": "external",
+          "type": "flag",
+          "required": false,
+          "description": "Only external contacts"
+        },
+        {
+          "name": "search",
+          "type": "option",
+          "required": false,
+          "description": "Search by email or name"
+        },
+        {
+          "name": "limit",
+          "type": "option",
+          "required": false,
+          "description": "Number of contacts to show",
+          "default": 20
+        },
+        {
+          "name": "human",
+          "type": "flag",
+          "required": false,
+          "description": "Human-readable output"
+        }
+      ]
+    },
+    {
+      "name": "wm observations",
+      "description": "View recent passive observations (patterns, preferences learned).",
+      "parameters": [
+        {
+          "name": "days",
+          "type": "option",
+          "required": false,
+          "description": "Days of observations to show",
+          "default": 7
+        },
+        {
+          "name": "human",
+          "type": "flag",
+          "required": false,
+          "description": "Human-readable output"
+        }
+      ]
+    },
+    {
+      "name": "wm projects",
+      "description": "View inferred projects from email activity.",
+      "parameters": [
+        {
+          "name": "human",
+          "type": "flag",
+          "required": false,
+          "description": "Human-readable output"
+        }
+      ]
+    },
+    {
+      "name": "alerts list",
+      "description": "List all user-defined alert rules.",
+      "parameters": [
+        {
+          "name": "enabled-only",
+          "type": "flag",
+          "required": false,
+          "description": "Only show enabled rules"
+        },
+        {
+          "name": "human",
+          "type": "flag",
+          "required": false,
+          "description": "Human-readable output"
+        }
+      ]
+    },
+    {
+      "name": "alerts add",
+      "description": "Add a new alert rule using natural language. Examples: 'alert me when CFO emails about budget', 'notify when I send email to legal@'.",
+      "parameters": [
+        {
+          "name": "rule",
+          "type": "argument",
+          "required": true,
+          "description": "Natural language alert rule"
+        },
+        {
+          "name": "channel",
+          "type": "option",
+          "required": false,
+          "description": "Notification channel: teams, email",
+          "default": "teams"
+        },
+        {
+          "name": "target",
+          "type": "option",
+          "required": false,
+          "description": "Channel target (chat ID, email address)"
+        },
+        {
+          "name": "cooldown",
+          "type": "option",
+          "required": false,
+          "description": "Cooldown between triggers (minutes)",
+          "default": 30
+        },
+        {
+          "name": "human",
+          "type": "flag",
+          "required": false,
+          "description": "Human-readable output"
+        }
+      ]
+    },
+    {
+      "name": "alerts remove",
+      "description": "Remove an alert rule.",
+      "parameters": [
+        {
+          "name": "rule_id",
+          "type": "argument",
+          "required": true,
+          "description": "Rule ID to remove (can be partial)"
+        }
+      ]
+    },
+    {
+      "name": "alerts enable",
+      "description": "Enable an alert rule.",
+      "parameters": [
+        {
+          "name": "rule_id",
+          "type": "argument",
+          "required": true,
+          "description": "Rule ID to enable (can be partial)"
+        }
+      ]
+    },
+    {
+      "name": "alerts disable",
+      "description": "Disable an alert rule.",
+      "parameters": [
+        {
+          "name": "rule_id",
+          "type": "argument",
+          "required": true,
+          "description": "Rule ID to disable (can be partial)"
+        }
+      ]
+    },
+    {
+      "name": "alerts history",
+      "description": "View alert trigger history.",
+      "parameters": [
+        {
+          "name": "rule-id",
+          "type": "option",
+          "required": false,
+          "description": "Filter by rule ID"
+        },
+        {
+          "name": "limit",
+          "type": "option",
+          "required": false,
+          "description": "Number of entries",
+          "default": 20
+        },
+        {
+          "name": "human",
+          "type": "flag",
+          "required": false,
+          "description": "Human-readable output"
+        }
+      ]
+    },
+    {
+      "name": "alerts show",
+      "description": "Show details of a specific alert rule.",
+      "parameters": [
+        {
+          "name": "rule_id",
+          "type": "argument",
+          "required": true,
+          "description": "Rule ID to show (can be partial)"
+        },
+        {
+          "name": "human",
+          "type": "flag",
+          "required": false,
+          "description": "Human-readable output"
+        }
+      ]
     }
   ],
   "documentation": {
@@ -550,7 +831,11 @@
     "examples": [
       "aech-cli-inbox-assistant list --human",
       "aech-cli-inbox-assistant search 'query' --limit 10",
-      "aech-cli-inbox-assistant reply-needed --human"
+      "aech-cli-inbox-assistant reply-needed --human",
+      "aech-cli-inbox-assistant wm snapshot --llm",
+      "aech-cli-inbox-assistant wm threads --needs-reply",
+      "aech-cli-inbox-assistant alerts list --human",
+      "aech-cli-inbox-assistant alerts add \"alert me when CFO emails about budget\""
     ]
   },
   "system_addendum": "## CRITICAL: Handling Stale Data\n\nAs a world-class EA, you must apply JUDGMENT to data freshness based on timestamps.\n\n### Staleness Framework\n- **0-3 days**: Present normally (active)\n- **4-7 days**: Mention it's been waiting (\"this thread from Tuesday still needs your reply\")\n- **1-4 weeks**: Explicitly note delay; ask if still relevant\n- **1-3 months**: DO NOT present as actionable. Say: \"There are some old items from X months ago - these may no longer be relevant. Want me to clear them?\"\n- **3+ months**: Omit from proactive mentions. Only surface if user specifically asks.\n\n### What a Great EA Does\n1. **Qualifies old data**: Never present 3-month-old \"pending reply\" items as urgent\n2. **Offers cleanup**: \"I see several stale items - want me to archive them?\"\n3. **Uses judgment**: If someone asked for a meeting 4 months ago and never followed up, that's dead\n4. **Protects user attention**: Don't waste time on clearly irrelevant items\n\nWhen working memory shows items with old `last_activity_at` timestamps, calculate days since and apply the framework above.\n\n### Preference Validation\nThe `prefs set` command validates keys. Invalid keys will be rejected. Use `prefs keys` to see valid options before setting preferences."
