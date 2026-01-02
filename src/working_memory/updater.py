@@ -10,7 +10,7 @@ from typing import Any
 from pydantic_ai import Agent
 
 from ..database import get_connection
-from .models import EmailAnalysis, ObservationType, UrgencyLevel
+from .models import EmailAnalysis, ObservationType
 
 logger = logging.getLogger(__name__)
 
@@ -179,27 +179,18 @@ class WorkingMemoryUpdater:
 
         conn = get_connection()
         try:
-            # Update or create thread
-            self._update_thread(conn, email, analysis, is_cc)
-
-            # Update contacts
-            self._update_contacts(conn, email, analysis)
-
-            # Record observations (especially from CC emails)
+            # Record observations to facts table (especially from CC emails)
             if is_cc or analysis.observations:
                 self._record_observations(conn, email, analysis, is_cc)
 
-            # Track pending decisions (only from direct emails)
+            # Track pending decisions to facts table (only from direct emails)
             if not is_cc:
                 for decision in analysis.decisions_requested:
                     self._add_pending_decision(conn, email, decision)
 
-            # Track commitments
+            # Track commitments to facts table
             for commitment in analysis.commitments_made:
                 self._add_commitment(conn, email, commitment)
-
-            # Update projects
-            self._update_projects(conn, email, analysis)
 
             # Store LLM-extracted content and mark as processed
             conn.execute(
@@ -257,202 +248,6 @@ BODY:
 {body}
 """
 
-    def _update_thread(
-        self,
-        conn,
-        email: dict,
-        analysis: EmailAnalysis,
-        is_cc: bool,
-    ) -> None:
-        """Update or create thread record."""
-        # Use conversation_id if available, otherwise fall back to email id
-        # This means emails without conversation_id become single-message threads
-        conversation_id = email.get("conversation_id") or email.get("id")
-        if not conversation_id:
-            return
-
-        now = datetime.now(timezone.utc).isoformat()
-        received_at = email.get("received_at") or now
-
-        # Check if thread exists
-        existing = conn.execute(
-            "SELECT * FROM wm_threads WHERE conversation_id = ?",
-            (conversation_id,),
-        ).fetchone()
-
-        if existing:
-            # Update existing thread
-            message_count = (existing["message_count"] or 0) + 1
-
-            # Merge key points
-            existing_points = json.loads(existing["key_points_json"] or "[]")
-            new_points = (existing_points + analysis.key_points)[-10:]  # Keep last 10
-
-            # Update pending questions (replace with latest)
-            pending_q = analysis.pending_questions or json.loads(
-                existing["pending_questions_json"] or "[]"
-            )
-
-            conn.execute(
-                """
-                UPDATE wm_threads SET
-                    last_activity_at = ?,
-                    message_count = ?,
-                    summary = COALESCE(?, summary),
-                    key_points_json = ?,
-                    pending_questions_json = ?,
-                    needs_reply = CASE WHEN ? THEN 1 ELSE needs_reply END,
-                    urgency = CASE WHEN ? != 'this_week' THEN ? ELSE urgency END,
-                    latest_email_id = ?,
-                    latest_web_link = ?,
-                    updated_at = ?
-                WHERE conversation_id = ?
-                """,
-                (
-                    received_at,
-                    message_count,
-                    analysis.thread_summary_update,
-                    json.dumps(new_points),
-                    json.dumps(pending_q),
-                    analysis.needs_reply,
-                    analysis.suggested_urgency.value,
-                    analysis.suggested_urgency.value,
-                    email.get("id"),
-                    email.get("web_link"),  # Folder-agnostic deep link from Graph API
-                    now,
-                    conversation_id,
-                ),
-            )
-        else:
-            # Create new thread
-            participants = set()
-            sender = email.get("sender", "")
-            if sender:
-                participants.add(sender)
-            participants.update(json.loads(email.get("to_emails") or "[]"))
-            participants.update(json.loads(email.get("cc_emails") or "[]"))
-            participants.discard("")
-
-            conn.execute(
-                """
-                INSERT INTO wm_threads (
-                    id, conversation_id, subject, participants_json,
-                    status, urgency, started_at, last_activity_at,
-                    summary, key_points_json, pending_questions_json,
-                    message_count, user_is_cc, needs_reply,
-                    latest_email_id, latest_web_link, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    str(uuid.uuid4()),
-                    conversation_id,
-                    email.get("subject", ""),
-                    json.dumps(list(participants)),
-                    "active",
-                    analysis.suggested_urgency.value,
-                    received_at,
-                    received_at,
-                    analysis.thread_summary_update or "",
-                    json.dumps(analysis.key_points),
-                    json.dumps(analysis.pending_questions),
-                    1,
-                    is_cc,
-                    analysis.needs_reply,
-                    email.get("id"),
-                    email.get("web_link"),  # Folder-agnostic deep link from Graph API
-                    now,
-                    now,
-                ),
-            )
-
-    def _update_contacts(self, conn, email: dict, analysis: EmailAnalysis) -> None:
-        """Update contact records for all participants."""
-        sender = (email.get("sender") or "").lower().strip()
-        if not sender:
-            return
-
-        now = datetime.now(timezone.utc).isoformat()
-        received_at = email.get("received_at") or now
-
-        # Update sender (they initiated)
-        self._upsert_contact(
-            conn, sender, received_at, now, they_initiated=True, is_cc=False
-        )
-
-        # Update CC recipients
-        cc_emails = json.loads(email.get("cc_emails") or "[]")
-        for cc_email in cc_emails:
-            cc_lower = str(cc_email).lower().strip()
-            if cc_lower and cc_lower != self.user_email.lower():
-                self._upsert_contact(
-                    conn, cc_lower, received_at, now, they_initiated=False, is_cc=True
-                )
-
-        # Update TO recipients (excluding user)
-        to_emails = json.loads(email.get("to_emails") or "[]")
-        for to_email in to_emails:
-            to_lower = str(to_email).lower().strip()
-            if to_lower and to_lower != self.user_email.lower():
-                self._upsert_contact(
-                    conn, to_lower, received_at, now, they_initiated=False, is_cc=False
-                )
-
-    def _upsert_contact(
-        self,
-        conn,
-        email: str,
-        received_at: str,
-        now: str,
-        they_initiated: bool = False,
-        is_cc: bool = False,
-    ) -> None:
-        """Insert or update a contact record."""
-        domain = email.split("@")[-1] if "@" in email else ""
-        is_internal = domain == self.user_domain
-
-        existing = conn.execute(
-            "SELECT id FROM wm_contacts WHERE email = ?",
-            (email,),
-        ).fetchone()
-
-        if existing:
-            # Build incremental update
-            updates = ["last_interaction_at = ?", "total_interactions = total_interactions + 1", "updated_at = ?"]
-            params: list[Any] = [received_at, now]
-
-            if they_initiated:
-                updates.append("they_initiated_count = they_initiated_count + 1")
-            if is_cc:
-                updates.append("cc_count = cc_count + 1")
-
-            params.append(email)
-            conn.execute(
-                f"UPDATE wm_contacts SET {', '.join(updates)} WHERE email = ?",
-                params,
-            )
-        else:
-            conn.execute(
-                """
-                INSERT INTO wm_contacts (
-                    id, email, is_internal, first_seen_at,
-                    last_interaction_at, total_interactions,
-                    they_initiated_count, cc_count, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    str(uuid.uuid4()),
-                    email,
-                    is_internal,
-                    received_at,
-                    received_at,
-                    1,
-                    1 if they_initiated else 0,
-                    1 if is_cc else 0,
-                    now,
-                    now,
-                ),
-            )
-
     def _record_observations(
         self,
         conn,
@@ -460,7 +255,7 @@ BODY:
         analysis: EmailAnalysis,
         is_cc: bool,
     ) -> None:
-        """Record observations from email analysis."""
+        """Record observations to the unified facts table."""
         now = datetime.now(timezone.utc).isoformat()
 
         # If CC and no explicit observations, create a generic one
@@ -472,29 +267,47 @@ BODY:
             }
             analysis.observations.append(observation)
 
+        # Map observation types to fact types
+        obs_to_fact_type = {
+            "context_learned": "preference",
+            "person_introduced": "relationship",
+            "meeting_scheduled": "pattern",
+            "status_update": "preference",
+            "project_mention": "pattern",
+            "decision_made": "preference",
+            "deadline_mentioned": "pattern",
+            "commitment_made": "commitment",  # Should be handled by _add_commitment
+        }
+
         for obs in analysis.observations:
             obs_type = obs.get("type", ObservationType.CONTEXT_LEARNED.value)
-            # Validate observation type against enum
-            try:
-                ObservationType(obs_type)
-            except ValueError:
-                obs_type = ObservationType.CONTEXT_LEARNED.value
+            # Skip commitments - handled separately
+            if obs_type == "commitment_made":
+                continue
+
+            # Map to fact type
+            fact_type = obs_to_fact_type.get(obs_type, "preference")
+
+            # Build metadata
+            metadata = {
+                "observation_type": obs_type,
+                "conversation_id": email.get("conversation_id"),
+            }
 
             conn.execute(
                 """
-                INSERT INTO wm_observations (
-                    id, type, content, source_email_id, source_thread_id,
-                    importance, confidence, observed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO facts (
+                    id, source_type, source_id, fact_type, fact_value,
+                    confidence, metadata_json, status, extracted_at
+                ) VALUES (?, 'email', ?, ?, ?, ?, ?, 'active', ?)
                 """,
                 (
                     str(uuid.uuid4()),
-                    obs_type,
-                    obs.get("content", ""),
                     email.get("id"),
-                    email.get("conversation_id"),
-                    obs.get("importance", 0.5),
+                    fact_type,
+                    obs.get("content", ""),
                     obs.get("confidence", 0.5),
+                    json.dumps(metadata) if metadata else None,
                     now,
                 ),
             )
@@ -505,35 +318,30 @@ BODY:
         email: dict,
         decision: dict[str, Any],
     ) -> None:
-        """Add a pending decision."""
+        """Add a pending decision to the unified facts table."""
         now = datetime.now(timezone.utc).isoformat()
 
-        # Map urgency string to enum value
-        urgency_str = decision.get("urgency", "this_week")
-        try:
-            urgency = UrgencyLevel(urgency_str).value
-        except ValueError:
-            urgency = UrgencyLevel.THIS_WEEK.value
+        # Build metadata with options and requester
+        metadata = {}
+        if decision.get("options"):
+            metadata["options"] = decision.get("options")
+        metadata["requester"] = email.get("sender", "")
+        metadata["conversation_id"] = email.get("conversation_id")
 
         conn.execute(
             """
-            INSERT INTO wm_decisions (
-                id, question, context, options_json,
-                source_email_id, source_thread_id, requester, urgency,
-                deadline, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO facts (
+                id, source_type, source_id, fact_type, fact_value,
+                context, confidence, metadata_json, status, due_date, extracted_at
+            ) VALUES (?, 'email', ?, 'decision', ?, ?, 0.9, ?, 'active', ?, ?)
             """,
             (
                 str(uuid.uuid4()),
+                email.get("id"),
                 decision.get("question", ""),
                 decision.get("context", ""),
-                json.dumps(decision.get("options", [])),
-                email.get("id"),
-                email.get("conversation_id"),
-                email.get("sender", ""),
-                urgency,
+                json.dumps(metadata) if metadata else None,
                 decision.get("deadline"),
-                now,
                 now,
             ),
         )
@@ -544,98 +352,28 @@ BODY:
         email: dict,
         commitment: dict[str, Any],
     ) -> None:
-        """Add a commitment."""
+        """Add a commitment to the unified facts table."""
         now = datetime.now(timezone.utc).isoformat()
+
+        # Build metadata with to_whom
+        metadata = {
+            "to_whom": commitment.get("to_whom") or email.get("sender", ""),
+            "conversation_id": email.get("conversation_id"),
+        }
 
         conn.execute(
             """
-            INSERT INTO wm_commitments (
-                id, description, to_whom, source_email_id,
-                committed_at, due_by, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO facts (
+                id, source_type, source_id, fact_type, fact_value,
+                confidence, metadata_json, status, due_date, extracted_at
+            ) VALUES (?, 'email', ?, 'commitment', ?, 0.9, ?, 'active', ?, ?)
             """,
             (
                 str(uuid.uuid4()),
-                commitment.get("description", ""),
-                commitment.get("to_whom") or email.get("sender", ""),
                 email.get("id"),
-                now,
+                commitment.get("description", ""),
+                json.dumps(metadata) if metadata else None,
                 commitment.get("due_by"),
                 now,
             ),
         )
-
-    def _update_projects(
-        self,
-        conn,
-        email: dict,
-        analysis: EmailAnalysis,
-    ) -> None:
-        """Update or create project records based on mentions."""
-        if not analysis.project_mentions:
-            return
-
-        now = datetime.now(timezone.utc).isoformat()
-        received_at = email.get("received_at") or now
-
-        for project_name in analysis.project_mentions:
-            if not project_name or len(project_name) < 2:
-                continue
-
-            # Normalize project name for matching
-            project_lower = project_name.lower().strip()
-
-            # Look for existing project with similar name
-            existing = conn.execute(
-                "SELECT * FROM wm_projects WHERE LOWER(name) = ?",
-                (project_lower,),
-            ).fetchone()
-
-            if existing:
-                # Update existing project
-                threads = json.loads(existing["related_threads_json"] or "[]")
-                conversation_id = email.get("conversation_id")
-                if conversation_id and conversation_id not in threads:
-                    threads.append(conversation_id)
-
-                conn.execute(
-                    """
-                    UPDATE wm_projects SET
-                        last_activity_at = ?,
-                        related_threads_json = ?,
-                        confidence = MIN(1.0, confidence + 0.1),
-                        updated_at = ?
-                    WHERE id = ?
-                    """,
-                    (
-                        received_at,
-                        json.dumps(threads[-20:]),  # Keep last 20
-                        now,
-                        existing["id"],
-                    ),
-                )
-            else:
-                # Create new project
-                conn.execute(
-                    """
-                    INSERT INTO wm_projects (
-                        id, name, related_threads_json,
-                        first_mentioned_at, last_activity_at,
-                        confidence, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        str(uuid.uuid4()),
-                        project_name,
-                        json.dumps(
-                            [email.get("conversation_id")]
-                            if email.get("conversation_id")
-                            else []
-                        ),
-                        received_at,
-                        received_at,
-                        0.3,  # Low initial confidence for inferred projects
-                        now,
-                        now,
-                    ),
-                )

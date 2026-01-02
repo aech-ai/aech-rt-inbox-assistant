@@ -20,12 +20,6 @@
           "type": "flag",
           "required": false,
           "description": "Include read emails"
-        },
-        {
-          "name": "human",
-          "type": "flag",
-          "required": false,
-          "description": "Human-readable output instead of JSON"
         }
       ]
     },
@@ -39,12 +33,6 @@
           "required": false,
           "description": "Number of entries to list",
           "default": 20
-        },
-        {
-          "name": "human",
-          "type": "flag",
-          "required": false,
-          "description": "Human-readable output instead of JSON"
         }
       ]
     },
@@ -58,12 +46,6 @@
           "required": false,
           "description": "Number of results to return",
           "default": 20
-        },
-        {
-          "name": "human",
-          "type": "flag",
-          "required": false,
-          "description": "Human-readable output instead of JSON"
         }
       ]
     },
@@ -75,26 +57,12 @@
     {
       "name": "sync-status",
       "description": "Show the sync status for all folders.",
-      "parameters": [
-        {
-          "name": "human",
-          "type": "flag",
-          "required": false,
-          "description": "Human-readable output instead of JSON"
-        }
-      ]
+      "parameters": []
     },
     {
       "name": "stats",
       "description": "Show corpus statistics.",
-      "parameters": [
-        {
-          "name": "human",
-          "type": "flag",
-          "required": false,
-          "description": "Human-readable output instead of JSON"
-        }
-      ]
+      "parameters": []
     },
     {
       "name": "attachment-status",
@@ -112,12 +80,6 @@
           "type": "option",
           "required": false,
           "description": "Filter by status (pending/completed/failed/skipped/extracting)"
-        },
-        {
-          "name": "human",
-          "type": "flag",
-          "required": false,
-          "description": "Human-readable output instead of JSON"
         }
       ]
     },
@@ -142,38 +104,18 @@
           "type": "flag",
           "required": false,
           "description": "Include stale threads (no activity for 3+ days)"
-        },
-        {
-          "name": "human",
-          "type": "flag",
-          "required": false,
-          "description": "Human-readable output instead of JSON"
         }
       ]
     },
     {
       "name": "calendar-today",
       "description": "Show today's calendar events.",
-      "parameters": [
-        {
-          "name": "human",
-          "type": "flag",
-          "required": false,
-          "description": "Human-readable output instead of JSON"
-        }
-      ]
+      "parameters": []
     },
     {
       "name": "calendar-week",
       "description": "Show this week's calendar events.",
-      "parameters": [
-        {
-          "name": "human",
-          "type": "flag",
-          "required": false,
-          "description": "Human-readable output instead of JSON"
-        }
-      ]
+      "parameters": []
     },
     {
       "name": "calendar-upcoming",
@@ -185,12 +127,6 @@
           "required": false,
           "description": "Number of hours to look ahead",
           "default": 24
-        },
-        {
-          "name": "human",
-          "type": "flag",
-          "required": false,
-          "description": "Human-readable output instead of JSON"
         }
       ]
     },
@@ -203,12 +139,6 @@
           "type": "argument",
           "required": true,
           "description": "Date to check (YYYY-MM-DD)"
-        },
-        {
-          "name": "human",
-          "type": "flag",
-          "required": false,
-          "description": "Human-readable output instead of JSON"
         }
       ]
     },
@@ -227,12 +157,6 @@
           "type": "argument",
           "required": true,
           "description": "End datetime"
-        },
-        {
-          "name": "human",
-          "type": "flag",
-          "required": false,
-          "description": "Human-readable output instead of JSON"
         }
       ]
     },
@@ -245,12 +169,6 @@
           "type": "argument",
           "required": true,
           "description": "Event ID"
-        },
-        {
-          "name": "human",
-          "type": "flag",
-          "required": false,
-          "description": "Human-readable output instead of JSON"
         }
       ]
     },
@@ -270,12 +188,6 @@
           "required": false,
           "description": "Number of results",
           "default": 20
-        },
-        {
-          "name": "human",
-          "type": "flag",
-          "required": false,
-          "description": "Human-readable output instead of JSON"
         }
       ]
     },
@@ -295,12 +207,6 @@
           "required": false,
           "description": "Number of results",
           "default": 50
-        },
-        {
-          "name": "human",
-          "type": "flag",
-          "required": false,
-          "description": "Human-readable output instead of JSON"
         }
       ]
     },
@@ -319,12 +225,6 @@
           "type": "flag",
           "required": false,
           "description": "Prepare for next upcoming meeting"
-        },
-        {
-          "name": "human",
-          "type": "flag",
-          "required": false,
-          "description": "Human-readable output instead of JSON"
         }
       ]
     },
@@ -373,12 +273,6 @@
           "type": "flag",
           "required": false,
           "description": "Create as Teams meeting"
-        },
-        {
-          "name": "human",
-          "type": "flag",
-          "required": false,
-          "description": "Human-readable output"
         }
       ]
     },
@@ -415,12 +309,6 @@
           "type": "option",
           "required": false,
           "description": "New location"
-        },
-        {
-          "name": "human",
-          "type": "flag",
-          "required": false,
-          "description": "Human-readable output"
         }
       ]
     },
@@ -440,12 +328,6 @@
           "required": false,
           "description": "Send cancellation to attendees",
           "default": true
-        },
-        {
-          "name": "human",
-          "type": "flag",
-          "required": false,
-          "description": "Human-readable output"
         }
       ]
     },
@@ -464,26 +346,13 @@
           "type": "argument",
           "required": true,
           "description": "Response: accept, tentative, or decline"
-        },
-        {
-          "name": "human",
-          "type": "flag",
-          "required": false,
-          "description": "Human-readable output"
         }
       ]
     },
     {
       "name": "actions-pending",
       "description": "List pending actions awaiting execution.",
-      "parameters": [
-        {
-          "name": "human",
-          "type": "flag",
-          "required": false,
-          "description": "Human-readable output"
-        }
-      ]
+      "parameters": []
     },
     {
       "name": "actions-history",
@@ -495,12 +364,6 @@
           "required": false,
           "description": "Number of actions to show",
           "default": 20
-        },
-        {
-          "name": "human",
-          "type": "flag",
-          "required": false,
-          "description": "Human-readable output"
         }
       ]
     },
@@ -554,12 +417,6 @@
       "description": "Get complete working memory snapshot for context injection. Shows active threads, pending decisions, open commitments, and today's calendar.",
       "parameters": [
         {
-          "name": "human",
-          "type": "flag",
-          "required": false,
-          "description": "Human-readable output"
-        },
-        {
           "name": "llm",
           "type": "flag",
           "required": false,
@@ -589,26 +446,13 @@
           "required": false,
           "description": "Number of threads to show",
           "default": 20
-        },
-        {
-          "name": "human",
-          "type": "flag",
-          "required": false,
-          "description": "Human-readable output"
         }
       ]
     },
     {
       "name": "wm decisions",
       "description": "List pending decisions awaiting response.",
-      "parameters": [
-        {
-          "name": "human",
-          "type": "flag",
-          "required": false,
-          "description": "Human-readable output"
-        }
-      ]
+      "parameters": []
     },
     {
       "name": "wm commitments",
@@ -619,12 +463,6 @@
           "type": "flag",
           "required": false,
           "description": "Only show overdue commitments"
-        },
-        {
-          "name": "human",
-          "type": "flag",
-          "required": false,
-          "description": "Human-readable output"
         }
       ]
     },
@@ -650,12 +488,6 @@
           "required": false,
           "description": "Number of contacts to show",
           "default": 20
-        },
-        {
-          "name": "human",
-          "type": "flag",
-          "required": false,
-          "description": "Human-readable output"
         }
       ]
     },
@@ -669,26 +501,13 @@
           "required": false,
           "description": "Days of observations to show",
           "default": 7
-        },
-        {
-          "name": "human",
-          "type": "flag",
-          "required": false,
-          "description": "Human-readable output"
         }
       ]
     },
     {
       "name": "wm projects",
       "description": "View inferred projects from email activity.",
-      "parameters": [
-        {
-          "name": "human",
-          "type": "flag",
-          "required": false,
-          "description": "Human-readable output"
-        }
-      ]
+      "parameters": []
     },
     {
       "name": "alerts list",
@@ -699,12 +518,6 @@
           "type": "flag",
           "required": false,
           "description": "Only show enabled rules"
-        },
-        {
-          "name": "human",
-          "type": "flag",
-          "required": false,
-          "description": "Human-readable output"
         }
       ]
     },
@@ -737,12 +550,6 @@
           "required": false,
           "description": "Cooldown between triggers (minutes)",
           "default": 30
-        },
-        {
-          "name": "human",
-          "type": "flag",
-          "required": false,
-          "description": "Human-readable output"
         }
       ]
     },
@@ -798,12 +605,6 @@
           "required": false,
           "description": "Number of entries",
           "default": 20
-        },
-        {
-          "name": "human",
-          "type": "flag",
-          "required": false,
-          "description": "Human-readable output"
         }
       ]
     },
@@ -816,12 +617,6 @@
           "type": "argument",
           "required": true,
           "description": "Rule ID to show (can be partial)"
-        },
-        {
-          "name": "human",
-          "type": "flag",
-          "required": false,
-          "description": "Human-readable output"
         }
       ]
     }
@@ -829,12 +624,12 @@
   "documentation": {
     "usage": "aech-cli-inbox-assistant <command> [options]",
     "examples": [
-      "aech-cli-inbox-assistant list --human",
+      "aech-cli-inbox-assistant list",
       "aech-cli-inbox-assistant search 'query' --limit 10",
-      "aech-cli-inbox-assistant reply-needed --human",
+      "aech-cli-inbox-assistant reply-needed",
       "aech-cli-inbox-assistant wm snapshot --llm",
       "aech-cli-inbox-assistant wm threads --needs-reply",
-      "aech-cli-inbox-assistant alerts list --human",
+      "aech-cli-inbox-assistant alerts list",
       "aech-cli-inbox-assistant alerts add \"alert me when CFO emails about budget\""
     ]
   },

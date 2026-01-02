@@ -145,99 +145,145 @@ def history(
 def search(
     query: str,
     limit: int = typer.Option(20, help="Number of results to return"),
+    mode: str = typer.Option("hybrid", help="Search mode: hybrid, fts, or vector"),
+    include_facts: bool = typer.Option(True, "--facts/--no-facts", help="Include facts in search"),
     human: bool = typer.Option(False, "--human", help="Human-readable output instead of JSON")
 ):
-    """Search emails and attachments using full-text search."""
+    """Search emails, attachments, and facts using unified search.
+
+    Combines full-text search (FTS) with vector similarity search for best results.
+    """
+    import sys
+    from pathlib import Path
+
+    # Add src to path for imports
+    src_path = Path(__file__).parent.parent.parent.parent.parent / "src"
+    if str(src_path) not in sys.path:
+        sys.path.insert(0, str(src_path))
+
+    try:
+        from search import unified_search
+    except ImportError:
+        # Fallback to basic FTS if unified search unavailable
+        typer.echo("Warning: Unified search unavailable, using basic FTS", err=True)
+        _search_fallback(query, limit, human)
+        return
+
+    results = unified_search(
+        query=query,
+        limit=limit,
+        mode=mode,
+        include_facts=include_facts,
+        recency_weight=True,
+    )
+
+    if human:
+        if not results:
+            typer.echo("No results found.")
+            return
+
+        for r in results:
+            result_type = r.result_type.upper()
+            if result_type == "FACT":
+                typer.echo(f"[FACT:{r.fact_type}] {r.fact_value}")
+                if r.email_subject:
+                    typer.echo(f"  From email: {r.email_subject}")
+                if r.email_sender:
+                    typer.echo(f"  Sender: {r.email_sender}")
+            elif result_type == "ATTACHMENT":
+                typer.echo(f"[ATTACHMENT] {r.filename or 'Unknown'}")
+                if r.email_subject:
+                    typer.echo(f"  In email: {r.email_subject}")
+                if r.email_sender:
+                    typer.echo(f"  From: {r.email_sender}")
+                if r.content_preview:
+                    preview = r.content_preview[:200].replace('\n', ' ')
+                    typer.echo(f"  Preview: {preview}...")
+            else:  # EMAIL or VIRTUAL_EMAIL
+                typer.echo(f"[EMAIL] {r.email_subject or '(no subject)'}")
+                if r.email_sender:
+                    typer.echo(f"  From: {r.email_sender}")
+                if r.email_date:
+                    typer.echo(f"  Date: {r.email_date}")
+                if r.content_preview:
+                    preview = r.content_preview[:200].replace('\n', ' ')
+                    typer.echo(f"  Preview: {preview}...")
+
+            # Show link for all types
+            link = r.web_link
+            if not link and r.source_id:
+                from urllib.parse import quote
+                link = f"https://outlook.office365.com/mail/inbox/id/{quote(r.source_id, safe='')}"
+            if link:
+                typer.echo(f"  Link: {link}")
+            typer.echo(f"  Score: {r.score:.3f}")
+            typer.echo()
+    else:
+        # JSON output
+        output = []
+        for r in results:
+            item = {
+                "id": r.id,
+                "result_type": r.result_type,
+                "source_id": r.source_id,
+                "content_preview": r.content_preview,
+                "score": r.score,
+            }
+            if r.email_subject:
+                item["email_subject"] = r.email_subject
+            if r.email_sender:
+                item["email_sender"] = r.email_sender
+            if r.email_date:
+                item["email_date"] = r.email_date
+            if r.conversation_id:
+                item["conversation_id"] = r.conversation_id
+            if r.filename:
+                item["filename"] = r.filename
+            if r.fact_type:
+                item["fact_type"] = r.fact_type
+            if r.fact_value:
+                item["fact_value"] = r.fact_value
+            if r.web_link:
+                item["web_link"] = r.web_link
+            output.append(item)
+        typer.echo(json.dumps(output, default=str))
+
+
+def _search_fallback(query: str, limit: int, human: bool):
+    """Fallback search using basic FTS when unified search is unavailable."""
     conn = connect_db()
     cursor = conn.cursor()
-    email_results = []
-    attachment_results = []
+    results = []
 
-    # Search emails via FTS
     try:
         cursor.execute(
             """
-            SELECT e.id, e.subject, e.body_preview, e.received_at, e.outlook_categories, e.urgency, e.is_read,
-                   e.sender, e.web_link, bm25(emails_fts) AS rank, 'email' as result_type
+            SELECT e.id, e.subject, e.body_preview, e.received_at, e.sender, e.web_link
             FROM emails_fts
             JOIN emails e ON emails_fts.id = e.id
             WHERE emails_fts MATCH ?
-            ORDER BY rank
+            ORDER BY bm25(emails_fts)
             LIMIT ?
             """,
             (query, limit),
         )
-        email_results = [dict(row) for row in cursor.fetchall()]
+        results = [dict(row) for row in cursor.fetchall()]
     except sqlite3.Error:
-        # Fallback to LIKE search for emails
-        sql_query = f"%{query}%"
-        cursor.execute(
-            """
-            SELECT id, subject, body_preview, received_at, outlook_categories, urgency, is_read, sender, web_link,
-                   0 as rank, 'email' as result_type
-            FROM emails
-            WHERE subject LIKE ? OR body_preview LIKE ?
-            ORDER BY received_at DESC
-            LIMIT ?
-            """,
-            (sql_query, sql_query, limit),
-        )
-        email_results = [dict(row) for row in cursor.fetchall()]
-
-    # Also search attachment extracted_text
-    sql_query = f"%{query}%"
-    try:
-        cursor.execute(
-            """
-            SELECT a.id, a.filename, a.extracted_text, e.id as email_id, e.subject as email_subject,
-                   e.sender, e.received_at, e.web_link, 'attachment' as result_type
-            FROM attachments a
-            JOIN emails e ON a.email_id = e.id
-            WHERE a.extracted_text LIKE ?
-            LIMIT ?
-            """,
-            (sql_query, limit),
-        )
-        attachment_results = [dict(row) for row in cursor.fetchall()]
-    except sqlite3.Error:
-        pass  # Attachment search failed, continue with email results only
+        pass
 
     conn.close()
 
     if human:
-        if not email_results and not attachment_results:
-            typer.echo("No results.")
-
-        for email in email_results:
-            typer.echo(f"[EMAIL] {email['subject']}")
-            typer.echo(f"  From: {email.get('sender', 'N/A')}")
-            typer.echo(f"  Received: {email['received_at']}")
-            typer.echo(f"  Urgency: {email.get('urgency', 'N/A')}")
-            link = email.get('web_link')
-            if not link and email.get('id'):
-                from urllib.parse import quote
-                link = f"https://outlook.office365.com/mail/inbox/id/{quote(email['id'], safe='')}"
-            if link:
-                typer.echo(f"  Link: {link}")
-            typer.echo()
-
-        for att in attachment_results:
-            typer.echo(f"[ATTACHMENT] {att['filename']}")
-            typer.echo(f"  In email: {att.get('email_subject', 'N/A')}")
-            typer.echo(f"  From: {att.get('sender', 'N/A')}")
-            typer.echo(f"  Date: {att.get('received_at', 'N/A')}")
-            text_preview = (att.get('extracted_text') or '')[:200].replace('\n', ' ')
-            if text_preview:
-                typer.echo(f"  Preview: {text_preview}...")
-            link = att.get('web_link')
-            if not link and att.get('email_id'):
-                from urllib.parse import quote
-                link = f"https://outlook.office365.com/mail/inbox/id/{quote(att['email_id'], safe='')}"
-            if link:
-                typer.echo(f"  Link: {link}")
+        if not results:
+            typer.echo("No results found.")
+            return
+        for r in results:
+            typer.echo(f"[EMAIL] {r['subject']}")
+            typer.echo(f"  From: {r.get('sender', 'N/A')}")
+            typer.echo(f"  Date: {r['received_at']}")
             typer.echo()
     else:
-        typer.echo(json.dumps({"emails": email_results, "attachments": attachment_results}, default=str))
+        typer.echo(json.dumps(results, default=str))
 
 
 @app.command()
@@ -1191,7 +1237,12 @@ def actions_history(
 
 
 def _get_wm_snapshot(conn) -> dict:
-    """Query working memory state from database."""
+    """Query working memory state from database.
+
+    Uses the new architecture:
+    - active_threads view: computed thread state
+    - facts table: decisions, commitments, observations
+    """
     cursor = conn.cursor()
 
     # Get timezone info
@@ -1199,70 +1250,168 @@ def _get_wm_snapshot(conn) -> dict:
     now = now_in_user_tz()
     today = today_in_user_tz()
 
-    # Active threads needing attention
-    cursor.execute("""
-        SELECT id, conversation_id, subject, status, urgency, needs_reply,
-               last_activity_at, summary, latest_email_id, latest_web_link
-        FROM wm_threads
-        WHERE status NOT IN ('resolved', 'stale')
-        ORDER BY
-            CASE urgency
-                WHEN 'immediate' THEN 1
-                WHEN 'today' THEN 2
-                WHEN 'this_week' THEN 3
-                ELSE 4
-            END,
-            last_activity_at DESC
-        LIMIT 20
-    """)
-    threads = [dict(r) for r in cursor.fetchall()]
+    # Get user email for needs_reply computation
+    user_email = os.environ.get("DELEGATED_USER", "")
+
+    # Active threads from view
+    threads = []
+    try:
+        cursor.execute("""
+            SELECT conversation_id, subject, urgency, last_activity, message_count,
+                   participants, last_sender, latest_email_id, latest_web_link,
+                   has_action_items
+            FROM active_threads
+            ORDER BY
+                CASE urgency
+                    WHEN 'immediate' THEN 1
+                    WHEN 'today' THEN 2
+                    WHEN 'this_week' THEN 3
+                    ELSE 4
+                END,
+                last_activity DESC
+            LIMIT 20
+        """)
+        for r in cursor.fetchall():
+            thread = dict(r)
+            # Compute needs_reply: last message not from user
+            thread["needs_reply"] = thread.get("last_sender", "") != user_email
+            thread["last_activity_at"] = thread.pop("last_activity", None)
+            thread["id"] = thread["conversation_id"]  # For compatibility
+            threads.append(thread)
+    except Exception:
+        # Fall back to wm_threads if view doesn't exist yet
+        cursor.execute("""
+            SELECT id, conversation_id, subject, status, urgency, needs_reply,
+                   last_activity_at, summary, latest_email_id, latest_web_link
+            FROM wm_threads
+            WHERE status NOT IN ('resolved', 'stale')
+            ORDER BY
+                CASE urgency
+                    WHEN 'immediate' THEN 1
+                    WHEN 'today' THEN 2
+                    WHEN 'this_week' THEN 3
+                    ELSE 4
+                END,
+                last_activity_at DESC
+            LIMIT 20
+        """)
+        threads = [dict(r) for r in cursor.fetchall()]
 
     # Threads needing reply
     threads_needing_reply = [t for t in threads if t.get("needs_reply")]
 
-    # Pending decisions
-    cursor.execute("""
-        SELECT id, question, context, requester, urgency, deadline
-        FROM wm_decisions
-        WHERE is_resolved = 0
-        ORDER BY
-            CASE urgency
-                WHEN 'immediate' THEN 1
-                WHEN 'today' THEN 2
-                WHEN 'this_week' THEN 3
-                ELSE 4
-            END,
-            created_at DESC
-        LIMIT 10
-    """)
-    decisions = [dict(r) for r in cursor.fetchall()]
+    # Pending decisions from facts table
+    decisions = []
+    try:
+        cursor.execute("""
+            SELECT f.id, f.fact_value as question, f.context, e.sender as requester,
+                   e.urgency, f.due_date as deadline
+            FROM facts f
+            LEFT JOIN emails e ON f.source_id = e.id
+            WHERE f.fact_type = 'decision' AND f.status = 'active'
+            ORDER BY
+                CASE e.urgency
+                    WHEN 'immediate' THEN 1
+                    WHEN 'today' THEN 2
+                    WHEN 'this_week' THEN 3
+                    ELSE 4
+                END,
+                f.extracted_at DESC
+            LIMIT 10
+        """)
+        decisions = [dict(r) for r in cursor.fetchall()]
+    except Exception:
+        # Fall back to wm_decisions if facts table doesn't exist yet
+        cursor.execute("""
+            SELECT id, question, context, requester, urgency, deadline
+            FROM wm_decisions
+            WHERE is_resolved = 0
+            ORDER BY
+                CASE urgency
+                    WHEN 'immediate' THEN 1
+                    WHEN 'today' THEN 2
+                    WHEN 'this_week' THEN 3
+                    ELSE 4
+                END,
+                created_at DESC
+            LIMIT 10
+        """)
+        decisions = [dict(r) for r in cursor.fetchall()]
 
-    # Open commitments
-    cursor.execute("""
-        SELECT id, description, to_whom, due_by, committed_at
-        FROM wm_commitments
-        WHERE is_completed = 0
-        ORDER BY due_by ASC NULLS LAST, committed_at DESC
-        LIMIT 10
-    """)
-    commitments = [dict(r) for r in cursor.fetchall()]
+    # Open commitments from facts table
+    commitments = []
+    try:
+        cursor.execute("""
+            SELECT f.id, f.fact_value as description,
+                   f.metadata_json, f.due_date as due_by, f.extracted_at as committed_at
+            FROM facts f
+            WHERE f.fact_type = 'commitment' AND f.status = 'active'
+            ORDER BY f.due_date ASC NULLS LAST, f.extracted_at DESC
+            LIMIT 10
+        """)
+        for r in cursor.fetchall():
+            c = dict(r)
+            # Extract to_whom from metadata
+            if c.get("metadata_json"):
+                try:
+                    meta = json.loads(c["metadata_json"])
+                    c["to_whom"] = meta.get("to_whom", "unknown")
+                except Exception:
+                    c["to_whom"] = "unknown"
+            else:
+                c["to_whom"] = "unknown"
+            commitments.append(c)
+    except Exception:
+        # Fall back to wm_commitments
+        cursor.execute("""
+            SELECT id, description, to_whom, due_by, committed_at
+            FROM wm_commitments
+            WHERE is_completed = 0
+            ORDER BY due_by ASC NULLS LAST, committed_at DESC
+            LIMIT 10
+        """)
+        commitments = [dict(r) for r in cursor.fetchall()]
 
     # Overdue commitments count
-    cursor.execute("""
-        SELECT COUNT(*) FROM wm_commitments
-        WHERE is_completed = 0 AND due_by IS NOT NULL AND due_by < ?
-    """, (now.isoformat(),))
-    overdue_count = cursor.fetchone()[0]
+    overdue_count = 0
+    try:
+        cursor.execute("""
+            SELECT COUNT(*) FROM facts
+            WHERE fact_type = 'commitment'
+            AND status = 'active'
+            AND due_date IS NOT NULL
+            AND due_date < ?
+        """, (now.isoformat(),))
+        overdue_count = cursor.fetchone()[0]
+    except Exception:
+        cursor.execute("""
+            SELECT COUNT(*) FROM wm_commitments
+            WHERE is_completed = 0 AND due_by IS NOT NULL AND due_by < ?
+        """, (now.isoformat(),))
+        overdue_count = cursor.fetchone()[0]
 
-    # Recent observations (last 7 days, for context)
-    cursor.execute("""
-        SELECT type, content, observed_at
-        FROM wm_observations
-        WHERE observed_at > datetime('now', '-7 days')
-        ORDER BY observed_at DESC
-        LIMIT 10
-    """)
-    observations = [dict(r) for r in cursor.fetchall()]
+    # Recent observations from facts table
+    observations = []
+    try:
+        cursor.execute("""
+            SELECT fact_type as type, fact_value as content, extracted_at as observed_at
+            FROM facts
+            WHERE fact_type IN ('preference', 'relationship', 'pattern')
+            AND status = 'active'
+            AND extracted_at > datetime('now', '-7 days')
+            ORDER BY extracted_at DESC
+            LIMIT 10
+        """)
+        observations = [dict(r) for r in cursor.fetchall()]
+    except Exception:
+        cursor.execute("""
+            SELECT type, content, observed_at
+            FROM wm_observations
+            WHERE observed_at > datetime('now', '-7 days')
+            ORDER BY observed_at DESC
+            LIMIT 10
+        """)
+        observations = [dict(r) for r in cursor.fetchall()]
 
     # Today's calendar (if available)
     today_events = []

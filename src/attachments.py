@@ -277,6 +277,8 @@ class AttachmentProcessor:
                 self._update_attachment_status(
                     att_id, "completed", extracted_text=row["extracted_text"], content_hash=content_hash
                 )
+                # ATOMIC: Create chunks and embeddings immediately
+                self._index_attachment(att_id, filename)
                 logger.info(f"Used cached extraction for {filename}")
                 return True
 
@@ -287,6 +289,8 @@ class AttachmentProcessor:
             self._update_attachment_status(
                 att_id, "completed", extracted_text=extracted_text, content_hash=content_hash
             )
+            # ATOMIC: Create chunks and embeddings immediately
+            self._index_attachment(att_id, filename)
             logger.info(f"Successfully extracted text from {filename} ({len(extracted_text)} chars)")
             return True
         else:
@@ -294,6 +298,77 @@ class AttachmentProcessor:
                 att_id, "failed", error="Text extraction returned empty", content_hash=content_hash
             )
             return False
+
+    def _index_attachment(self, attachment_id: str, filename: str) -> None:
+        """
+        Create chunks, embeddings, and extract facts from an attachment.
+        This ensures content is fully searchable right away.
+        """
+        # 1. Create chunks and embeddings for text search
+        try:
+            from .chunker import create_attachment_chunks
+            from .embeddings import embed_chunks_for_source
+
+            chunks_created = create_attachment_chunks(attachment_id)
+            if chunks_created > 0:
+                embedded = embed_chunks_for_source("attachment", attachment_id)
+                logger.debug(f"Indexed {filename}: {chunks_created} chunks, {embedded} embeddings")
+        except Exception as e:
+            # Don't fail the extraction if indexing fails - it can be retried
+            logger.warning(f"Failed to index attachment {filename}: {e}")
+
+        # 2. Extract structured facts (tax IDs, amounts, dates, etc.)
+        try:
+            facts_stored = self._extract_attachment_facts(attachment_id, filename)
+            if facts_stored > 0:
+                logger.info(f"Extracted {facts_stored} facts from {filename}")
+        except Exception as e:
+            # Don't fail if facts extraction fails - text search still works
+            logger.warning(f"Failed to extract facts from {filename}: {e}")
+
+    def _extract_attachment_facts(self, attachment_id: str, filename: str) -> int:
+        """
+        Extract structured facts from attachment text using LLM.
+
+        Facts include: tax IDs, amounts, addresses, phone numbers, contract numbers, etc.
+        These are stored in the unified facts table for structured search.
+        """
+        import asyncio
+
+        # Get the extracted text
+        conn = get_connection()
+        row = conn.execute(
+            "SELECT extracted_text FROM attachments WHERE id = ?",
+            (attachment_id,)
+        ).fetchone()
+        conn.close()
+
+        if not row or not row["extracted_text"]:
+            return 0
+
+        extracted_text = row["extracted_text"]
+
+        # Skip very short documents (unlikely to have useful facts)
+        if len(extracted_text.strip()) < 100:
+            return 0
+
+        from .facts import FactsExtractor
+        extractor = FactsExtractor()
+
+        # Run the async LLM extraction
+        try:
+            facts = asyncio.run(
+                extractor.extract_from_attachment(attachment_id, extracted_text, filename)
+            )
+        except Exception as e:
+            logger.warning(f"Facts extraction LLM call failed for {filename}: {e}")
+            return 0
+
+        if facts:
+            stored = extractor.store_facts("attachment", attachment_id, facts)
+            return stored
+
+        return 0
 
     def process_pending_attachments(
         self,

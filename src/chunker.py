@@ -447,6 +447,18 @@ def create_email_chunk(email_data: ProcessedEmail) -> int:
     return chunks_created
 
 
+def create_email_chunks(email_id: str) -> int:
+    """
+    Create chunks for a single email.
+    Wrapper that processes and chunks in one call.
+    Returns number of chunks created.
+    """
+    email_data = process_email_for_indexing(email_id)
+    if not email_data:
+        return 0
+    return create_email_chunk(email_data)
+
+
 def create_attachment_chunks(attachment_id: str) -> int:
     """
     Create chunks for an attachment's extracted text.
