@@ -56,7 +56,7 @@ class WorkingMemoryEngine:
             conn.commit()
 
             # 2. Generate and emit nudges (after commit so we see current state)
-            stats["nudges_emitted"] = self._emit_nudges(now)
+            stats["nudges_emitted"] = await self._emit_nudges(now)
 
         except Exception as e:
             logger.error(f"Working memory engine cycle failed: {e}")
@@ -87,7 +87,7 @@ class WorkingMemoryEngine:
         )
         return result.rowcount
 
-    def _emit_nudges(self, now: datetime) -> int:
+    async def _emit_nudges(self, now: datetime) -> int:
         """Generate and emit proactive nudges."""
         nudges = self._generate_nudges(now)
         emitted = 0
@@ -117,11 +117,11 @@ class WorkingMemoryEngine:
             emitted += 1
 
             # Evaluate user-defined alert rules for WM events
-            self._evaluate_alert_rules_for_nudge(nudge, nudge_type, nudge_id)
+            await self._evaluate_alert_rules_for_nudge(nudge, nudge_type, nudge_id)
 
         return emitted
 
-    def _evaluate_alert_rules_for_nudge(
+    async def _evaluate_alert_rules_for_nudge(
         self,
         nudge: dict[str, Any],
         nudge_type: str,
@@ -130,7 +130,6 @@ class WorkingMemoryEngine:
         """Evaluate user alert rules against a working memory nudge."""
         try:
             from ..alerts import AlertRulesEngine
-            import asyncio
 
             # Map nudge type to event type
             event_type_map = {
@@ -143,14 +142,8 @@ class WorkingMemoryEngine:
 
             alert_engine = AlertRulesEngine(self.user_email)
 
-            # Run async evaluation
-            loop = asyncio.new_event_loop()
-            try:
-                triggered = loop.run_until_complete(
-                    alert_engine.evaluate_wm_rules(nudge, event_type)
-                )
-            finally:
-                loop.close()
+            # Await async evaluation directly
+            triggered = await alert_engine.evaluate_wm_rules(nudge, event_type)
 
             for t in triggered:
                 alert_engine.emit_alert_trigger(
