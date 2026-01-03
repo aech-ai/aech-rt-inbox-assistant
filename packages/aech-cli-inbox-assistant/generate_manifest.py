@@ -2,7 +2,7 @@
 """
 Pure Introspection Manifest Generator for CLI
 
-Introspects the Typer CLI application and generates manifest.json
+Introspects the Click CLI application and generates manifest.json
 from docstrings and parameter metadata. No LLM required.
 
 Usage:
@@ -11,13 +11,12 @@ Usage:
 Run before building the package to update manifest.json.
 """
 
-import inspect
 import json
 import sys
 from pathlib import Path
 from typing import Any
 
-import typer
+import click
 
 
 # Paths relative to this script
@@ -26,122 +25,83 @@ SRC_DIR = SCRIPT_DIR / "src" / "aech_cli_inbox_assistant"
 MANIFEST_PATH = SRC_DIR / "manifest.json"
 
 
-def introspect_parameter(param_name: str, param: inspect.Parameter) -> dict[str, Any] | None:
-    """Extract parameter metadata from a Typer parameter."""
-    # Skip 'human' parameter - it's for terminal output, not agent use
-    if param_name == "human":
-        return None
-
-    if param.default is inspect.Parameter.empty:
-        return None
-
-    default_value = param.default
-    if not hasattr(default_value, "__class__"):
-        return None
-
-    class_name = default_value.__class__.__name__
-    description = getattr(default_value, "help", "") or ""
-
-    if "Argument" in class_name:
-        is_required = getattr(default_value, "default", ...) is ...
+def introspect_parameter(param: click.Parameter) -> dict[str, Any] | None:
+    """Extract parameter metadata from a Click parameter."""
+    if isinstance(param, click.Argument):
         return {
-            "name": param_name,
+            "name": param.name,
             "type": "argument",
-            "required": is_required,
-            "description": description,
+            "required": param.required,
+            "description": "",
         }
 
-    elif "Option" in class_name:
-        default_val = getattr(default_value, "default", ...)
-        is_required = default_val is ...
+    elif isinstance(param, click.Option):
+        # Skip internal Click options like --help
+        if param.name in ("help",):
+            return None
 
-        # Get explicit CLI option name from param_decls if available
-        cli_name = param_name
-        param_decls = getattr(default_value, "param_decls", None)
-        if param_decls:
-            for decl in param_decls:
-                if decl.startswith("--"):
-                    cli_name = decl[2:]
-                    break
+        is_flag = param.is_flag
+        description = param.help or ""
 
         result = {
-            "name": cli_name,
-            "type": "flag" if isinstance(default_val, bool) else "option",
-            "required": is_required,
+            "name": param.name,
+            "type": "flag" if is_flag else "option",
+            "required": param.required,
             "description": description,
         }
 
         # Include default if meaningful
-        if default_val is not ... and default_val is not None and default_val is not False:
-            result["default"] = default_val
+        default_val = param.default
+        if default_val is not None and default_val is not False and default_val != ():
+            try:
+                json.dumps(default_val)  # Check if serializable
+                result["default"] = default_val
+            except (TypeError, ValueError):
+                pass
 
         return result
 
     return None
 
 
-def introspect_typer_app(app: typer.Typer, name: str, command: str) -> dict[str, Any]:
-    """Introspect a Typer app and extract all command metadata."""
-    description = ""
-    if app.info and app.info.help:
-        description = app.info.help
+def introspect_command(cmd: click.Command, prefix: str = "") -> dict[str, Any]:
+    """Introspect a single Click command."""
+    name = f"{prefix} {cmd.name}".strip() if prefix else cmd.name
+    description = cmd.help or ""
+    # First line only
+    description = description.split("\n")[0] if description else ""
+
+    parameters = []
+    for param in cmd.params:
+        param_info = introspect_parameter(param)
+        if param_info:
+            parameters.append(param_info)
+
+    return {
+        "name": name,
+        "description": description,
+        "parameters": parameters,
+    }
+
+
+def introspect_click_app(group: click.Group, name: str, command: str) -> dict[str, Any]:
+    """Introspect a Click Group and extract all command metadata."""
+    description = group.help or ""
 
     actions = []
 
-    # Process registered commands
-    for cmd_info in app.registered_commands:
-        callback = cmd_info.callback
-        if callback is None:
-            continue
+    def process_group(grp: click.Group, prefix: str = ""):
+        """Recursively process groups and commands."""
+        for cmd_name, cmd in grp.commands.items():
+            if isinstance(cmd, click.Group):
+                # It's a subgroup, recurse
+                process_group(cmd, f"{prefix} {cmd_name}".strip() if prefix else cmd_name)
+            else:
+                # It's a command
+                action = introspect_command(cmd, prefix)
+                actions.append(action)
 
-        cmd_name = cmd_info.name or callback.__name__.replace("_", "-")
-        docstring = inspect.getdoc(callback) or ""
-        # First line of docstring is the description
-        action_description = docstring.split("\n")[0] if docstring else ""
-
-        sig = inspect.signature(callback)
-        parameters = []
-        for param_name, param in sig.parameters.items():
-            param_info = introspect_parameter(param_name, param)
-            if param_info:
-                parameters.append(param_info)
-
-        actions.append({
-            "name": cmd_name,
-            "description": action_description,
-            "parameters": parameters,
-        })
-
-    # Process sub-apps (like prefs_app)
-    for group_info in app.registered_groups:
-        sub_app = group_info.typer_instance
-        group_name = group_info.name or ""
-
-        if sub_app is None:
-            continue
-
-        for cmd_info in sub_app.registered_commands:
-            callback = cmd_info.callback
-            if callback is None:
-                continue
-
-            cmd_name = cmd_info.name or callback.__name__.replace("_", "-")
-            full_name = f"{group_name} {cmd_name}" if group_name else cmd_name
-            docstring = inspect.getdoc(callback) or ""
-            action_description = docstring.split("\n")[0] if docstring else ""
-
-            sig = inspect.signature(callback)
-            parameters = []
-            for param_name, param in sig.parameters.items():
-                param_info = introspect_parameter(param_name, param)
-                if param_info:
-                    parameters.append(param_info)
-
-            actions.append({
-                "name": full_name,
-                "description": action_description,
-                "parameters": parameters,
-            })
+    process_group(group)
 
     return {
         "name": name,
@@ -172,9 +132,9 @@ def main():
         print("Make sure dependencies are installed: pip install -e .", file=sys.stderr)
         sys.exit(1)
 
-    print(f"Introspecting CLI app...")
+    print("Introspecting CLI app...")
 
-    manifest = introspect_typer_app(
+    manifest = introspect_click_app(
         app,
         name="inbox-assistant",
         command="aech-cli-inbox-assistant",

@@ -8,7 +8,7 @@ version = "0.17.0"
 description = "CLI for Agent Aech to query and manage Inbox Assistant state"
 requires-python = ">=3.10"
 dependencies = [
-    "typer",
+    "click>=8.0",
 ]
 
 [project.scripts]

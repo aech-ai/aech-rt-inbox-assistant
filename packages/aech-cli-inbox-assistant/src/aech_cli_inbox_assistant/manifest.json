@@ -5,6 +5,254 @@
   "command": "aech-cli-inbox-assistant",
   "actions": [
     {
+      "name": "prefs show",
+      "description": "Show the current preferences.json.",
+      "parameters": []
+    },
+    {
+      "name": "prefs set",
+      "description": "Set a preference key in preferences.json.",
+      "parameters": [
+        {
+          "name": "key",
+          "type": "argument",
+          "required": true,
+          "description": ""
+        },
+        {
+          "name": "value",
+          "type": "argument",
+          "required": true,
+          "description": ""
+        }
+      ]
+    },
+    {
+      "name": "prefs keys",
+      "description": "List all valid preference keys.",
+      "parameters": []
+    },
+    {
+      "name": "prefs unset",
+      "description": "Remove a preference key from preferences.json.",
+      "parameters": [
+        {
+          "name": "key",
+          "type": "argument",
+          "required": true,
+          "description": ""
+        }
+      ]
+    },
+    {
+      "name": "wm snapshot",
+      "description": "Get complete working memory snapshot (for context injection).",
+      "parameters": [
+        {
+          "name": "llm",
+          "type": "flag",
+          "required": false,
+          "description": "LLM-optimized output for context injection"
+        }
+      ]
+    },
+    {
+      "name": "wm threads",
+      "description": "Query active threads.",
+      "parameters": [
+        {
+          "name": "needs_reply",
+          "type": "flag",
+          "required": false,
+          "description": "Only show threads needing reply"
+        },
+        {
+          "name": "urgency",
+          "type": "option",
+          "required": false,
+          "description": "Filter by urgency"
+        },
+        {
+          "name": "limit",
+          "type": "option",
+          "required": false,
+          "description": "Number of threads to show",
+          "default": 20
+        }
+      ]
+    },
+    {
+      "name": "wm decisions",
+      "description": "List pending decisions awaiting response.",
+      "parameters": []
+    },
+    {
+      "name": "wm commitments",
+      "description": "List open commitments.",
+      "parameters": [
+        {
+          "name": "overdue",
+          "type": "flag",
+          "required": false,
+          "description": "Only show overdue commitments"
+        }
+      ]
+    },
+    {
+      "name": "wm contacts",
+      "description": "Query known contacts.",
+      "parameters": [
+        {
+          "name": "external",
+          "type": "flag",
+          "required": false,
+          "description": "Only external contacts"
+        },
+        {
+          "name": "search",
+          "type": "option",
+          "required": false,
+          "description": "Search by email or name"
+        },
+        {
+          "name": "limit",
+          "type": "option",
+          "required": false,
+          "description": "Number of contacts to show",
+          "default": 20
+        }
+      ]
+    },
+    {
+      "name": "wm observations",
+      "description": "View recent passive observations.",
+      "parameters": [
+        {
+          "name": "days",
+          "type": "option",
+          "required": false,
+          "description": "Days of observations to show",
+          "default": 7
+        }
+      ]
+    },
+    {
+      "name": "wm projects",
+      "description": "View inferred projects.",
+      "parameters": []
+    },
+    {
+      "name": "alerts list",
+      "description": "List all alert rules.",
+      "parameters": [
+        {
+          "name": "enabled_only",
+          "type": "flag",
+          "required": false,
+          "description": "Only show enabled rules"
+        }
+      ]
+    },
+    {
+      "name": "alerts add",
+      "description": "Add a new alert rule.",
+      "parameters": [
+        {
+          "name": "rule",
+          "type": "argument",
+          "required": true,
+          "description": ""
+        },
+        {
+          "name": "channel",
+          "type": "option",
+          "required": false,
+          "description": "Notification channel: teams, email",
+          "default": "teams"
+        },
+        {
+          "name": "target",
+          "type": "option",
+          "required": false,
+          "description": "Channel target (chat ID, email address)"
+        },
+        {
+          "name": "cooldown",
+          "type": "option",
+          "required": false,
+          "description": "Cooldown between triggers (minutes)",
+          "default": 30
+        }
+      ]
+    },
+    {
+      "name": "alerts remove",
+      "description": "Remove an alert rule.",
+      "parameters": [
+        {
+          "name": "rule_id",
+          "type": "argument",
+          "required": true,
+          "description": ""
+        }
+      ]
+    },
+    {
+      "name": "alerts enable",
+      "description": "Enable an alert rule.",
+      "parameters": [
+        {
+          "name": "rule_id",
+          "type": "argument",
+          "required": true,
+          "description": ""
+        }
+      ]
+    },
+    {
+      "name": "alerts disable",
+      "description": "Disable an alert rule.",
+      "parameters": [
+        {
+          "name": "rule_id",
+          "type": "argument",
+          "required": true,
+          "description": ""
+        }
+      ]
+    },
+    {
+      "name": "alerts history",
+      "description": "View alert trigger history.",
+      "parameters": [
+        {
+          "name": "rule_id",
+          "type": "option",
+          "required": false,
+          "description": "Filter by rule ID"
+        },
+        {
+          "name": "limit",
+          "type": "option",
+          "required": false,
+          "description": "Number of entries",
+          "default": 20
+        }
+      ]
+    },
+    {
+      "name": "alerts show",
+      "description": "Show details of a specific alert rule.",
+      "parameters": [
+        {
+          "name": "rule_id",
+          "type": "argument",
+          "required": true,
+          "description": ""
+        }
+      ]
+    },
+    {
       "name": "list",
       "description": "List ingested emails.",
       "parameters": [
@@ -16,7 +264,7 @@
           "default": 20
         },
         {
-          "name": "include-read",
+          "name": "include_read",
           "type": "flag",
           "required": false,
           "description": "Include read emails"
@@ -38,20 +286,45 @@
     },
     {
       "name": "search",
-      "description": "Search emails and attachments using full-text search.",
+      "description": "Search emails, attachments, and facts using unified search.",
       "parameters": [
+        {
+          "name": "query",
+          "type": "argument",
+          "required": true,
+          "description": ""
+        },
         {
           "name": "limit",
           "type": "option",
           "required": false,
           "description": "Number of results to return",
           "default": 20
+        },
+        {
+          "name": "mode",
+          "type": "option",
+          "required": false,
+          "description": "Search mode: hybrid, fts, or vector",
+          "default": "hybrid"
+        },
+        {
+          "name": "facts",
+          "type": "flag",
+          "required": false,
+          "description": "Include facts in search",
+          "default": true
         }
       ]
     },
     {
       "name": "dbpath",
       "description": "Get the absolute path to the user's database.",
+      "parameters": []
+    },
+    {
+      "name": "timezone",
+      "description": "Show the current timezone being used for calendar queries.",
       "parameters": []
     },
     {
@@ -76,10 +349,10 @@
           "default": 20
         },
         {
-          "name": "status",
+          "name": "status_filter",
           "type": "option",
           "required": false,
-          "description": "Filter by status (pending/completed/failed/skipped/extracting)"
+          "description": "Filter by status"
         }
       ]
     },
@@ -90,7 +363,7 @@
     },
     {
       "name": "reply-needed",
-      "description": "List threads currently marked as requiring a reply. Queries Working Memory (wm_threads table). By default excludes stale threads (no activity for 3+ days).",
+      "description": "List threads currently marked as requiring a reply.",
       "parameters": [
         {
           "name": "limit",
@@ -100,26 +373,26 @@
           "default": 20
         },
         {
-          "name": "include-stale",
+          "name": "include_stale",
           "type": "flag",
           "required": false,
-          "description": "Include stale threads (no activity for 3+ days)"
+          "description": "Include stale threads"
         }
       ]
     },
     {
       "name": "calendar-today",
-      "description": "Show today's calendar events.",
+      "description": "Show today's calendar events (in user's timezone).",
       "parameters": []
     },
     {
       "name": "calendar-week",
-      "description": "Show this week's calendar events.",
+      "description": "Show this week's calendar events (in user's timezone).",
       "parameters": []
     },
     {
       "name": "calendar-upcoming",
-      "description": "Show upcoming events in the next N hours.",
+      "description": "Show upcoming events in the next N hours (in user's timezone).",
       "parameters": [
         {
           "name": "hours",
@@ -132,31 +405,31 @@
     },
     {
       "name": "calendar-free",
-      "description": "Show free time slots on a given date.",
+      "description": "Show free time slots on a given date (in user's timezone).",
       "parameters": [
         {
           "name": "date",
           "type": "argument",
           "required": true,
-          "description": "Date to check (YYYY-MM-DD)"
+          "description": ""
         }
       ]
     },
     {
       "name": "calendar-busy",
-      "description": "Check if busy during a time range.",
+      "description": "Check if busy during a time range (times interpreted in user's timezone).",
       "parameters": [
         {
           "name": "start",
           "type": "argument",
           "required": true,
-          "description": "Start datetime (YYYY-MM-DDTHH:MM or YYYY-MM-DD HH:MM)"
+          "description": ""
         },
         {
           "name": "end",
           "type": "argument",
           "required": true,
-          "description": "End datetime"
+          "description": ""
         }
       ]
     },
@@ -168,7 +441,7 @@
           "name": "event_id",
           "type": "argument",
           "required": true,
-          "description": "Event ID"
+          "description": ""
         }
       ]
     },
@@ -180,7 +453,7 @@
           "name": "query",
           "type": "argument",
           "required": true,
-          "description": "Search query (subject or attendee email)"
+          "description": ""
         },
         {
           "name": "limit",
@@ -199,7 +472,7 @@
           "name": "email",
           "type": "argument",
           "required": true,
-          "description": "Email address to search for"
+          "description": ""
         },
         {
           "name": "limit",
@@ -218,10 +491,10 @@
           "name": "event_id",
           "type": "argument",
           "required": false,
-          "description": "Event ID (or use --next for next meeting)"
+          "description": ""
         },
         {
-          "name": "next",
+          "name": "next_meeting",
           "type": "flag",
           "required": false,
           "description": "Prepare for next upcoming meeting"
@@ -236,19 +509,19 @@
           "name": "subject",
           "type": "argument",
           "required": true,
-          "description": "Event subject"
+          "description": ""
         },
         {
           "name": "start",
           "type": "argument",
           "required": true,
-          "description": "Start datetime (YYYY-MM-DDTHH:MM)"
+          "description": ""
         },
         {
           "name": "end",
           "type": "argument",
           "required": true,
-          "description": "End datetime (YYYY-MM-DDTHH:MM)"
+          "description": ""
         },
         {
           "name": "attendees",
@@ -284,7 +557,7 @@
           "name": "event_id",
           "type": "argument",
           "required": true,
-          "description": "Event ID to update"
+          "description": ""
         },
         {
           "name": "subject",
@@ -320,7 +593,7 @@
           "name": "event_id",
           "type": "argument",
           "required": true,
-          "description": "Event ID to cancel"
+          "description": ""
         },
         {
           "name": "notify",
@@ -339,13 +612,13 @@
           "name": "event_id",
           "type": "argument",
           "required": true,
-          "description": "Event ID"
+          "description": ""
         },
         {
           "name": "response",
           "type": "argument",
           "required": true,
-          "description": "Response: accept, tentative, or decline"
+          "description": ""
         }
       ]
     },
@@ -366,272 +639,14 @@
           "default": 20
         }
       ]
-    },
-    {
-      "name": "timezone",
-      "description": "Show the current timezone being used for calendar queries.",
-      "parameters": []
-    },
-    {
-      "name": "prefs show",
-      "description": "Show the current preferences.json.",
-      "parameters": []
-    },
-    {
-      "name": "prefs set",
-      "description": "Set a preference key. Invalid keys will be REJECTED - use 'prefs keys' to see valid options. Valid keys: timezone, vip_senders, teams_default_target, digest_day, digest_time_local, meeting_prep, categories.",
-      "parameters": [
-        {
-          "name": "key",
-          "type": "argument",
-          "required": true,
-          "description": "Preference key (must be a valid known key)"
-        },
-        {
-          "name": "value",
-          "type": "argument",
-          "required": true,
-          "description": "Preference value (string/number/bool/JSON)"
-        }
-      ]
-    },
-    {
-      "name": "prefs keys",
-      "description": "List all valid preference keys that can be set.",
-      "parameters": []
-    },
-    {
-      "name": "prefs unset",
-      "description": "Remove a preference key from preferences.json.",
-      "parameters": [
-        {
-          "name": "key",
-          "type": "argument",
-          "required": true,
-          "description": "Preference key"
-        }
-      ]
-    },
-    {
-      "name": "wm snapshot",
-      "description": "Get complete working memory snapshot for context injection. Shows active threads, pending decisions, open commitments, and today's calendar.",
-      "parameters": [
-        {
-          "name": "llm",
-          "type": "flag",
-          "required": false,
-          "description": "LLM-optimized output for context injection"
-        }
-      ]
-    },
-    {
-      "name": "wm threads",
-      "description": "Query active email threads from working memory.",
-      "parameters": [
-        {
-          "name": "needs-reply",
-          "type": "flag",
-          "required": false,
-          "description": "Only show threads needing reply"
-        },
-        {
-          "name": "urgency",
-          "type": "option",
-          "required": false,
-          "description": "Filter by urgency (immediate/today/this_week/someday)"
-        },
-        {
-          "name": "limit",
-          "type": "option",
-          "required": false,
-          "description": "Number of threads to show",
-          "default": 20
-        }
-      ]
-    },
-    {
-      "name": "wm decisions",
-      "description": "List pending decisions awaiting response.",
-      "parameters": []
-    },
-    {
-      "name": "wm commitments",
-      "description": "List open commitments made by the user.",
-      "parameters": [
-        {
-          "name": "overdue",
-          "type": "flag",
-          "required": false,
-          "description": "Only show overdue commitments"
-        }
-      ]
-    },
-    {
-      "name": "wm contacts",
-      "description": "Query known contacts from working memory.",
-      "parameters": [
-        {
-          "name": "external",
-          "type": "flag",
-          "required": false,
-          "description": "Only external contacts"
-        },
-        {
-          "name": "search",
-          "type": "option",
-          "required": false,
-          "description": "Search by email or name"
-        },
-        {
-          "name": "limit",
-          "type": "option",
-          "required": false,
-          "description": "Number of contacts to show",
-          "default": 20
-        }
-      ]
-    },
-    {
-      "name": "wm observations",
-      "description": "View recent passive observations (patterns, preferences learned).",
-      "parameters": [
-        {
-          "name": "days",
-          "type": "option",
-          "required": false,
-          "description": "Days of observations to show",
-          "default": 7
-        }
-      ]
-    },
-    {
-      "name": "wm projects",
-      "description": "View inferred projects from email activity.",
-      "parameters": []
-    },
-    {
-      "name": "alerts list",
-      "description": "List all user-defined alert rules.",
-      "parameters": [
-        {
-          "name": "enabled-only",
-          "type": "flag",
-          "required": false,
-          "description": "Only show enabled rules"
-        }
-      ]
-    },
-    {
-      "name": "alerts add",
-      "description": "Add a new alert rule using natural language. Examples: 'alert me when CFO emails about budget', 'notify when I send email to legal@'.",
-      "parameters": [
-        {
-          "name": "rule",
-          "type": "argument",
-          "required": true,
-          "description": "Natural language alert rule"
-        },
-        {
-          "name": "channel",
-          "type": "option",
-          "required": false,
-          "description": "Notification channel: teams, email",
-          "default": "teams"
-        },
-        {
-          "name": "target",
-          "type": "option",
-          "required": false,
-          "description": "Channel target (chat ID, email address)"
-        },
-        {
-          "name": "cooldown",
-          "type": "option",
-          "required": false,
-          "description": "Cooldown between triggers (minutes)",
-          "default": 30
-        }
-      ]
-    },
-    {
-      "name": "alerts remove",
-      "description": "Remove an alert rule.",
-      "parameters": [
-        {
-          "name": "rule_id",
-          "type": "argument",
-          "required": true,
-          "description": "Rule ID to remove (can be partial)"
-        }
-      ]
-    },
-    {
-      "name": "alerts enable",
-      "description": "Enable an alert rule.",
-      "parameters": [
-        {
-          "name": "rule_id",
-          "type": "argument",
-          "required": true,
-          "description": "Rule ID to enable (can be partial)"
-        }
-      ]
-    },
-    {
-      "name": "alerts disable",
-      "description": "Disable an alert rule.",
-      "parameters": [
-        {
-          "name": "rule_id",
-          "type": "argument",
-          "required": true,
-          "description": "Rule ID to disable (can be partial)"
-        }
-      ]
-    },
-    {
-      "name": "alerts history",
-      "description": "View alert trigger history.",
-      "parameters": [
-        {
-          "name": "rule-id",
-          "type": "option",
-          "required": false,
-          "description": "Filter by rule ID"
-        },
-        {
-          "name": "limit",
-          "type": "option",
-          "required": false,
-          "description": "Number of entries",
-          "default": 20
-        }
-      ]
-    },
-    {
-      "name": "alerts show",
-      "description": "Show details of a specific alert rule.",
-      "parameters": [
-        {
-          "name": "rule_id",
-          "type": "argument",
-          "required": true,
-          "description": "Rule ID to show (can be partial)"
-        }
-      ]
     }
   ],
   "documentation": {
     "usage": "aech-cli-inbox-assistant <command> [options]",
     "examples": [
-      "aech-cli-inbox-assistant list",
+      "aech-cli-inbox-assistant list --limit 10",
       "aech-cli-inbox-assistant search 'query' --limit 10",
-      "aech-cli-inbox-assistant reply-needed",
-      "aech-cli-inbox-assistant wm snapshot --llm",
-      "aech-cli-inbox-assistant wm threads --needs-reply",
-      "aech-cli-inbox-assistant alerts list",
-      "aech-cli-inbox-assistant alerts add \"alert me when CFO emails about budget\""
+      "aech-cli-inbox-assistant reply-needed"
     ]
-  },
-  "system_addendum": "## CRITICAL: Handling Stale Data\n\nAs a world-class EA, you must apply JUDGMENT to data freshness based on timestamps.\n\n### Staleness Framework\n- **0-3 days**: Present normally (active)\n- **4-7 days**: Mention it's been waiting (\"this thread from Tuesday still needs your reply\")\n- **1-4 weeks**: Explicitly note delay; ask if still relevant\n- **1-3 months**: DO NOT present as actionable. Say: \"There are some old items from X months ago - these may no longer be relevant. Want me to clear them?\"\n- **3+ months**: Omit from proactive mentions. Only surface if user specifically asks.\n\n### What a Great EA Does\n1. **Qualifies old data**: Never present 3-month-old \"pending reply\" items as urgent\n2. **Offers cleanup**: \"I see several stale items - want me to archive them?\"\n3. **Uses judgment**: If someone asked for a meeting 4 months ago and never followed up, that's dead\n4. **Protects user attention**: Don't waste time on clearly irrelevant items\n\nWhen working memory shows items with old `last_activity_at` timestamps, calculate days since and apply the framework above.\n\n### Preference Validation\nThe `prefs set` command validates keys. Invalid keys will be rejected. Use `prefs keys` to see valid options before setting preferences."
+  }
 }
