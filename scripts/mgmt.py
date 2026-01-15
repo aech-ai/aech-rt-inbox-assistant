@@ -1,11 +1,24 @@
+#!/usr/bin/env python3
 """
 Management CLI for Inbox Assistant pipeline operations.
 
 This CLI provides admin/pipeline commands for managing the inbox assistant.
 These are NOT agent-facing commands - they are for operators running pipelines.
+
+Usage (from repo root):
+    python scripts/mgmt.py --help
+    python scripts/mgmt.py stats --human
+    python scripts/mgmt.py sync --since 2025-01-01 --human
 """
 
 import json
+import sys
+from pathlib import Path
+
+# Add repo root to path so we can import from src.*
+_repo_root = Path(__file__).parent.parent
+sys.path.insert(0, str(_repo_root))
+
 import typer
 
 app = typer.Typer(
