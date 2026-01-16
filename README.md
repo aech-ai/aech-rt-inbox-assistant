@@ -58,18 +58,42 @@ The system has two components:
 
 ## Proactive Triggers
 
-Triggers are written to `/triggers/outbox/*.json` for the Agent Aech worker to consume:
+Triggers are written to `/triggers/outbox/*.json` (configurable via `RT_OUTBOX_DIR`) for the Agent Aech worker to consume. Each trigger includes routing metadata for Teams or webhook delivery.
 
-| Trigger | When | Purpose |
+### Email Classification Triggers
+
+| Trigger | When | Payload |
 |---------|------|---------|
-| `urgent_email` | Immediate | Email categorized as Urgent or marked important |
-| `reply_needed` | Immediate | AI detected you need to respond |
-| `availability_requested` | Immediate | Someone asking to schedule a meeting |
-| `availability_requested_enhanced` | Immediate | Availability request with real calendar data |
-| `daily_briefing` | Scheduled | Morning briefing with day's schedule and prep |
-| `meeting_prep_ready` | Before meeting | Pre-meeting prep notification |
-| `no_reply_after_n_days` | Deferred | N days passed with no reply (default: 2 days) |
-| `weekly_digest_ready` | Scheduled | Weekly summary (configurable day/time) |
+| `urgent_email` | Email has `urgency == "immediate"` | subject, sender, message_id, reason |
+| `reply_needed` | AI detected `requires_reply == true` | message_id, subject, sender, reason |
+| `availability_requested` | Meeting scheduling request detected | time_window, duration, constraints |
+| `availability_requested_enhanced` | Availability request + calendar context | above + actual_free_slots, proposed_slots |
+
+### Executive Assistant Triggers
+
+| Trigger | When | Payload |
+|---------|------|---------|
+| `daily_briefing` | Scheduled morning time | schedule overview, busy/free hours, alerts |
+| `meeting_prep_ready` | N minutes before meeting | event details, attendee context |
+| `weekly_digest_ready` | Configured day/time (e.g., Friday 8:30am) | week summary, top items, recommendations |
+| `no_reply_after_n_days` | N days without reply (default: 2) | thread_id, subject, waiting_since |
+
+### Working Memory Nudges
+
+| Trigger | When | Nudge Type |
+|---------|------|------------|
+| `working_memory_nudge` | WM engine cycle | `reply_overdue` - User hasn't replied for N days |
+| `working_memory_nudge` | WM engine cycle | `urgent_thread_stale` - Urgent thread no activity >24h |
+| `working_memory_nudge` | WM engine cycle | `commitment_overdue` - User's promise past due |
+| `working_memory_nudge` | WM engine cycle | `decision_pending` - Decision waiting >N days |
+
+### Alert Rule Triggers
+
+| Trigger | When | Payload |
+|---------|------|---------|
+| `alert_rule_triggered` | User-defined alert rule matches | rule_id, rule_text, event_type, match_reason |
+
+See [Alert Rules](#alert-rules) for configuring custom triggers.
 
 ## Prerequisites
 
@@ -183,105 +207,280 @@ docker compose run --rm backfill-gpu
 
 ### Environment Variables
 
+#### Core Configuration
+
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DELEGATED_USER` | (required) | Email of the mailbox to manage |
-| `POLL_INTERVAL` | `60` | Seconds between poll cycles |
-| `MODEL_NAME` | `openai:gpt-5` | AI model for categorization |
+| `AZURE_CLIENT_ID` | (required) | Azure AD app registration client ID |
+| `AZURE_TENANT_ID` | (required) | Azure AD tenant ID |
+
+#### Polling & Sync Intervals
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `POLL_INTERVAL` | `60` | Seconds between main poll cycles |
+| `DELTA_SYNC_INTERVAL` | `300` | Seconds between inbox delta syncs (detect deletions) |
+| `CALENDAR_SYNC_INTERVAL` | `300` | Seconds between calendar syncs |
+| `WM_ENGINE_INTERVAL` | `300` | Seconds between working memory engine cycles |
+| `SENT_SYNC_INTERVAL` | `300` | Seconds between sent items sync (for alert rules) |
+
+#### AI Model Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MODEL_NAME` | `openai:gpt-5` | Primary LLM for email categorization |
+| `CLASSIFICATION_MODEL` | (MODEL_NAME) | Lighter model for classification |
+| `WM_MODEL` | (MODEL_NAME) | Working memory analysis model |
+| `EMBEDDING_MODEL` | `bge-m3` | Vector embedding model |
+| `EMBEDDING_BATCH_SIZE` | `8` | Batch size for embedding generation |
+| `OPENAI_API_KEY` | - | OpenAI API key (at least one LLM key required) |
+| `ANTHROPIC_API_KEY` | - | Anthropic API key |
+
+#### Working Memory Tuning
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `WM_STALE_THRESHOLD_DAYS` | `3` | Days without activity before thread marked stale |
+| `WM_REPLY_NUDGE_DAYS` | `3` | Days without reply before nudge trigger |
+| `WM_DECISION_NUDGE_DAYS` | `7` | Days without decision before nudge trigger |
+| `WM_URGENCY_ESCALATION_DAYS` | `14` | Days before urgency escalates |
+| `WM_OBSERVATION_RETENTION_DAYS` | `30` | Days to retain observation facts |
+
+#### Email Management
+
+| Variable | Default | Description |
+|----------|---------|-------------|
 | `CLEANUP_STRATEGY` | `medium` | `low`, `medium`, or `aggressive` |
 | `FOLLOWUP_N_DAYS` | `2` | Days before follow-up reminder |
+| `DEFAULT_TIMEZONE` | `UTC` | IANA timezone for scheduling |
+
+#### Weekly Digest
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ENABLE_WEEKLY_DIGEST` | `false` | Enable weekly digest triggers |
+| `DIGEST_DAY` | `friday` | Day for weekly digest |
+| `DIGEST_TIME_LOCAL` | `08:30` | Local time for digest (HH:MM) |
+| `DIGEST_WINDOW_MINUTES` | `30` | Window size for digest scheduling |
+
+#### RT Trigger Queue
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RT_OUTBOX_DIR` | `/triggers/outbox` | Directory for trigger JSON files |
+| `RT_DEDUPE_DIR` | `/triggers/dedupe` | Deduplication marker directory |
+| `RT_DEDUPE_TTL_DAYS` | `7` | Dedupe marker TTL in days |
+
+#### Paths & Storage
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AECH_HOST_DATA` | - | Host path to aech-main/data (Docker) |
+| `AECH_USER_DIR` | `./data/users/<USER>` | User data directory |
+| `INBOX_DB_PATH` | `~/.inbox-assistant/assistant.sqlite` | SQLite database path |
+| `INBOX_STATE_DIR` | `~/.inbox-assistant` | State directory |
+| `LLM_LOG_PATH` | (state_dir/llm.jsonl) | LLM observability log path |
 
 ## CLI Usage (aech-cli-inbox-assistant)
 
-The CLI is the public interface for querying inbox state:
+The CLI is the read-only interface for querying inbox state. All commands return JSON for agent consumption.
+
+### Email Commands
 
 ```bash
 # List recent emails
-aech-cli-inbox-assistant list --limit 20
+aech-cli-inbox-assistant list --limit 20 --include-read
 
 # Search emails (FTS, vector, or hybrid)
-aech-cli-inbox-assistant search "contract renewal" --mode hybrid
-
-# Check sync status
-aech-cli-inbox-assistant sync-status
-
-# View corpus statistics
-aech-cli-inbox-assistant stats
+aech-cli-inbox-assistant search "contract renewal" --mode hybrid --limit 10 --facts
 
 # View emails needing reply
-aech-cli-inbox-assistant reply-needed
+aech-cli-inbox-assistant reply-needed --limit 10 --include-stale
 
-# Inbox cleanup (LLM-classified)
-aech-cli-inbox-assistant cleanup              # Show summary of delete/archive suggestions
-aech-cli-inbox-assistant cleanup delete       # Delete calendar accepts, delivery receipts, etc.
-aech-cli-inbox-assistant cleanup archive      # Archive read newsletters, FYI notifications
-aech-cli-inbox-assistant cleanup delete --dry-run  # Preview without executing
+# View triage history
+aech-cli-inbox-assistant history --limit 50
 
-# View/set preferences
-aech-cli-inbox-assistant prefs show
-aech-cli-inbox-assistant prefs set vip_senders '["ceo@company.com"]'
-aech-cli-inbox-assistant prefs set followup_n_days 3
+# Corpus statistics
+aech-cli-inbox-assistant stats
+
+# Sync status
+aech-cli-inbox-assistant sync-status
+
+# Attachment extraction status
+aech-cli-inbox-assistant attachment-status --limit 20 --status pending
 ```
 
 ### Inbox Cleanup
 
-The LLM automatically classifies emails for cleanup during processing:
+```bash
+aech-cli-inbox-assistant cleanup              # Show delete/archive suggestions
+aech-cli-inbox-assistant cleanup delete       # Delete calendar accepts, receipts, etc.
+aech-cli-inbox-assistant cleanup archive      # Archive read newsletters
+aech-cli-inbox-assistant cleanup delete --dry-run  # Preview without executing
+```
 
 | Action | Email Types |
 |--------|-------------|
-| `delete` | Calendar accepts/declines/tentative, delivery receipts, read receipts, out-of-office auto-replies, unsubscribe confirmations, expired auth codes |
+| `delete` | Calendar accepts/declines, delivery receipts, read receipts, OOO replies, expired auth codes |
 | `archive` | Read newsletters, FYI-only notifications, automated reports |
 | `keep` | Real conversations, actionable items, unexpired auth codes |
 
-## Calendar Integration
-
-Direct Microsoft Graph API integration for calendar operations (no local sync - always real-time):
+### Calendar Commands
 
 ```bash
 # View schedule
-aech-cli-inbox-assistant calendar today --human
-aech-cli-inbox-assistant calendar upcoming --hours 48
-aech-cli-inbox-assistant calendar view --start 2025-01-20 --end 2025-01-27
+aech-cli-inbox-assistant calendar-today
+aech-cli-inbox-assistant calendar-week
+aech-cli-inbox-assistant calendar-upcoming --hours 48
 
 # Check availability
-aech-cli-inbox-assistant calendar free-busy --start 2025-01-20 --end 2025-01-24
-aech-cli-inbox-assistant calendar find-times --attendees "jane@example.com" --duration 60
+aech-cli-inbox-assistant calendar-free 2025-01-20
+aech-cli-inbox-assistant calendar-busy 2025-01-20T09:00:00 2025-01-20T17:00:00
 
-# Create events (no invites sent by default)
-aech-cli-inbox-assistant calendar create-event --subject "Team Sync" --start 2025-01-20T14:00:00 --online
+# Search and query
+aech-cli-inbox-assistant calendar-event AAMkAG...
+aech-cli-inbox-assistant calendar-search "quarterly review" --limit 10
+aech-cli-inbox-assistant calendar-meetings-with jane@example.com --limit 10
 
-# Working hours
-aech-cli-inbox-assistant calendar working-hours
+# Meeting prep
+aech-cli-inbox-assistant calendar-prep --next
+aech-cli-inbox-assistant calendar-prep AAMkAG...
 ```
+
+### Calendar Actions (Queued for RT Execution)
+
+Calendar modifications are queued in the `actions` table and executed by the RT service:
+
+```bash
+# Create events
+aech-cli-inbox-assistant event-create "Team Sync" 2025-01-20T14:00:00 2025-01-20T15:00:00 \
+  --attendees "jane@example.com,bob@example.com" \
+  --location "Conference Room A" \
+  --body "Weekly team sync meeting" \
+  --online
+
+# Update events
+aech-cli-inbox-assistant event-update AAMkAG... \
+  --subject "Updated: Team Sync" \
+  --start 2025-01-20T15:00:00 \
+  --end 2025-01-20T16:00:00
+
+# Cancel events
+aech-cli-inbox-assistant event-cancel AAMkAG... --notify
+
+# Respond to invites
+aech-cli-inbox-assistant event-respond AAMkAG... accept
+aech-cli-inbox-assistant event-respond AAMkAG... tentative
+aech-cli-inbox-assistant event-respond AAMkAG... decline
+```
+
+### Actions Queue
+
+```bash
+# View pending actions
+aech-cli-inbox-assistant actions-pending
+
+# View action history
+aech-cli-inbox-assistant actions-history --limit 20
+```
+
+### Preferences
+
+```bash
+aech-cli-inbox-assistant prefs show
+aech-cli-inbox-assistant prefs keys
+aech-cli-inbox-assistant prefs set vip_senders '["ceo@company.com"]'
+aech-cli-inbox-assistant prefs set followup_n_days 3
+aech-cli-inbox-assistant prefs unset vip_senders
+```
+
+### System Commands
+
+```bash
+aech-cli-inbox-assistant dbpath      # Get database path
+aech-cli-inbox-assistant schema      # Get database schema
+aech-cli-inbox-assistant timezone    # Show timezone config
+```
+
+## Alert Rules
+
+User-defined notification rules with natural language input. Alert rules can monitor multiple event types and route to Teams or webhooks.
+
+### Managing Alert Rules
+
+```bash
+# List all rules
+aech-cli-inbox-assistant alerts list
+aech-cli-inbox-assistant alerts list --enabled-only
+
+# Add a new rule
+aech-cli-inbox-assistant alerts add "Alert me when CFO emails about budget" \
+  --channel teams \
+  --cooldown 60
+
+# Add rule with webhook routing
+aech-cli-inbox-assistant alerts add "Notify when urgent emails arrive" \
+  --channel webhook \
+  --target "https://hooks.example.com/inbox"
+
+# View rule details
+aech-cli-inbox-assistant alerts show rule-uuid-here
+
+# Enable/disable rules
+aech-cli-inbox-assistant alerts enable rule-uuid-here
+aech-cli-inbox-assistant alerts disable rule-uuid-here
+
+# Remove a rule
+aech-cli-inbox-assistant alerts remove rule-uuid-here
+
+# View trigger history
+aech-cli-inbox-assistant alerts history --limit 20
+aech-cli-inbox-assistant alerts history --rule-id rule-uuid-here
+```
+
+### Supported Event Types
+
+Alert rules can monitor:
+
+| Event Type | Description |
+|------------|-------------|
+| `email_received` | Inbound emails (default) |
+| `email_sent` | Outbound emails |
+| `calendar_event` | Calendar changes |
+| `wm_thread` | Working memory thread updates |
+| `wm_commitment` | Commitment status changes |
+| `wm_decision` | Decision updates |
+
+### Rule Conditions
+
+Rules are parsed into structured conditions:
+
+- **Sender patterns**: `*cfo*`, `*@legal.company.com`
+- **Subject/body keywords**: `budget`, `urgent`, `deadline`
+- **Urgency levels**: `immediate`, `today`, `this_week`
+- **Labels**: `vip`, `billing`, `marketing`
+- **Outlook categories**: Applied category names
+- **Semantic matching**: LLM evaluation for complex rules
+
+### Cooldown & Deduplication
+
+- **Cooldown**: Configurable per-rule (default: 30 minutes)
+- **Deduplication**: Same (rule_id, event_type, event_id) won't trigger twice
 
 ## Meeting Prep
 
 Executive assistant features for meeting preparation:
 
-```bash
-# Daily briefing with schedule overview and alerts
-aech-cli-inbox-assistant calendar briefing --human
+### Features
 
-# Prep for next meeting needing attention
-aech-cli-inbox-assistant calendar prep --next --human
-
-# Prep for specific event
-aech-cli-inbox-assistant calendar prep --event-id AAMkAG...
-
-# View/configure prep rules
-aech-cli-inbox-assistant calendar prep-config --human
-```
-
-### Meeting Prep Features
-
-- **Daily Briefing**: Schedule overview, busy/free hours, back-to-back alerts, early meeting warnings
-- **Attendee Context**: Cross-references attendees with email corpus (recent emails, last subject)
+- **Daily Briefing**: Schedule overview, busy/free hours, back-to-back alerts
+- **Attendee Context**: Cross-references attendees with email corpus
 - **Configurable Rules**: Which meetings get prep based on:
   - External attendees
   - Meeting size (5+ attendees)
   - Keywords in subject (interview, review, board, exec, client, partner)
   - VIP attendee list
-  - Sender domains
 
 Configure via `prefs set meeting_prep '{"rules": [...]}'`
 
@@ -400,40 +599,33 @@ aech-cli-inbox-assistant search "contract renewal" --mode hybrid
 
 All state is stored in `~/.inbox-assistant/` (per capability convention):
 
-```
+```text
 ~/.inbox-assistant/
-├── assistant.sqlite  # Main database (emails, labels, triage_log, calendar, working memory, etc.)
-├── queries/          # SQL query templates
+├── assistant.sqlite  # Main database
+├── llm.jsonl         # LLM observability logs (configurable via LLM_LOG_PATH)
 └── preferences.json  # User preferences (optional)
 ```
 
-### Data Integrity Controls
+### Database Tables
 
-The SQLite schema enforces enterprise-grade data integrity:
+#### Core Tables
 
-| Control | Implementation |
-|---------|----------------|
-| **Referential Integrity** | All child tables use `FOREIGN KEY ... ON DELETE CASCADE` to prevent orphaned records |
-| **Cascading Deletes** | Email deletion automatically removes: attachments, chunks, triage_log, labels, reply_tracking, working memory references |
-| **CHECK Constraints** | Enum fields validated at DB level: `urgency IN ('immediate', 'today', 'this_week', 'someday')`, `extraction_status IN ('pending', 'extracting', 'completed', 'failed', 'skipped')`, etc. |
-| **NOT NULL + Defaults** | Required fields enforced; JSON arrays default to `'[]'` to avoid null-check bugs |
-| **Polymorphic FK Cleanup** | Triggers delete orphaned `chunks` when parent `emails` or `attachments` are removed |
-| **WAL Mode** | Write-Ahead Logging enabled for concurrent read/write access |
-| **Foreign Keys Enabled** | `PRAGMA foreign_keys=ON` enforced at connection time |
+| Table | Purpose |
+|-------|---------|
+| `emails` | All ingested messages with metadata, body, classification |
+| `attachments` | Email attachments with extraction status |
+| `chunks` | Searchable text segments for FTS and vector search |
+| `labels` | Email ML classifications (vip, billing, marketing, etc.) |
+| `triage_log` | Classification history |
+| `user_preferences` | Key-value preferences storage |
 
-**Indexed Fields** (optimized for common queries):
+#### Calendar Tables
 
-- `emails`: conversation_id, sender, received_at, urgency, processed_at
-- `attachments`: email_id, content_hash, extraction_status
-- `chunks`: source_type + source_id (composite)
-- `work_items`: status, type
-- `wm_threads`: status, urgency, needs_reply
-- `wm_contacts`: email, relationship
-- `wm_observations`: type, observed_at
-- `wm_decisions`: is_resolved, urgency
-- `wm_commitments`: is_completed, due_by
+| Table | Purpose |
+|-------|---------|
+| `calendar_events` | Synced calendar events cache |
 
-### Working Memory Tables
+#### Working Memory Tables
 
 | Table | Purpose |
 |-------|---------|
@@ -443,6 +635,59 @@ The SQLite schema enforces enterprise-grade data integrity:
 | `wm_commitments` | User's commitments to others |
 | `wm_observations` | Passive learnings from CC'd emails |
 | `wm_projects` | Inferred projects/initiatives |
+| `facts` | Unified business facts extraction (amounts, deadlines, tax IDs, etc.) |
+
+#### Alert Rules Tables
+
+| Table | Purpose |
+|-------|---------|
+| `alert_rules` | User-defined notification rules with parsed conditions |
+| `alert_triggers` | Alert trigger history for deduplication |
+
+#### System Tables
+
+| Table | Purpose |
+|-------|---------|
+| `actions` | CLI-initiated actions queued for RT execution |
+| `sync_state` | Delta sync tracking (delta links, last sync times) |
+| `work_items` | Internal work queue |
+
+#### Computed Views
+
+| View | Purpose |
+|------|---------|
+| `active_threads` | Derived thread state from emails (last 30 days) |
+| `contacts` | Derived contact statistics from senders |
+
+### Data Integrity Controls
+
+The SQLite schema enforces enterprise-grade data integrity:
+
+| Control | Implementation |
+|---------|----------------|
+| **Referential Integrity** | All child tables use `FOREIGN KEY ... ON DELETE CASCADE` |
+| **Cascading Deletes** | Email deletion removes: attachments, chunks, triage_log, labels, WM references |
+| **CHECK Constraints** | Enum validation: `urgency`, `extraction_status`, `action_type`, etc. |
+| **NOT NULL + Defaults** | Required fields enforced; JSON arrays default to `'[]'` |
+| **Polymorphic FK Cleanup** | Triggers delete orphaned `chunks` when parents removed |
+| **WAL Mode** | Write-Ahead Logging for concurrent access |
+| **Foreign Keys Enabled** | `PRAGMA foreign_keys=ON` at connection time |
+
+**Indexed Fields** (optimized for common queries):
+
+- `emails`: conversation_id, sender, received_at, urgency, processed_at
+- `attachments`: email_id, content_hash, extraction_status
+- `chunks`: source_type + source_id (composite)
+- `calendar_events`: start_at, end_at
+- `actions`: status
+- `alert_rules`: enabled
+- `alert_triggers`: rule_id, (rule_id, event_type, event_id)
+- `facts`: (source_type, source_id), (fact_type), status, due_date
+- `wm_threads`: status, urgency, needs_reply
+- `wm_contacts`: email, relationship
+- `wm_observations`: type, observed_at
+- `wm_decisions`: is_resolved, urgency
+- `wm_commitments`: is_completed, due_by
 
 ## Standard Folders
 
