@@ -162,7 +162,7 @@ Think step-by-step:
     return Agent(
         model_name,
         output_type=EmailClassification,
-        system_prompt=system_prompt,
+        instructions=system_prompt,
     )
 
 

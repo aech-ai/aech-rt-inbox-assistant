@@ -108,7 +108,7 @@ DO NOT extract as projects:
     return Agent(
         model_name,
         output_type=EmailAnalysis,
-        system_prompt=system_prompt,
+        instructions=system_prompt,
     )
 
 

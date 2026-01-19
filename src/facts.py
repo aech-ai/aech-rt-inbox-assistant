@@ -126,7 +126,7 @@ Return an empty list if no significant facts are found.
     return Agent(
         model_name,
         output_type=FactsExtraction,
-        system_prompt=system_prompt,
+        instructions=system_prompt,
     )
 
 

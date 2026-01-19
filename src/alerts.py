@@ -158,7 +158,7 @@ Return structured ParsedConditions. Be precise with patterns - use wildcards (*)
     return Agent(
         model_name,
         output_type=ParsedConditions,
-        system_prompt=system_prompt,
+        instructions=system_prompt,
     )
 
 
@@ -190,7 +190,7 @@ Return:
     return Agent(
         model_name,
         output_type=RuleMatchResult,
-        system_prompt=system_prompt,
+        instructions=system_prompt,
     )
 
 
