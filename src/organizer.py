@@ -18,6 +18,7 @@ from .categories_config import (
     get_flag_settings,
     format_categories_for_prompt,
 )
+from .model_utils import parse_model_string, get_model_settings
 from .working_memory.updater import WorkingMemoryUpdater
 
 logger = logging.getLogger(__name__)
@@ -93,10 +94,12 @@ def _build_agent(prefs: dict) -> Agent[None, EmailClassification]:
     """Create the AI agent for email classification."""
     # Use CLASSIFICATION_MODEL if set, otherwise fall back to MODEL_NAME
     # Default to nano model - classification is a simple pattern matching task
-    model_name = os.getenv(
+    model_string = os.getenv(
         "CLASSIFICATION_MODEL",
         os.getenv("MODEL_NAME", "openai-responses:gpt-5-mini")
     )
+    model_name, _ = parse_model_string(model_string)
+    model_settings = get_model_settings(model_string)
     cleanup_strategy = os.getenv("CLEANUP_STRATEGY", "medium").lower()
 
     category_names = get_category_names(prefs)
@@ -163,6 +166,7 @@ Think step-by-step:
         model_name,
         output_type=EmailClassification,
         instructions=system_prompt,
+        model_settings=model_settings,
     )
 
 

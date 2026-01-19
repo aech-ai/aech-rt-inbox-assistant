@@ -10,6 +10,7 @@ from typing import Any
 from pydantic_ai import Agent
 
 from ..database import get_connection
+from ..model_utils import parse_model_string, get_model_settings
 from .models import EmailAnalysis, ObservationType
 
 logger = logging.getLogger(__name__)
@@ -19,10 +20,12 @@ def _build_wm_analysis_agent() -> Agent:
     """Build the AI agent for email analysis and working memory extraction."""
     # Use WM_MODEL if set, otherwise fall back to MODEL_NAME
     # Default to mini model - WM analysis requires moderate reasoning
-    model_name = os.getenv(
+    model_string = os.getenv(
         "WM_MODEL",
         os.getenv("MODEL_NAME", "openai-responses:gpt-5-mini")
     )
+    model_name, _ = parse_model_string(model_string)
+    model_settings = get_model_settings(model_string)
 
     system_prompt = """
 You are an executive assistant analyzing emails to update working memory.
@@ -109,6 +112,7 @@ DO NOT extract as projects:
         model_name,
         output_type=EmailAnalysis,
         instructions=system_prompt,
+        model_settings=model_settings,
     )
 
 

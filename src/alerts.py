@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 
 from .database import get_connection
+from .model_utils import parse_model_string, get_model_settings
 from .triggers import make_dedupe_key, write_trigger
 
 logger = logging.getLogger(__name__)
@@ -97,10 +98,12 @@ class RuleMatchResult(BaseModel):
 
 def _build_rule_parser_agent() -> Agent[None, ParsedConditions]:
     """Build agent to parse natural language rules into structured conditions."""
-    model_name = os.getenv(
+    model_string = os.getenv(
         "RULE_PARSER_MODEL",
         os.getenv("MODEL_NAME", "openai:gpt-4o-mini"),
     )
+    model_name, _ = parse_model_string(model_string)
+    model_settings = get_model_settings(model_string)
 
     system_prompt = """
 You parse natural language email/calendar/working-memory alert rules into structured conditions.
@@ -159,15 +162,18 @@ Return structured ParsedConditions. Be precise with patterns - use wildcards (*)
         model_name,
         output_type=ParsedConditions,
         instructions=system_prompt,
+        model_settings=model_settings,
     )
 
 
 def _build_semantic_matcher_agent() -> Agent[None, RuleMatchResult]:
     """Build agent for semantic rule matching."""
-    model_name = os.getenv(
+    model_string = os.getenv(
         "ALERT_MODEL",
         os.getenv("MODEL_NAME", "openai:gpt-4o-mini"),
     )
+    model_name, _ = parse_model_string(model_string)
+    model_settings = get_model_settings(model_string)
 
     system_prompt = """
 You determine if an event matches a user-defined alert rule semantically.
@@ -191,6 +197,7 @@ Return:
         model_name,
         output_type=RuleMatchResult,
         instructions=system_prompt,
+        model_settings=model_settings,
     )
 
 

@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 
 from .database import get_connection
+from .model_utils import parse_model_string, get_model_settings
 
 logger = logging.getLogger(__name__)
 
@@ -72,10 +73,12 @@ class FactsExtraction(BaseModel):
 
 def _build_facts_agent() -> Agent:
     """Build the AI agent for facts extraction."""
-    model_name = os.getenv(
+    model_string = os.getenv(
         "FACTS_MODEL",
         os.getenv("MODEL_NAME", "openai:gpt-4o-mini")
     )
+    model_name, _ = parse_model_string(model_string)
+    model_settings = get_model_settings(model_string)
 
     system_prompt = """
 You are an expert at extracting structured facts from emails and documents.
@@ -127,6 +130,7 @@ Return an empty list if no significant facts are found.
         model_name,
         output_type=FactsExtraction,
         instructions=system_prompt,
+        model_settings=model_settings,
     )
 
 
