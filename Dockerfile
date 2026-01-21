@@ -28,9 +28,9 @@ COPY aech-main/packages/aech-llm-observability/dist/*.whl /tmp/wheels/
 COPY aech-rt-inbox-assistant/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt --find-links /tmp/wheels/
 
-# Create non-root user (align with aech-main UID/GID 1001)
-RUN groupadd -r agentaech -g 1001 && \
-    useradd -r -g agentaech -u 1001 -m -d /home/agentaech -s /bin/bash agentaech && \
+# Create non-root user (align with aech-main UID/GID 1000)
+RUN groupadd -r agentaech -g 1000 && \
+    useradd -r -g agentaech -u 1000 -m -d /home/agentaech -s /bin/bash agentaech && \
     mkdir -p /home/agentaech/.inbox-assistant /data/users && \
     chown -R agentaech:agentaech /home/agentaech /app
 
