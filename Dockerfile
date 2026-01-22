@@ -55,4 +55,5 @@ RUN pip install --no-cache-dir --user -e .
 
 # Set python path and start the service
 ENV PYTHONPATH=/app
-CMD ["python", "-m", "src.main"]
+# umask 002 ensures files are group-writable (Linux Docker permission sharing)
+CMD ["bash", "-c", "umask 002 && exec python -m src.main"]
