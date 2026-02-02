@@ -14,7 +14,6 @@ dependencies = [
     "pydantic-ai",
     "openai",
     "msal",
-    "markitdown[all]",
     "markdownify",
     "sentence-transformers",
     "aech-cli-msgraph",
