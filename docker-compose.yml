@@ -4,7 +4,8 @@ services:
       context: .
       dockerfile: Dockerfile
       additional_contexts:
-        repos: ..
+        aech-main: ../aech-main
+        aech-cli-documents: ../aech-cli-documents
     image: aech-rt-inbox-assistant
     gpus: all
     deploy:

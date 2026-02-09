@@ -20,9 +20,9 @@ RUN apt-get update && \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy dependency wheels from sibling repos (provided via additional_contexts: repos in docker-compose)
-COPY --from=repos aech-cli-msgraph/dist/*.whl /tmp/wheels/
-COPY --from=repos aech-cli-documents/dist/*.whl /tmp/wheels/
-COPY --from=repos aech-main/packages/aech-llm-observability/dist/*.whl /tmp/wheels/
+COPY --from=aech-main packages/aech-cli-msgraph/dist/*.whl /tmp/wheels/
+COPY --from=aech-cli-documents dist/*.whl /tmp/wheels/
+COPY --from=aech-main packages/aech-llm-observability/dist/*.whl /tmp/wheels/
 
 # Install Python deps as root (--find-links looks in /tmp/wheels/ first, then PyPI)
 COPY ./requirements.txt .
