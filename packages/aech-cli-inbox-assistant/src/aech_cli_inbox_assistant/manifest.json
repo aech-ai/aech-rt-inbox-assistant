@@ -68,6 +68,24 @@
       ]
     },
     {
+      "name": "ask",
+      "description": "Ask the inbox assistant a natural-language question. Uses PydanticAI tools to search inbox corpus, retrieve relevant emails, and return grounded answers with links and enrichment.",
+      "parameters": [
+        {
+          "name": "query",
+          "type": "argument",
+          "required": true,
+          "description": "Natural-language question (e.g., 'remember that email that mentioned budget cut?')."
+        },
+        {
+          "name": "max-results",
+          "type": "option",
+          "required": false,
+          "description": "Maximum matched emails to include. Default: 5."
+        }
+      ]
+    },
+    {
       "name": "stats",
       "description": "Show corpus statistics. Input: none. Output: JSON with counts for emails, attachments, chunks, embeddings. Use when checking sync status or data health.",
       "parameters": []
@@ -531,25 +549,13 @@
     },
     {
       "name": "alerts add",
-      "description": "Add a new alert rule using natural language. Input: rule description. Output: JSON with rule_id and parsed conditions. Use when user wants notifications for specific events.",
+      "description": "Add a new alert rule using natural language. Input: rule description. Output: JSON with rule_id and event types. Use when user wants notifications for specific events.",
       "parameters": [
         {
           "name": "rule",
           "type": "argument",
           "required": true,
           "description": "Natural language rule description. Example: 'Alert me when I get email from john@example.com'."
-        },
-        {
-          "name": "channel",
-          "type": "option",
-          "required": false,
-          "description": "Notification channel. Values: teams (default), email."
-        },
-        {
-          "name": "target",
-          "type": "option",
-          "required": false,
-          "description": "Channel target. For email: address. For teams: chat ID or omit for default."
         },
         {
           "name": "cooldown",

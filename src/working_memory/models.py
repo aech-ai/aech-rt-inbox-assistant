@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import quote
 import uuid
 
@@ -307,6 +307,41 @@ class EmailAnalysis(BaseModel):
     suggested_urgency: UrgencyLevel = UrgencyLevel.THIS_WEEK
     needs_reply: bool = False
     reply_deadline: str | None = None
+
+    # Principal/counterparty context (mailbox-agnostic role inference)
+    next_action_owner: Literal["principal", "counterparty", "shared", "unknown"] = Field(
+        default="unknown",
+        description=(
+            "Who should take the next concrete step from this email context. "
+            "'principal' means the represented mailbox owner."
+        ),
+    )
+    sender_org_relation: Literal["internal", "external", "unknown"] = Field(
+        default="unknown",
+        description="Whether sender is internal/external relative to principal's organization.",
+    )
+    value_flow_direction: Literal[
+        "toward_principal",
+        "away_from_principal",
+        "not_applicable",
+        "unknown",
+    ] = Field(
+        default="unknown",
+        description=(
+            "If value transfer is discussed, indicate direction relative to principal; "
+            "otherwise use not_applicable."
+        ),
+    )
+    role_context_note: str | None = Field(
+        default=None,
+        description="Short note explaining role context for downstream thread summaries.",
+    )
+    role_context_confidence: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description="Confidence for role-context inference.",
+    )
 
     # Content extraction for search indexing
     extracted_new_content: str | None = Field(

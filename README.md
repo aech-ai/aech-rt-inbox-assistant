@@ -9,6 +9,15 @@ The system has two components:
 1. **RT Service** (`src/main.py`) - Background service that polls M365, runs AI categorization, and emits triggers
 2. **CLI** (`aech-cli-inbox-assistant`) - Public interface for querying state, installed in Agent Aech's worker environment
 
+### LLM-First Standard
+
+This capability follows an LLM-first architecture:
+
+- Semantic decisions are made by typed PydanticAI agents.
+- Python code executes tools, persistence, and side effects.
+- Heuristic-only decision branches are exception cases and should be rare.
+- Critical inference failures fail loudly (no silent fallback behavior).
+
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                     SERVICE MAIN LOOP                           │
@@ -58,7 +67,7 @@ The system has two components:
 
 ## Proactive Triggers
 
-Triggers are written to `/triggers/outbox/*.json` (configurable via `RT_OUTBOX_DIR`) for the Agent Aech worker to consume. Each trigger includes routing metadata for Teams or webhook delivery.
+Triggers are written to `/triggers/outbox/*.json` (configurable via `RT_OUTBOX_DIR`) for the Agent Aech worker to consume. Inbox-assistant notifications route to Teams.
 
 ### Email Classification Triggers
 
@@ -295,6 +304,9 @@ aech-cli-inbox-assistant list --limit 20 --include-read
 # Search emails (FTS, vector, or hybrid)
 aech-cli-inbox-assistant search "contract renewal" --mode hybrid --limit 10 --facts
 
+# Ask the tool-using query agent (retrieval + links + enrichment)
+aech-cli-inbox-assistant ask "remember that email that mentioned agent handoff?"
+
 # View emails needing reply
 aech-cli-inbox-assistant reply-needed --limit 10 --include-stale
 
@@ -405,7 +417,7 @@ aech-cli-inbox-assistant timezone    # Show timezone config
 
 ## Alert Rules
 
-User-defined notification rules with natural language input. Alert rules can monitor multiple event types and route to Teams or webhooks.
+User-defined notification rules with natural language input. Alert rules can monitor multiple event types and route to Teams.
 
 ### Managing Alert Rules
 
@@ -416,13 +428,7 @@ aech-cli-inbox-assistant alerts list --enabled-only
 
 # Add a new rule
 aech-cli-inbox-assistant alerts add "Alert me when CFO emails about budget" \
-  --channel teams \
   --cooldown 60
-
-# Add rule with webhook routing
-aech-cli-inbox-assistant alerts add "Notify when urgent emails arrive" \
-  --channel webhook \
-  --target "https://hooks.example.com/inbox"
 
 # View rule details
 aech-cli-inbox-assistant alerts show rule-uuid-here

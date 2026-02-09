@@ -10,7 +10,6 @@ Supports natural language rules like:
 import json
 import logging
 import os
-import re
 import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Any
@@ -24,6 +23,8 @@ from .triggers import make_dedupe_key, write_trigger
 
 logger = logging.getLogger(__name__)
 
+_ALERT_CHANNEL_TEAMS = "teams"
+
 
 class ParsedConditions(BaseModel):
     """Structured conditions extracted from natural language rule."""
@@ -31,60 +32,6 @@ class ParsedConditions(BaseModel):
     event_types: list[str] = Field(
         default_factory=lambda: ["email_received"],
         description="Event types this rule applies to: email_received, email_sent, calendar_event, wm_thread, wm_commitment, wm_decision",
-    )
-    sender_patterns: list[str] = Field(
-        default_factory=list,
-        description="Email sender patterns (wildcards: *@legal.com, *cfo*)",
-    )
-    recipient_patterns: list[str] = Field(
-        default_factory=list,
-        description="Email recipient patterns for sent emails",
-    )
-    subject_keywords: list[str] = Field(
-        default_factory=list,
-        description="Keywords to match in email subject",
-    )
-    body_keywords: list[str] = Field(
-        default_factory=list,
-        description="Keywords to match in email body",
-    )
-    urgency_levels: list[str] = Field(
-        default_factory=list,
-        description="Urgency levels: immediate, today, this_week, someday",
-    )
-    labels: list[str] = Field(
-        default_factory=list,
-        description="Email labels to match: vip, billing, marketing, etc.",
-    )
-    categories: list[str] = Field(
-        default_factory=list,
-        description="Outlook categories: Action Required, Work, Personal, etc.",
-    )
-    # Calendar-specific
-    min_attendees: int | None = Field(
-        default=None,
-        description="Minimum number of meeting attendees",
-    )
-    organizer_patterns: list[str] = Field(
-        default_factory=list,
-        description="Calendar event organizer patterns",
-    )
-    # Working memory-specific
-    wm_types: list[str] = Field(
-        default_factory=list,
-        description="Working memory types: thread, commitment, decision",
-    )
-    overdue_only: bool = Field(
-        default=False,
-        description="Only match overdue items (for WM events)",
-    )
-    match_mode: str = Field(
-        default="any",
-        description="Match mode: 'any' (OR) or 'all' (AND)",
-    )
-    requires_semantic_match: bool = Field(
-        default=False,
-        description="True if rule needs LLM semantic matching beyond keywords",
     )
 
 
@@ -106,56 +53,17 @@ def _build_rule_parser_agent() -> Agent[None, ParsedConditions]:
     model_settings = get_model_settings(model_string)
 
     system_prompt = """
-You parse natural language email/calendar/working-memory alert rules into structured conditions.
+You parse natural-language alert rules into event type scope only.
 
-## Event Types
-Determine which event type(s) the rule applies to:
-- email_received: Incoming emails (default if not specified)
-- email_sent: Outgoing emails ("when I send", "when I email")
-- calendar_event: Calendar events ("meeting", "appointment")
-- wm_thread: Email thread tracking ("thread is stale", "awaiting reply")
-- wm_commitment: User commitments ("commitment overdue", "promised to")
-- wm_decision: Pending decisions ("decision pending", "waiting for decision")
+Return ParsedConditions with event_types based on rule intent:
+- email_received: inbound email alerts (default)
+- email_sent: outbound email alerts
+- calendar_event: calendar event alerts
+- wm_thread: working-memory thread alerts
+- wm_commitment: commitment alerts
+- wm_decision: decision alerts
 
-## Parsing Rules
-
-### Email patterns:
-- "from CFO" → sender_patterns: ["*cfo*"]
-- "from legal@company.com" → sender_patterns: ["legal@company.com"]
-- "from *@legal.company.com" → sender_patterns: ["*@legal.company.com"]
-- "to legal@" → recipient_patterns: ["*legal@*"] (for sent emails)
-
-### Keywords:
-- "about budget" → subject_keywords: ["budget"], body_keywords: ["budget"]
-- "mentions contract" → body_keywords: ["contract"]
-- "subject contains urgent" → subject_keywords: ["urgent"]
-
-### Urgency:
-- "urgent emails" → urgency_levels: ["immediate", "today"]
-- "high priority" → urgency_levels: ["immediate"]
-
-### Labels/Categories:
-- "VIP emails" → labels: ["vip"]
-- "action required" → categories: ["Action Required"]
-
-### Calendar:
-- "meeting with >5 people" → min_attendees: 5, event_types: ["calendar_event"]
-- "meeting organized by john@" → organizer_patterns: ["*john@*"]
-
-### Working Memory:
-- "commitment is overdue" → event_types: ["wm_commitment"], overdue_only: true
-- "thread awaiting reply for >3 days" → event_types: ["wm_thread"], overdue_only: true
-- "pending decision" → event_types: ["wm_decision"]
-
-### Match mode:
-- "emails from CFO about budget" → match_mode: "all" (both must match)
-- "emails from CFO or about budget" → match_mode: "any" (either matches)
-
-### Semantic matching:
-- "when someone sounds frustrated" → requires_semantic_match: true
-- "when email is complaining" → requires_semantic_match: true
-
-Return structured ParsedConditions. Be precise with patterns - use wildcards (*) appropriately.
+Always include at least one event type.
 """
 
     return Agent(
@@ -217,167 +125,104 @@ class AlertRulesEngine:
         result = await self._parser_agent.run(natural_language_rule)
         return result.output
 
-    def _pattern_matches(self, pattern: str, value: str) -> bool:
-        """Check if a pattern matches a value. Supports * wildcards."""
-        if not pattern or not value:
+    def _get_matcher_agent(self) -> Agent[None, RuleMatchResult]:
+        if self._matcher_agent is None:
+            self._matcher_agent = _build_semantic_matcher_agent()
+        return self._matcher_agent
+
+    @staticmethod
+    def _parse_rule_event_types(rule: dict[str, Any]) -> list[str]:
+        raw = rule.get("event_types")
+        if raw is None:
+            return ["email_received"]
+
+        event_types = json.loads(raw)
+        if not isinstance(event_types, list) or not all(isinstance(t, str) for t in event_types):
+            raise ValueError(f"Invalid event_types for rule {rule.get('id')}: {raw}")
+        return event_types
+
+    @staticmethod
+    def _cooldown_active(rule: dict[str, Any], now: datetime) -> bool:
+        last_triggered = rule.get("last_triggered_at")
+        if not last_triggered:
             return False
-        pattern_lower = pattern.lower()
-        value_lower = value.lower()
 
-        if "*" in pattern_lower:
-            # Convert glob pattern to regex
-            regex = pattern_lower.replace(".", r"\.").replace("*", ".*")
-            return bool(re.search(regex, value_lower))
-        return pattern_lower in value_lower
+        last_dt = datetime.fromisoformat(str(last_triggered).replace("Z", "+00:00"))
+        if last_dt.tzinfo is None:
+            last_dt = last_dt.replace(tzinfo=timezone.utc)
 
-    def _fast_match_email(
+        cooldown_minutes = int(rule.get("cooldown_minutes") or 30)
+        cooldown = timedelta(minutes=cooldown_minutes)
+        return now - last_dt < cooldown
+
+    async def _semantic_match(
         self,
-        conditions: ParsedConditions,
-        email: dict[str, Any],
-        classification: dict[str, Any],
+        rule: dict[str, Any],
         event_type: str,
-    ) -> tuple[bool, str]:
-        """Fast pre-filter for email events. Returns (matches, reason)."""
-        matches: list[bool] = []
-        reasons: list[str] = []
+        event_payload: dict[str, Any],
+        event_context: dict[str, Any] | None = None,
+    ) -> RuleMatchResult:
+        matcher = self._get_matcher_agent()
+        prompt_payload = {
+            "rule_text": rule["natural_language_rule"],
+            "event_type": event_type,
+            "event_payload": event_payload,
+            "event_context": event_context or {},
+            "principal_user_email": self.user_email,
+        }
+        result = await matcher.run(json.dumps(prompt_payload, default=str))
+        return result.output
 
-        sender = str(email.get("sender") or "").lower()
-        subject = str(email.get("subject") or "").lower()
-        body = str(email.get("body_preview") or email.get("body_markdown") or "").lower()
-        to_emails = email.get("to_emails") or []
-        if isinstance(to_emails, str):
-            try:
-                to_emails = json.loads(to_emails)
-            except Exception:
-                to_emails = [to_emails]
-
-        labels = classification.get("labels") or []
-        urgency = classification.get("urgency") or "someday"
-        categories = classification.get("outlook_categories") or []
-
-        # Check sender patterns
-        for pattern in conditions.sender_patterns:
-            if self._pattern_matches(pattern, sender):
-                matches.append(True)
-                reasons.append(f"Sender matches '{pattern}'")
-
-        # Check recipient patterns (for sent emails)
-        if event_type == "email_sent":
-            for pattern in conditions.recipient_patterns:
-                for recipient in to_emails:
-                    if self._pattern_matches(pattern, str(recipient)):
-                        matches.append(True)
-                        reasons.append(f"Recipient matches '{pattern}'")
-
-        # Check subject keywords
-        for kw in conditions.subject_keywords:
-            if kw.lower() in subject:
-                matches.append(True)
-                reasons.append(f"Subject contains '{kw}'")
-
-        # Check body keywords
-        for kw in conditions.body_keywords:
-            if kw.lower() in body:
-                matches.append(True)
-                reasons.append(f"Body contains '{kw}'")
-
-        # Check labels
-        for label in conditions.labels:
-            if label.lower() in [str(lbl).lower() for lbl in labels]:
-                matches.append(True)
-                reasons.append(f"Has label '{label}'")
-
-        # Check urgency
-        for level in conditions.urgency_levels:
-            if urgency == level:
-                matches.append(True)
-                reasons.append(f"Urgency is '{level}'")
-
-        # Check categories
-        for cat in conditions.categories:
-            if cat in categories:
-                matches.append(True)
-                reasons.append(f"Has category '{cat}'")
-
-        if not matches:
-            return False, "No conditions matched"
-
-        if conditions.match_mode == "all":
-            # Count expected matches
-            expected = (
-                len(conditions.sender_patterns)
-                + len(conditions.recipient_patterns)
-                + len(conditions.subject_keywords)
-                + len(conditions.body_keywords)
-                + len(conditions.labels)
-                + len(conditions.urgency_levels)
-                + len(conditions.categories)
-            )
-            if len(matches) >= expected:
-                return True, "; ".join(reasons)
-            return False, f"Only {len(matches)}/{expected} conditions matched"
-        else:
-            # Any condition matching is sufficient
-            return True, "; ".join(reasons)
-
-    def _fast_match_wm(
+    async def _evaluate_rules_for_event(
         self,
-        conditions: ParsedConditions,
-        wm_item: dict[str, Any],
-        wm_type: str,
-    ) -> tuple[bool, str]:
-        """Fast pre-filter for working memory events."""
-        matches: list[bool] = []
-        reasons: list[str] = []
+        event_type: str,
+        event_id: str,
+        event_payload: dict[str, Any],
+        event_context: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        conn = get_connection()
+        try:
+            rows = conn.execute("SELECT * FROM alert_rules WHERE enabled = 1").fetchall()
+            now = datetime.now(timezone.utc)
+            triggered: list[dict[str, Any]] = []
 
-        # Check if WM type matches
-        if conditions.wm_types:
-            type_map = {
-                "wm_thread": "thread",
-                "wm_commitment": "commitment",
-                "wm_decision": "decision",
-            }
-            expected_type = type_map.get(wm_type, wm_type)
-            if expected_type not in [t.lower() for t in conditions.wm_types]:
-                return False, f"WM type {wm_type} not in {conditions.wm_types}"
-            matches.append(True)
-            reasons.append(f"WM type is {wm_type}")
+            for row in rows:
+                rule = dict(row)
+                rule_id = rule["id"]
+                rule_event_types = self._parse_rule_event_types(rule)
+                if event_type not in rule_event_types:
+                    continue
 
-        # Check overdue status
-        if conditions.overdue_only:
-            is_overdue = False
-            if wm_type == "wm_commitment":
-                due_by = wm_item.get("due_by")
-                if due_by:
-                    try:
-                        due_dt = datetime.fromisoformat(str(due_by).replace("Z", "+00:00"))
-                        is_overdue = due_dt < datetime.now(timezone.utc)
-                    except Exception:
-                        pass
-            elif wm_type == "wm_thread":
-                # Thread is "overdue" if awaiting reply for too long
-                is_overdue = wm_item.get("needs_reply", False)
-            elif wm_type == "wm_decision":
-                is_overdue = not wm_item.get("is_resolved", False)
+                existing = conn.execute(
+                    "SELECT 1 FROM alert_triggers WHERE rule_id = ? AND event_type = ? AND event_id = ?",
+                    (rule_id, event_type, event_id),
+                ).fetchone()
+                if existing:
+                    continue
 
-            if is_overdue:
-                matches.append(True)
-                reasons.append("Item is overdue")
-            else:
-                return False, "Item is not overdue"
+                if self._cooldown_active(rule, now):
+                    continue
 
-        # Check urgency for threads/decisions
-        if conditions.urgency_levels:
-            item_urgency = wm_item.get("urgency", "someday")
-            if item_urgency in conditions.urgency_levels:
-                matches.append(True)
-                reasons.append(f"Urgency is {item_urgency}")
+                match_result = await self._semantic_match(
+                    rule=rule,
+                    event_type=event_type,
+                    event_payload=event_payload,
+                    event_context=event_context,
+                )
+                if not match_result.matches:
+                    continue
 
-        if not matches:
-            # If no specific conditions, match all items of this type
-            return True, f"Matches {wm_type} event"
+                triggered.append(
+                    {
+                        "rule": rule,
+                        "match_reason": match_result.match_reason or "Matched by semantic alert evaluation",
+                        "match_confidence": match_result.confidence,
+                    }
+                )
 
-        return True, "; ".join(reasons)
+            return triggered
+        finally:
+            conn.close()
 
     async def evaluate_email_rules(
         self,
@@ -386,90 +231,16 @@ class AlertRulesEngine:
         event_type: str = "email_received",
     ) -> list[dict[str, Any]]:
         """Evaluate all enabled rules against an email. Returns list of triggered rules."""
-        conn = get_connection()
-        try:
-            rows = conn.execute(
-                "SELECT * FROM alert_rules WHERE enabled = 1"
-            ).fetchall()
+        email_id = str(email.get("id") or "")
+        if not email_id:
+            raise ValueError("Email event is missing id for alert evaluation")
 
-            triggered = []
-            now = datetime.now(timezone.utc)
-            email_id = email.get("id")
-
-            for row in rows:
-                rule = dict(row)
-                rule_id = rule["id"]
-
-                # Check if rule applies to this event type
-                try:
-                    rule_event_types = json.loads(rule.get("event_types") or '["email_received"]')
-                except Exception:
-                    rule_event_types = ["email_received"]
-
-                if event_type not in rule_event_types:
-                    continue
-
-                # Check if already triggered for this event
-                existing = conn.execute(
-                    "SELECT 1 FROM alert_triggers WHERE rule_id = ? AND event_type = ? AND event_id = ?",
-                    (rule_id, event_type, email_id),
-                ).fetchone()
-                if existing:
-                    continue
-
-                # Check cooldown
-                last_triggered = rule.get("last_triggered_at")
-                if last_triggered:
-                    try:
-                        last_dt = datetime.fromisoformat(str(last_triggered).replace("Z", "+00:00"))
-                        cooldown = timedelta(minutes=rule.get("cooldown_minutes") or 30)
-                        if now - last_dt < cooldown:
-                            continue
-                    except Exception:
-                        pass
-
-                # Parse conditions
-                try:
-                    conditions = ParsedConditions.model_validate_json(
-                        rule.get("parsed_conditions_json") or "{}"
-                    )
-                except Exception:
-                    conditions = ParsedConditions()
-
-                # Fast match
-                matches, reason = self._fast_match_email(conditions, email, classification, event_type)
-
-                # Semantic match if needed
-                if matches and conditions.requires_semantic_match:
-                    if self._matcher_agent is None:
-                        self._matcher_agent = _build_semantic_matcher_agent()
-
-                    context = f"""
-Rule: {rule['natural_language_rule']}
-
-Email:
-From: {email.get('sender')}
-Subject: {email.get('subject')}
-Body: {str(email.get('body_preview') or '')[:500]}
-"""
-                    try:
-                        result = await self._matcher_agent.run(context)
-                        if not result.output.matches:
-                            continue
-                        reason = result.output.match_reason
-                    except Exception as e:
-                        logger.warning(f"Semantic matching failed: {e}")
-                        continue
-
-                if matches:
-                    triggered.append({
-                        "rule": rule,
-                        "match_reason": reason,
-                    })
-
-            return triggered
-        finally:
-            conn.close()
+        return await self._evaluate_rules_for_event(
+            event_type=event_type,
+            event_id=email_id,
+            event_payload=email,
+            event_context={"classification": classification},
+        )
 
     async def evaluate_wm_rules(
         self,
@@ -477,235 +248,38 @@ Body: {str(email.get('body_preview') or '')[:500]}
         wm_type: str,
     ) -> list[dict[str, Any]]:
         """Evaluate rules against a working memory item."""
-        conn = get_connection()
-        try:
-            rows = conn.execute(
-                "SELECT * FROM alert_rules WHERE enabled = 1"
-            ).fetchall()
+        item_id = str(
+            wm_item.get("id")
+            or wm_item.get("thread_id")
+            or wm_item.get("commitment_id")
+            or wm_item.get("decision_id")
+            or wm_item.get("conversation_id")
+            or ""
+        )
+        if not item_id:
+            raise ValueError("Working memory event is missing id for alert evaluation")
 
-            triggered = []
-            now = datetime.now(timezone.utc)
-            item_id = wm_item.get("id")
-
-            for row in rows:
-                rule = dict(row)
-                rule_id = rule["id"]
-
-                # Check if rule applies to this event type
-                try:
-                    rule_event_types = json.loads(rule.get("event_types") or '["email_received"]')
-                except Exception:
-                    rule_event_types = ["email_received"]
-
-                if wm_type not in rule_event_types:
-                    continue
-
-                # Check if already triggered
-                existing = conn.execute(
-                    "SELECT 1 FROM alert_triggers WHERE rule_id = ? AND event_type = ? AND event_id = ?",
-                    (rule_id, wm_type, item_id),
-                ).fetchone()
-                if existing:
-                    continue
-
-                # Check cooldown
-                last_triggered = rule.get("last_triggered_at")
-                if last_triggered:
-                    try:
-                        last_dt = datetime.fromisoformat(str(last_triggered).replace("Z", "+00:00"))
-                        cooldown = timedelta(minutes=rule.get("cooldown_minutes") or 30)
-                        if now - last_dt < cooldown:
-                            continue
-                    except Exception:
-                        pass
-
-                # Parse conditions
-                try:
-                    conditions = ParsedConditions.model_validate_json(
-                        rule.get("parsed_conditions_json") or "{}"
-                    )
-                except Exception:
-                    conditions = ParsedConditions()
-
-                # Fast match
-                matches, reason = self._fast_match_wm(conditions, wm_item, wm_type)
-
-                if matches:
-                    triggered.append({
-                        "rule": rule,
-                        "match_reason": reason,
-                    })
-
-            return triggered
-        finally:
-            conn.close()
-
-    def _fast_match_calendar(
-        self,
-        conditions: ParsedConditions,
-        event: dict[str, Any],
-    ) -> tuple[bool, str]:
-        """Fast pre-filter for calendar events. Returns (matches, reason)."""
-        matches: list[bool] = []
-        reasons: list[str] = []
-
-        subject = str(event.get("subject") or "").lower()
-        organizer_email = str(event.get("organizer_email") or "").lower()
-        organizer_name = str(event.get("organizer_name") or "").lower()
-        attendee_count = event.get("attendee_count") or len(event.get("attendees") or [])
-        location = str(event.get("location") or "").lower()
-
-        # Check organizer patterns
-        for pattern in conditions.organizer_patterns:
-            if self._pattern_matches(pattern, organizer_email) or self._pattern_matches(pattern, organizer_name):
-                matches.append(True)
-                reasons.append(f"Organizer matches '{pattern}'")
-
-        # Check subject keywords
-        for kw in conditions.subject_keywords:
-            if kw.lower() in subject:
-                matches.append(True)
-                reasons.append(f"Subject contains '{kw}'")
-
-        # Check body keywords in location (calendar events don't have body typically)
-        for kw in conditions.body_keywords:
-            if kw.lower() in location:
-                matches.append(True)
-                reasons.append(f"Location contains '{kw}'")
-
-        # Check minimum attendees
-        if conditions.min_attendees is not None:
-            if attendee_count >= conditions.min_attendees:
-                matches.append(True)
-                reasons.append(f"Has {attendee_count} attendees (>= {conditions.min_attendees})")
-            elif conditions.match_mode == "all":
-                return False, f"Only {attendee_count} attendees (< {conditions.min_attendees})"
-
-        if not matches:
-            # If no specific conditions matched but rule is for calendar events,
-            # check if rule has any calendar-specific conditions at all
-            has_calendar_conditions = (
-                conditions.organizer_patterns or
-                conditions.min_attendees is not None or
-                conditions.subject_keywords or
-                conditions.body_keywords
-            )
-            if not has_calendar_conditions:
-                # Rule matches all calendar events (e.g., "alert on all meetings")
-                return True, "Matches calendar event"
-            return False, "No conditions matched"
-
-        if conditions.match_mode == "all":
-            # Count expected matches
-            expected = (
-                len(conditions.organizer_patterns)
-                + len(conditions.subject_keywords)
-                + len(conditions.body_keywords)
-                + (1 if conditions.min_attendees is not None else 0)
-            )
-            if len(matches) >= expected:
-                return True, "; ".join(reasons)
-            return False, f"Only {len(matches)}/{expected} conditions matched"
-        else:
-            # Any condition matching is sufficient
-            return True, "; ".join(reasons)
+        return await self._evaluate_rules_for_event(
+            event_type=wm_type,
+            event_id=item_id,
+            event_payload=wm_item,
+            event_context={"wm_type": wm_type},
+        )
 
     async def evaluate_calendar_rules(
         self,
         event: dict[str, Any],
     ) -> list[dict[str, Any]]:
         """Evaluate all enabled rules against a calendar event. Returns list of triggered rules."""
-        conn = get_connection()
-        try:
-            rows = conn.execute(
-                "SELECT * FROM alert_rules WHERE enabled = 1"
-            ).fetchall()
+        event_id = str(event.get("id") or "")
+        if not event_id:
+            raise ValueError("Calendar event is missing id for alert evaluation")
 
-            triggered = []
-            now = datetime.now(timezone.utc)
-            event_id = event.get("id")
-
-            for row in rows:
-                rule = dict(row)
-                rule_id = rule["id"]
-
-                # Check if rule applies to calendar events
-                try:
-                    rule_event_types = json.loads(rule.get("event_types") or '["email_received"]')
-                except Exception:
-                    rule_event_types = ["email_received"]
-
-                if "calendar_event" not in rule_event_types:
-                    continue
-
-                # Check if already triggered for this event
-                existing = conn.execute(
-                    "SELECT 1 FROM alert_triggers WHERE rule_id = ? AND event_type = ? AND event_id = ?",
-                    (rule_id, "calendar_event", event_id),
-                ).fetchone()
-                if existing:
-                    continue
-
-                # Check cooldown
-                last_triggered = rule.get("last_triggered_at")
-                if last_triggered:
-                    try:
-                        last_dt = datetime.fromisoformat(str(last_triggered).replace("Z", "+00:00"))
-                        cooldown = timedelta(minutes=rule.get("cooldown_minutes") or 30)
-                        if now - last_dt < cooldown:
-                            continue
-                    except Exception:
-                        pass
-
-                # Parse conditions
-                try:
-                    conditions = ParsedConditions.model_validate_json(
-                        rule.get("parsed_conditions_json") or "{}"
-                    )
-                except Exception:
-                    conditions = ParsedConditions()
-
-                # Fast match
-                matches, reason = self._fast_match_calendar(conditions, event)
-
-                # Semantic match if needed
-                if matches and conditions.requires_semantic_match:
-                    if self._matcher_agent is None:
-                        self._matcher_agent = _build_semantic_matcher_agent()
-                    assert self._matcher_agent is not None
-
-                    attendees_str = ", ".join(
-                        f"{a.get('name', '')} <{a.get('email', '')}>"
-                        for a in (event.get("attendees") or [])[:5]
-                    )
-                    context = f"""
-Rule: {rule['natural_language_rule']}
-
-Calendar Event:
-Subject: {event.get('subject')}
-Organizer: {event.get('organizer_name')} <{event.get('organizer_email')}>
-Start: {event.get('start_at')}
-Location: {event.get('location')}
-Attendees ({event.get('attendee_count', 0)}): {attendees_str}
-"""
-                    try:
-                        result = await self._matcher_agent.run(context)
-                        if not result.output.matches:
-                            continue
-                        reason = result.output.match_reason
-                    except Exception as e:
-                        logger.warning(f"Semantic matching failed for calendar: {e}")
-                        continue
-
-                if matches:
-                    triggered.append({
-                        "rule": rule,
-                        "match_reason": reason,
-                    })
-
-            return triggered
-        finally:
-            conn.close()
+        return await self._evaluate_rules_for_event(
+            event_type="calendar_event",
+            event_id=event_id,
+            event_payload=event,
+        )
 
     def emit_alert_trigger(
         self,
@@ -730,10 +304,7 @@ Attendees ({event.get('attendee_count', 0)}): {attendees_str}
             )},
         }
 
-        channel = rule.get("channel") or "teams"
-        routing: dict[str, Any] = {"channel": channel}
-        if rule.get("channel_target"):
-            routing["target"] = rule["channel_target"]
+        routing: dict[str, Any] = {"channel": _ALERT_CHANNEL_TEAMS}
 
         dedupe_key = make_dedupe_key(
             "alert_rule_triggered",
@@ -787,8 +358,6 @@ Attendees ({event.get('attendee_count', 0)}): {attendees_str}
 
 async def create_alert_rule(
     natural_language_rule: str,
-    channel: str = "teams",
-    channel_target: str | None = None,
     cooldown_minutes: int = 30,
     created_by: str = "user",
 ) -> dict[str, Any]:
@@ -804,17 +373,14 @@ async def create_alert_rule(
         conn.execute(
             """
             INSERT INTO alert_rules
-            (id, natural_language_rule, parsed_conditions_json, event_types,
-             channel, channel_target, cooldown_minutes, created_by, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (id, natural_language_rule, event_types,
+             cooldown_minutes, created_by, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 rule_id,
                 natural_language_rule,
-                conditions.model_dump_json(),
                 json.dumps(conditions.event_types),
-                channel,
-                channel_target,
                 cooldown_minutes,
                 created_by,
                 now,
@@ -826,10 +392,7 @@ async def create_alert_rule(
         return {
             "id": rule_id,
             "natural_language_rule": natural_language_rule,
-            "parsed_conditions": conditions.model_dump(),
             "event_types": conditions.event_types,
-            "channel": channel,
-            "channel_target": channel_target,
             "cooldown_minutes": cooldown_minutes,
             "enabled": True,
         }
@@ -871,7 +434,7 @@ def update_alert_rule(rule_id: str, **kwargs: Any) -> bool:
     try:
         updates = []
         params: list[Any] = []
-        allowed_fields = {"enabled", "channel", "channel_target", "cooldown_minutes"}
+        allowed_fields = {"enabled", "cooldown_minutes"}
 
         for key, value in kwargs.items():
             if key in allowed_fields:

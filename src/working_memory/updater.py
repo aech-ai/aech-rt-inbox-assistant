@@ -74,6 +74,11 @@ DO NOT extract as projects:
 - project_mentions: Apply strict rules above. Return empty list for newsletters.
 - suggested_urgency: immediate/today/this_week/someday
 - needs_reply: true ONLY if human response is expected from user
+- next_action_owner: principal/counterparty/shared/unknown (principal = mailbox owner)
+- sender_org_relation: internal/external/unknown relative to principal organization
+- value_flow_direction: toward_principal/away_from_principal/not_applicable/unknown
+- role_context_note: one sentence to prevent principal/counterparty role inversion
+- role_context_confidence: confidence score 0-1
 
 ## Content Extraction (CRITICAL for search indexing)
 - extracted_new_content: Extract ONLY the new content written by the sender in THIS email.
@@ -98,6 +103,11 @@ DO NOT extract as projects:
   Include: name, job title, company, phone numbers, addresses, social links.
   Return empty string if no signature is found.
   This is valuable context about who the sender is.
+
+## Principal Identity
+- PRINCIPAL_MAILBOX and PRINCIPAL_DOMAIN describe who the assistant works for.
+- Do not invert roles: infer context relative to principal, not sender-centric defaults.
+- If uncertain, use unknown (do not guess).
 
 ## Inbox Cleanup Action
 - suggested_action: Recommend 'keep', 'archive', or 'delete'.
@@ -164,22 +174,19 @@ class WorkingMemoryUpdater:
         try:
             result = await self._get_agent().run(context)
             analysis = result.output
-
-            # Log LLM usage for cost tracking
-            try:
-                usage = result.usage()
-                model = os.getenv("WM_MODEL", os.getenv("MODEL_NAME", "gpt-5-mini"))
-                logger.info(
-                    f"LLM_USAGE task=wm_analysis model={model} "
-                    f"in={usage.request_tokens} out={usage.response_tokens}"
-                )
-            except Exception:
-                pass  # Usage tracking is best-effort
-
         except Exception as e:
-            logger.warning(f"Working memory analysis failed for {email.get('id')}: {e}")
-            # Fall back to basic updates without AI analysis
-            analysis = EmailAnalysis()
+            raise RuntimeError(f"WM analysis failed for email {email.get('id')}: {e}") from e
+
+        # Log LLM usage for cost tracking
+        try:
+            usage = result.usage()
+            model = os.getenv("WM_MODEL", os.getenv("MODEL_NAME", "gpt-5-mini"))
+            logger.info(
+                f"LLM_USAGE task=wm_analysis model={model} "
+                f"in={usage.request_tokens} out={usage.response_tokens}"
+            )
+        except Exception:
+            pass  # Usage tracking is best-effort
 
         conn = get_connection()
         try:
@@ -202,11 +209,22 @@ class WorkingMemoryUpdater:
                    SET body_markdown = COALESCE(?, body_markdown),
                        thread_summary = ?,
                        signature_block = COALESCE(?, signature_block),
+                       wm_needs_reply = ?,
+                       wm_reply_deadline = ?,
+                       next_action_owner = ?,
+                       sender_org_relation = ?,
+                       value_flow_direction = ?,
+                       role_context_note = ?,
+                       role_context_confidence = ?,
                        suggested_action = ?,
                        processed_at = COALESCE(processed_at, datetime('now'))
                    WHERE id = ?""",
                 (analysis.extracted_new_content, analysis.thread_summary,
-                 analysis.signature_block, analysis.suggested_action, email.get("id")),
+                 analysis.signature_block, analysis.needs_reply,
+                 analysis.reply_deadline, analysis.next_action_owner,
+                 analysis.sender_org_relation, analysis.value_flow_direction,
+                 analysis.role_context_note, analysis.role_context_confidence,
+                 analysis.suggested_action, email.get("id")),
             )
 
             conn.commit()
@@ -216,6 +234,7 @@ class WorkingMemoryUpdater:
         except Exception as e:
             logger.error(f"Failed to update working memory for {email.get('id')}: {e}")
             conn.rollback()
+            raise
         finally:
             conn.close()
 
@@ -240,6 +259,8 @@ class WorkingMemoryUpdater:
 EMAIL MODE: {mode}
 CATEGORY: {category}
 REQUIRES_REPLY (from triage): {requires_reply}
+PRINCIPAL_MAILBOX: {self.user_email}
+PRINCIPAL_DOMAIN: {self.user_domain or "unknown"}
 
 FROM: {email.get('sender', 'Unknown')}
 TO: {email.get('to_emails', '[]')}

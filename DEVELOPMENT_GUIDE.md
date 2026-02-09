@@ -26,6 +26,16 @@ Your CLI is now available to the agent.
 
 **The `manifest.json` inside your wheel is the source of truth.**
 
+## LLM-First Capability Policy
+
+For Agent Aech capabilities, default to LLM-first architecture unless there is a clear reason not to:
+
+- Semantic decisions should come from typed LLM outputs (e.g., Pydantic models).
+- Tool calls should handle retrieval, execution, and side effects.
+- Avoid hardcoded heuristic trees for intent/role/meaning decisions.
+- Exceptions should be rare and explicitly documented in code comments or docs.
+- Do not hide inference failures with silent fallbacks; fail with actionable errors.
+
 ## Manifest Format
 
 Any intelligible JSON format works, but using `generate_manifest.py` ensures accuracy and compactness:

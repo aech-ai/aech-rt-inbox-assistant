@@ -91,6 +91,13 @@ def init_db(db_path: Optional[Path] = None) -> None:
         -- Categories mode fields
         outlook_categories TEXT NOT NULL DEFAULT '[]', -- JSON array of applied Outlook categories
         urgency TEXT DEFAULT 'someday' CHECK(urgency IN ('immediate', 'today', 'this_week', 'someday')),
+        wm_needs_reply BOOLEAN,
+        wm_reply_deadline TEXT,
+        next_action_owner TEXT CHECK(next_action_owner IN ('principal', 'counterparty', 'shared', 'unknown')),
+        sender_org_relation TEXT CHECK(sender_org_relation IN ('internal', 'external', 'unknown')),
+        value_flow_direction TEXT CHECK(value_flow_direction IN ('toward_principal', 'away_from_principal', 'not_applicable', 'unknown')),
+        role_context_note TEXT,
+        role_context_confidence REAL,
         suggested_action TEXT DEFAULT 'keep' CHECK(suggested_action IN ('keep', 'archive', 'delete')),
         processed_at DATETIME,
         wm_processed_at DATETIME,  -- When working memory analysis was done
@@ -104,7 +111,16 @@ def init_db(db_path: Optional[Path] = None) -> None:
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_emails_urgency ON emails(urgency)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_emails_processed ON emails(processed_at)")
     # Migrate existing databases
-    _ensure_columns(cursor, "emails", {"wm_processed_at": "DATETIME"})
+    _ensure_columns(cursor, "emails", {
+        "wm_processed_at": "DATETIME",
+        "wm_needs_reply": "BOOLEAN",
+        "wm_reply_deadline": "TEXT",
+        "next_action_owner": "TEXT",
+        "sender_org_relation": "TEXT",
+        "value_flow_direction": "TEXT",
+        "role_context_note": "TEXT",
+        "role_context_confidence": "REAL",
+    })
 
     # Triage Log table - categories mode
     cursor.execute("""
@@ -422,10 +438,7 @@ def init_db(db_path: Optional[Path] = None) -> None:
     CREATE TABLE IF NOT EXISTS alert_rules (
         id TEXT PRIMARY KEY,
         natural_language_rule TEXT NOT NULL,
-        parsed_conditions_json TEXT NOT NULL DEFAULT '{}',
         event_types TEXT NOT NULL DEFAULT '["email_received"]',
-        channel TEXT NOT NULL DEFAULT 'teams',
-        channel_target TEXT,
         enabled BOOLEAN DEFAULT 1,
         cooldown_minutes INTEGER DEFAULT 30,
         last_triggered_at DATETIME,
@@ -435,6 +448,7 @@ def init_db(db_path: Optional[Path] = None) -> None:
         created_by TEXT DEFAULT 'user'
     )
     """)
+    _migrate_alert_rules_schema(cursor)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_alert_rules_enabled ON alert_rules(enabled)")
 
     # Alert trigger history for deduplication and auditing
@@ -498,10 +512,11 @@ def init_db(db_path: Optional[Path] = None) -> None:
 
     # === Derived Views (replace wm_threads and wm_contacts) ===
 
-    # Active threads view - computed from emails on demand
-    # Note: needs_reply logic should be done in application code (requires user_email)
+    # Active threads view - computed from latest email state per conversation.
+    # Reply/context signals are sourced from LLM-derived columns on emails.
+    cursor.execute("DROP VIEW IF EXISTS active_threads")
     cursor.execute("""
-    CREATE VIEW IF NOT EXISTS active_threads AS
+    CREATE VIEW active_threads AS
     SELECT
         e.conversation_id,
         MAX(e.received_at) as last_activity,
@@ -522,6 +537,27 @@ def init_db(db_path: Optional[Path] = None) -> None:
         (SELECT e6.urgency FROM emails e6
          WHERE e6.conversation_id = e.conversation_id
          ORDER BY e6.received_at DESC LIMIT 1) as urgency,
+        (SELECT e7.wm_needs_reply FROM emails e7
+         WHERE e7.conversation_id = e.conversation_id
+         ORDER BY e7.received_at DESC LIMIT 1) as wm_needs_reply,
+        (SELECT e8.wm_reply_deadline FROM emails e8
+         WHERE e8.conversation_id = e.conversation_id
+         ORDER BY e8.received_at DESC LIMIT 1) as wm_reply_deadline,
+        (SELECT e9.next_action_owner FROM emails e9
+         WHERE e9.conversation_id = e.conversation_id
+         ORDER BY e9.received_at DESC LIMIT 1) as next_action_owner,
+        (SELECT e10.sender_org_relation FROM emails e10
+         WHERE e10.conversation_id = e.conversation_id
+         ORDER BY e10.received_at DESC LIMIT 1) as sender_org_relation,
+        (SELECT e11.value_flow_direction FROM emails e11
+         WHERE e11.conversation_id = e.conversation_id
+         ORDER BY e11.received_at DESC LIMIT 1) as value_flow_direction,
+        (SELECT e12.role_context_note FROM emails e12
+         WHERE e12.conversation_id = e.conversation_id
+         ORDER BY e12.received_at DESC LIMIT 1) as role_context_note,
+        (SELECT e13.role_context_confidence FROM emails e13
+         WHERE e13.conversation_id = e.conversation_id
+         ORDER BY e13.received_at DESC LIMIT 1) as role_context_confidence,
         EXISTS(SELECT 1 FROM facts f
                WHERE f.source_id IN (SELECT id FROM emails WHERE conversation_id = e.conversation_id)
                AND f.fact_type IN ('decision', 'commitment', 'action_item')
@@ -565,6 +601,79 @@ def get_connection(db_path: Optional[Path] = None) -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys=ON;")
     conn.execute("PRAGMA busy_timeout = 30000;")
     return conn
+
+
+def _migrate_alert_rules_schema(cursor: sqlite3.Cursor) -> None:
+    """
+    Enforce the current alert_rules schema.
+
+    This removes legacy columns that are no longer supported:
+    - parsed_conditions_json
+    - channel
+    - channel_target
+    """
+    rows = list(cursor.execute("PRAGMA table_info(alert_rules)"))
+    if not rows:
+        return
+
+    existing_columns = {str(row[1]) for row in rows}
+    expected_columns = {
+        "id",
+        "natural_language_rule",
+        "event_types",
+        "enabled",
+        "cooldown_minutes",
+        "last_triggered_at",
+        "trigger_count",
+        "created_at",
+        "updated_at",
+        "created_by",
+    }
+    if existing_columns == expected_columns:
+        return
+
+    logger.warning("Migrating alert_rules schema to remove legacy columns.")
+    cursor.execute("PRAGMA foreign_keys=OFF;")
+    cursor.execute("DROP TABLE IF EXISTS alert_rules_new")
+    cursor.execute(
+        """
+        CREATE TABLE alert_rules_new (
+            id TEXT PRIMARY KEY,
+            natural_language_rule TEXT NOT NULL,
+            event_types TEXT NOT NULL DEFAULT '["email_received"]',
+            enabled BOOLEAN DEFAULT 1,
+            cooldown_minutes INTEGER DEFAULT 30,
+            last_triggered_at DATETIME,
+            trigger_count INTEGER DEFAULT 0,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            created_by TEXT DEFAULT 'user'
+        )
+        """
+    )
+    cursor.execute(
+        """
+        INSERT INTO alert_rules_new (
+            id, natural_language_rule, event_types, enabled, cooldown_minutes,
+            last_triggered_at, trigger_count, created_at, updated_at, created_by
+        )
+        SELECT
+            id,
+            natural_language_rule,
+            COALESCE(event_types, '["email_received"]'),
+            COALESCE(enabled, 1),
+            COALESCE(cooldown_minutes, 30),
+            last_triggered_at,
+            COALESCE(trigger_count, 0),
+            COALESCE(created_at, CURRENT_TIMESTAMP),
+            COALESCE(updated_at, CURRENT_TIMESTAMP),
+            COALESCE(created_by, 'user')
+        FROM alert_rules
+        """
+    )
+    cursor.execute("DROP TABLE alert_rules")
+    cursor.execute("ALTER TABLE alert_rules_new RENAME TO alert_rules")
+    cursor.execute("PRAGMA foreign_keys=ON;")
 
 
 def _ensure_columns(cursor: sqlite3.Cursor, table: str, columns: dict[str, str]) -> None:

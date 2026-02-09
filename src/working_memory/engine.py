@@ -31,7 +31,7 @@ class WorkingMemoryEngine:
     """
 
     def __init__(self, user_email: str):
-        self.user_email = user_email
+        self.user_email = user_email.lower().strip()
         self._last_run: datetime | None = None
 
     async def run_cycle(self) -> dict[str, int]:
@@ -128,33 +128,29 @@ class WorkingMemoryEngine:
         nudge_id: str,
     ) -> None:
         """Evaluate user alert rules against a working memory nudge."""
-        try:
-            from ..alerts import AlertRulesEngine
+        from ..alerts import AlertRulesEngine
 
-            # Map nudge type to event type
-            event_type_map = {
-                "reply_overdue": "wm_thread",
-                "urgent_thread_stale": "wm_thread",
-                "commitment_overdue": "wm_commitment",
-                "decision_pending": "wm_decision",
-            }
-            event_type = event_type_map.get(nudge_type, "wm_thread")
+        # Map nudge type to event type
+        event_type_map = {
+            "reply_overdue": "wm_thread",
+            "urgent_thread_stale": "wm_thread",
+            "commitment_overdue": "wm_commitment",
+            "decision_pending": "wm_decision",
+        }
+        event_type = event_type_map.get(nudge_type, "wm_thread")
 
-            alert_engine = AlertRulesEngine(self.user_email)
+        alert_engine = AlertRulesEngine(self.user_email)
 
-            # Await async evaluation directly
-            triggered = await alert_engine.evaluate_wm_rules(nudge, event_type)
+        triggered = await alert_engine.evaluate_wm_rules(nudge, event_type)
 
-            for t in triggered:
-                alert_engine.emit_alert_trigger(
-                    t["rule"],
-                    event_type,
-                    nudge_id,
-                    nudge,
-                    t["match_reason"],
-                )
-        except Exception as e:
-            logger.warning(f"Alert rule evaluation failed for WM nudge {nudge_id}: {e}")
+        for t in triggered:
+            alert_engine.emit_alert_trigger(
+                t["rule"],
+                event_type,
+                nudge_id,
+                nudge,
+                t["match_reason"],
+            )
 
     def _generate_nudges(self, now: datetime) -> list[dict[str, Any]]:
         """Analyze working memory and generate appropriate nudges."""
@@ -184,21 +180,21 @@ class WorkingMemoryEngine:
         conn,
         now: datetime,
     ) -> list[dict[str, Any]]:
-        """Find threads awaiting reply for too long using active_threads view."""
+        """Find threads awaiting reply using LLM-derived wm_needs_reply on latest email."""
         nudges: list[dict[str, Any]] = []
         reply_days = int(os.getenv("WM_REPLY_NUDGE_DAYS", "2"))
         threshold = (now - timedelta(days=reply_days)).isoformat()
 
-        # Use active_threads view - needs_reply is computed as last_sender != user_email
+        # Consume LLM output from latest email in each thread.
         threads = conn.execute(
             """
             SELECT * FROM active_threads
-            WHERE last_sender != ?
+            WHERE COALESCE(wm_needs_reply, 0) = 1
             AND last_activity < ?
             ORDER BY last_activity ASC
             LIMIT 5
             """,
-            (self.user_email, threshold),
+            (threshold,),
         ).fetchall()
 
         for t in threads:
@@ -218,6 +214,16 @@ class WorkingMemoryEngine:
                 "subject": t["subject"] or "(no subject)",
                 "thread_id": t["conversation_id"],
                 "conversation_id": t["conversation_id"],
+                "last_sender": t["last_sender"],
+                "participants": t["participants"],
+                "latest_email_id": t["latest_email_id"],
+                "latest_web_link": t["latest_web_link"],
+                "next_action_owner": t["next_action_owner"],
+                "sender_org_relation": t["sender_org_relation"],
+                "value_flow_direction": t["value_flow_direction"],
+                "role_context_note": t["role_context_note"],
+                "role_context_confidence": t["role_context_confidence"],
+                "reply_deadline": t["wm_reply_deadline"],
                 "days_waiting": days_waiting,
                 "message": f"No reply sent for {days_waiting} days: {(t['subject'] or '(no subject)')[:50]}",
             })

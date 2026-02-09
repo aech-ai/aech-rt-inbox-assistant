@@ -103,19 +103,15 @@ async def process_pending_content():
 
             async def process_one(email: dict) -> bool:
                 async with semaphore:
-                    try:
-                        await updater.process_email(email)
-                        conn = get_connection()
-                        conn.execute(
-                            "UPDATE emails SET wm_processed_at = datetime('now') WHERE id = ?",
-                            (email["id"],)
-                        )
-                        conn.commit()
-                        conn.close()
-                        return True
-                    except Exception as e:
-                        logger.warning(f"WM analysis failed for {email['id']}: {e}")
-                        return False
+                    await updater.process_email(email)
+                    conn = get_connection()
+                    conn.execute(
+                        "UPDATE emails SET wm_processed_at = datetime('now') WHERE id = ?",
+                        (email["id"],)
+                    )
+                    conn.commit()
+                    conn.close()
+                    return True
 
             logger.info(f"Processing {len(pending_emails)} emails for working memory (concurrency={wm_concurrency})")
             results = await asyncio.gather(*[process_one(dict(row)) for row in pending_emails])
@@ -137,56 +133,52 @@ async def process_pending_content():
             logger.info(f"Fallback embedding: {embed_results['processed']} embeddings")
 
     except Exception as e:
-        logger.warning(f"Content processing error (non-fatal): {e}")
+        logger.error(f"Content processing error: {e}")
+        raise
 
 
 async def _evaluate_sent_email_alerts(user_email: str, count: int) -> None:
     """Evaluate alert rules against recently synced sent emails."""
-    try:
-        from src.alerts import AlertRulesEngine
+    from src.alerts import AlertRulesEngine
 
-        conn = get_connection()
-        # Get recently synced sent emails (last few minutes)
-        sent_emails = conn.execute(
-            """
-            SELECT id, subject, sender, to_emails, cc_emails, received_at, body_preview
-            FROM emails
-            WHERE datetime(created_at) > datetime('now', '-5 minutes')
-            ORDER BY received_at DESC
-            LIMIT ?
-            """,
-            (count,),
-        ).fetchall()
-        conn.close()
+    conn = get_connection()
+    # Get recently synced sent emails (last few minutes)
+    sent_emails = conn.execute(
+        """
+        SELECT id, subject, sender, to_emails, cc_emails, received_at, body_preview
+        FROM emails
+        WHERE datetime(created_at) > datetime('now', '-5 minutes')
+        ORDER BY received_at DESC
+        LIMIT ?
+        """,
+        (count,),
+    ).fetchall()
+    conn.close()
 
-        if not sent_emails:
-            return
+    if not sent_emails:
+        return
 
-        alert_engine = AlertRulesEngine(user_email)
+    alert_engine = AlertRulesEngine(user_email)
 
-        for email in sent_emails:
-            email_dict = dict(email)
-            # For sent emails, classification is minimal (no LLM classification done)
-            classification = {"labels": [], "urgency": "someday", "outlook_categories": []}
+    for email in sent_emails:
+        email_dict = dict(email)
+        # For sent emails, classification is minimal (no LLM classification done)
+        classification = {"labels": [], "urgency": "someday", "outlook_categories": []}
 
-            triggered = await alert_engine.evaluate_email_rules(
-                email_dict, classification, event_type="email_sent"
+        triggered = await alert_engine.evaluate_email_rules(
+            email_dict, classification, event_type="email_sent"
+        )
+
+        for t in triggered:
+            alert_engine.emit_alert_trigger(
+                t["rule"],
+                "email_sent",
+                email_dict["id"],
+                email_dict,
+                t["match_reason"],
             )
 
-            for t in triggered:
-                alert_engine.emit_alert_trigger(
-                    t["rule"],
-                    "email_sent",
-                    email_dict["id"],
-                    email_dict,
-                    t["match_reason"],
-                )
-
-        if sent_emails:
-            logger.debug(f"Evaluated {len(sent_emails)} sent emails against alert rules")
-
-    except Exception as e:
-        logger.warning(f"Sent email alert evaluation error: {e}")
+    logger.debug(f"Evaluated {len(sent_emails)} sent emails against alert rules")
 
 
 def service_loop(user_email: str, poll_interval: int, run_once: bool, concurrency: int = 5, backfill: bool = False):

@@ -10,6 +10,7 @@ This ensures predictable machine-parseable output for agents.
 import os
 import sys
 import json
+import asyncio
 import click
 import sqlite3
 from typing import Any
@@ -235,7 +236,7 @@ def search(query: str, limit: int, mode: str, facts: bool):
 
     src_path = Path(__file__).parent.parent.parent.parent.parent / "src"
     if str(src_path) not in sys.path:
-        sys.path.insert(0, str(src_path))
+        sys.path.append(str(src_path))
 
     try:
         from search import unified_search
@@ -278,6 +279,43 @@ def search(query: str, limit: int, mode: str, facts: bool):
             item["web_link"] = r.web_link
         output.append(item)
     output_json(output)
+
+
+@app.command(cls=JSONCommand, name="ask")
+@click.argument("query")
+@click.option("--max-results", default=5, help="Maximum matched emails to return")
+def ask_query(query: str, max_results: int):
+    """Ask the inbox assistant in natural language with tool-based retrieval."""
+    from pathlib import Path
+
+    user_email = os.environ.get("DELEGATED_USER", "").strip().lower()
+    if not user_email:
+        output_error("DELEGATED_USER environment variable must be set", "missing_user")
+        sys.exit(1)
+
+    src_path = Path(__file__).parent.parent.parent.parent.parent / "src"
+    if str(src_path) not in sys.path:
+        sys.path.append(str(src_path))
+
+    try:
+        from query_agent import run_query_agent
+    except ImportError as exc:
+        output_error(f"Failed to import query agent: {exc}", "import_error")
+        sys.exit(1)
+
+    try:
+        result = asyncio.run(
+            run_query_agent(
+                user_email=user_email,
+                user_prompt=query,
+                max_results=max_results,
+            )
+        )
+    except Exception as exc:
+        output_error(f"Query agent failed: {exc}", "query_agent_error")
+        sys.exit(1)
+
+    output_json(result)
 
 
 def _search_fallback(query: str, limit: int):
@@ -1405,25 +1443,21 @@ def alerts_list(enabled_only: bool):
 
 @alerts_app.command(cls=JSONCommand, name="add")
 @click.argument("rule")
-@click.option("--channel", default="teams", help="Notification channel: teams, email")
-@click.option("--target", default=None, help="Channel target (chat ID, email address)")
 @click.option("--cooldown", default=30, help="Cooldown between triggers (minutes)")
-def alerts_add(rule: str, channel: str, target: str | None, cooldown: int):
+def alerts_add(rule: str, cooldown: int):
     """Add a new alert rule."""
     import asyncio
     from pathlib import Path
 
     src_path = Path(__file__).parent.parent.parent.parent.parent / "src"
     if str(src_path) not in sys.path:
-        sys.path.insert(0, str(src_path))
+        sys.path.append(str(src_path))
 
     try:
         from alerts import create_alert_rule
 
         result = asyncio.run(create_alert_rule(
             natural_language_rule=rule,
-            channel=channel,
-            channel_target=target,
             cooldown_minutes=cooldown,
             created_by="user",
         ))

@@ -2,8 +2,8 @@ import asyncio
 import json
 import logging
 import os
-import subprocess
 from typing import Optional
+import subprocess
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 
@@ -176,29 +176,6 @@ class Organizer:
         self.user_email: str = poller.user_email or ""
         self.agent: Optional[Agent[None, EmailClassification]] = None
         self.backfill = backfill
-        self._agent_email: Optional[str] = None
-
-    def _get_agent_email(self) -> str:
-        """Get the agent's email address (cached) via aech-cli-msgraph me."""
-        if self._agent_email is None:
-            result = subprocess.run(
-                ["aech-cli-msgraph", "me", "--json"],
-                capture_output=True, text=True, timeout=30
-            )
-            if result.returncode != 0:
-                raise RuntimeError(f"Failed to get agent email: {result.stderr or result.stdout}")
-            me = json.loads(result.stdout)
-            self._agent_email = (me.get("mail") or me.get("userPrincipalName") or "").lower()
-            if not self._agent_email:
-                raise RuntimeError("Agent email not found in 'me' response")
-            logger.info(f"Agent email: {self._agent_email}")
-        return self._agent_email
-
-    def _is_from_agent(self, sender: str) -> bool:
-        """Check if email is from the agent."""
-        if not sender:
-            return False
-        return sender.lower().strip() == self._get_agent_email()
 
     def _get_agent(self, prefs: dict) -> Agent[None, EmailClassification]:
         """Get or build the classification agent."""
@@ -243,20 +220,6 @@ class Organizer:
             email = dict(email)
         conn = get_connection()
         logger.info(f"Processing email {email['id']}: {email['subject']}")
-
-        # Check if email is from the agent - do light processing only
-        if self._is_from_agent(email.get("sender", "")):
-            logger.info(f"Email {email['id']} is from agent - skipping LLM classification")
-            try:
-                # Just mark as processed, no LLM/WM/triggers
-                conn.execute(
-                    "UPDATE emails SET processed_at = CURRENT_TIMESTAMP WHERE id = ?",
-                    (email['id'],)
-                )
-                conn.commit()
-            finally:
-                conn.close()
-            return
 
         # Construct context for AI
         vip_senders = {str(s).strip().lower() for s in (prefs.get("vip_senders") or []) if str(s).strip()}
@@ -346,7 +309,7 @@ class Organizer:
 
             # Skip triggers during backfill/onboarding
             if not self.backfill:
-                self._emit_triggers_for_email(email, decision, prefs)
+                await self._emit_triggers_for_email(email, decision, prefs)
 
                 # Evaluate user-defined alert rules
                 await self._evaluate_alert_rules(email, decision)
@@ -357,7 +320,7 @@ class Organizer:
         finally:
             conn.close()
 
-    def _emit_triggers_for_email(self, email, decision: EmailClassification, prefs: dict):
+    async def _emit_triggers_for_email(self, email, decision: EmailClassification, prefs: dict):
         """Emit triggers based on classification."""
         # Urgent trigger
         if decision.urgency == "immediate":
@@ -405,49 +368,37 @@ class Organizer:
                 "requester": email["sender"],
             }
 
-            try:
-                from .calendar_intelligence import emit_enhanced_availability_trigger
-                emit_enhanced_availability_trigger(
-                    self.user_email,
-                    {"id": email["id"], "subject": email["subject"], "sender": email["sender"]},
-                    availability_payload,
-                )
-            except Exception as cal_err:
-                logger.warning(f"Could not enhance availability trigger: {cal_err}")
-                write_trigger(
-                    self.user_email,
-                    "availability_requested",
-                    {"message_id": email["id"], "subject": email["subject"], **availability_payload},
-                    dedupe_key=make_dedupe_key("availability_requested", self.user_email, email["id"]),
-                    routing={"channel": "teams"},
-                )
+            from .calendar_intelligence import emit_enhanced_availability_trigger
+
+            await emit_enhanced_availability_trigger(
+                self.user_email,
+                {"id": email["id"], "subject": email["subject"], "sender": email["sender"]},
+                availability_payload,
+            )
 
     async def _evaluate_alert_rules(self, email: dict, decision: EmailClassification) -> None:
         """Evaluate user-defined alert rules against the email."""
-        try:
-            from .alerts import AlertRulesEngine
+        from .alerts import AlertRulesEngine
 
-            alert_engine = AlertRulesEngine(self.user_email)
-            classification = {
-                "labels": decision.labels,
-                "urgency": decision.urgency,
-                "outlook_categories": decision.outlook_categories,
-            }
+        alert_engine = AlertRulesEngine(self.user_email)
+        classification = {
+            "labels": decision.labels,
+            "urgency": decision.urgency,
+            "outlook_categories": decision.outlook_categories,
+        }
 
-            triggered = await alert_engine.evaluate_email_rules(
-                email, classification, event_type="email_received"
+        triggered = await alert_engine.evaluate_email_rules(
+            email, classification, event_type="email_received"
+        )
+
+        for t in triggered:
+            alert_engine.emit_alert_trigger(
+                t["rule"],
+                "email_received",
+                email["id"],
+                email,
+                t["match_reason"],
             )
-
-            for t in triggered:
-                alert_engine.emit_alert_trigger(
-                    t["rule"],
-                    "email_received",
-                    email["id"],
-                    email,
-                    t["match_reason"],
-                )
-        except Exception as e:
-            logger.warning(f"Alert rule evaluation failed for {email.get('id')}: {e}")
 
     def _apply_categories_and_flags(self, message_id: str, decision: EmailClassification):
         """Apply Outlook categories and flags via msgraph CLI."""
