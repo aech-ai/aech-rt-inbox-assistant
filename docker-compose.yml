@@ -1,8 +1,8 @@
 services:
   inbox-assistant:
     build:
-      context: ..
-      dockerfile: aech-rt-inbox-assistant/Dockerfile
+      context: .
+      dockerfile: Dockerfile
     image: aech-rt-inbox-assistant
     gpus: all
     deploy:
@@ -10,7 +10,7 @@ services:
         reservations:
           devices:
             - capabilities: [gpu]
-              count: 1 # or 'all' to use all available GPUs
+              count: 'all' # or 'all' to use all available GPUs
     env_file:
       - .env
     volumes:
