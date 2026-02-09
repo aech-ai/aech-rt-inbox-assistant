@@ -19,9 +19,10 @@ RUN apt-get update && \
         ghostscript \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy local wheels to /tmp/wheels (for --find-links)
-# Wheels must be pre-staged in ./wheels/ before build (COPY cannot access paths outside build context)
-COPY wheels/*.whl /tmp/wheels/
+# Copy dependency wheels from sibling repos (provided via additional_contexts: repos in docker-compose)
+COPY --from=repos aech-cli-msgraph/dist/*.whl /tmp/wheels/
+COPY --from=repos aech-cli-documents/dist/*.whl /tmp/wheels/
+COPY --from=repos aech-main/packages/aech-llm-observability/dist/*.whl /tmp/wheels/
 
 # Install Python deps as root (--find-links looks in /tmp/wheels/ first, then PyPI)
 COPY ./requirements.txt .

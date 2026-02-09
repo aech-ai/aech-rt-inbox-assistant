@@ -3,6 +3,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      additional_contexts:
+        repos: ..
     image: aech-rt-inbox-assistant
     gpus: all
     deploy:
