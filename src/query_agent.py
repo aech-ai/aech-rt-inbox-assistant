@@ -138,6 +138,17 @@ def _fetch_email_row(conn, email_id: str):
     ).fetchone()
 
 
+def _fetch_derived_learning_row(conn, learning_id: str):
+    return conn.execute(
+        """
+        SELECT id, learning_type, summary, confidence, metadata_json, last_seen_at
+        FROM derived_learnings
+        WHERE id = ?
+        """,
+        (learning_id,),
+    ).fetchone()
+
+
 def _add_hit(
     aggregate: dict[str, dict[str, Any]],
     row: dict[str, Any],
@@ -297,11 +308,44 @@ def _search_and_enrich(query: str, limit: int, mode: str) -> list[SearchHit]:
                 score=score,
             )
 
+        # 4) Derived learnings (compliance-safe retained knowledge)
+        derived_rows = conn.execute(
+            """
+            SELECT d.id, d.learning_type, d.summary, d.confidence, d.last_seen_at, bm25(derived_learnings_fts) AS rank
+            FROM derived_learnings_fts
+            JOIN derived_learnings d ON d.id = derived_learnings_fts.id
+            WHERE derived_learnings_fts MATCH ?
+            ORDER BY rank
+            LIMIT ?
+            """,
+            (query, fanout),
+        ).fetchall()
+
+        derived_hits: list[SearchHit] = []
+        for row in derived_rows:
+            derived_hits.append(
+                SearchHit(
+                    email_id=f"derived:{row['id']}",
+                    subject=f"Derived learning ({row['learning_type']})",
+                    sender="Derived Knowledge",
+                    received_at=row["last_seen_at"],
+                    conversation_id=None,
+                    web_link=None,
+                    snippet=(row["summary"] or "")[:300],
+                    score=_score_from_rank(row["rank"]),
+                    evidence_types=["derived_learning"],
+                    wm_needs_reply=None,
+                    next_action_owner=None,
+                    role_context_note=None,
+                )
+            )
+
         hits = []
         for item in aggregate.values():
             item["evidence_types"] = sorted(item["evidence_types"])
             hits.append(SearchHit(**item))
 
+        hits.extend(derived_hits)
         hits.sort(key=lambda h: (h.score, h.received_at or ""), reverse=True)
         return hits[:limit]
     except sqlite3.OperationalError as exc:
@@ -329,6 +373,7 @@ Rules:
 - For "remember/find/show that email" style requests, call search_inbox first.
 - Prefer linking directly to emails via web_link when available.
 - Do not fabricate IDs, links, or facts.
+- If only derived-learning hits are available, state that source emails were removed by retention policy.
 - If results are ambiguous, ask one clarification question.
 - Use nudge_user only when asked or when user explicitly wants a reminder/nudge.
 - Keep answers concise and practical.
@@ -358,6 +403,29 @@ Rules:
         """Get detailed context for one email ID."""
         conn = get_connection()
         try:
+            if email_id.startswith("derived:"):
+                learning_id = email_id.split(":", 1)[1]
+                learning = _fetch_derived_learning_row(conn, learning_id)
+                if learning is None:
+                    raise ValueError(f"Derived learning not found: {email_id}")
+                metadata_text = learning["metadata_json"] or ""
+                return EmailDetail(
+                    email_id=email_id,
+                    subject=f"Derived learning ({learning['learning_type']})",
+                    sender="Derived Knowledge",
+                    received_at=learning["last_seen_at"],
+                    web_link=None,
+                    body_preview=learning["summary"] or "",
+                    body_excerpt=f"{learning['summary'] or ''}\n{metadata_text}".strip()[:1500],
+                    thread_summary=None,
+                    wm_needs_reply=None,
+                    next_action_owner=None,
+                    sender_org_relation=None,
+                    value_flow_direction=None,
+                    role_context_note=None,
+                    role_context_confidence=learning["confidence"],
+                )
+
             row = _fetch_email_row(conn, email_id)
             if row is None:
                 raise ValueError(f"Email not found: {email_id}")

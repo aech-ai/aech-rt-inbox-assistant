@@ -510,6 +510,24 @@ def init_db(db_path: Optional[Path] = None) -> None:
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_facts_status ON facts(status)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_facts_due ON facts(due_date)")
 
+    # Compliance-safe retained intelligence not tied to email row lifecycle.
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS derived_learnings (
+        id TEXT PRIMARY KEY,
+        learning_key TEXT NOT NULL UNIQUE,
+        learning_type TEXT NOT NULL CHECK(learning_type IN ('interest_signal', 'preference', 'relationship', 'pattern', 'other')),
+        summary TEXT NOT NULL,
+        confidence REAL DEFAULT 0.5 CHECK(confidence >= 0.0 AND confidence <= 1.0),
+        metadata_json TEXT,
+        seen_count INTEGER DEFAULT 1,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        last_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_derived_learnings_type ON derived_learnings(learning_type)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_derived_learnings_seen ON derived_learnings(last_seen_at)")
+
     # === Derived Views (replace wm_threads and wm_contacts) ===
 
     # Active threads view - computed from latest email state per conversation.
@@ -792,6 +810,41 @@ def _ensure_fts(cursor: sqlite3.Cursor) -> None:
         DELETE FROM facts_fts WHERE id = old.id;
         INSERT OR REPLACE INTO facts_fts(id, fact_value, context, entity_normalized)
         VALUES (new.id, new.fact_value, new.context, new.entity_normalized);
+    END;
+    """)
+
+    # Create FTS5 index for derived learnings (survives email deletion).
+    cursor.execute("""
+    CREATE VIRTUAL TABLE IF NOT EXISTS derived_learnings_fts
+    USING fts5(
+        id UNINDEXED,
+        summary,
+        metadata_json,
+        tokenize = 'porter'
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TRIGGER IF NOT EXISTS derived_learnings_ai_fts
+    AFTER INSERT ON derived_learnings BEGIN
+        INSERT OR REPLACE INTO derived_learnings_fts(id, summary, metadata_json)
+        VALUES (new.id, new.summary, new.metadata_json);
+    END;
+    """)
+
+    cursor.execute("""
+    CREATE TRIGGER IF NOT EXISTS derived_learnings_ad_fts
+    AFTER DELETE ON derived_learnings BEGIN
+        DELETE FROM derived_learnings_fts WHERE id = old.id;
+    END;
+    """)
+
+    cursor.execute("""
+    CREATE TRIGGER IF NOT EXISTS derived_learnings_au_fts
+    AFTER UPDATE ON derived_learnings BEGIN
+        DELETE FROM derived_learnings_fts WHERE id = old.id;
+        INSERT OR REPLACE INTO derived_learnings_fts(id, summary, metadata_json)
+        VALUES (new.id, new.summary, new.metadata_json);
     END;
     """)
 

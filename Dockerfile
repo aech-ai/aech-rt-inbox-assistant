@@ -46,8 +46,7 @@ COPY --chown=agentaech:agentaech aech-rt-inbox-assistant/scripts/ scripts/
 
 # Install CLI packages
 COPY --chown=agentaech:agentaech aech-rt-inbox-assistant/packages/aech-cli-inbox-assistant/ packages/aech-cli-inbox-assistant/
-COPY --chown=agentaech:agentaech aech-rt-inbox-assistant/packages/aech-cli-inbox-assistant-mgmt/ packages/aech-cli-inbox-assistant-mgmt/
-RUN pip install --no-cache-dir --user packages/aech-cli-inbox-assistant/ packages/aech-cli-inbox-assistant-mgmt/
+RUN pip install --no-cache-dir --user packages/aech-cli-inbox-assistant/
 
 # Install the main package
 COPY --chown=agentaech:agentaech aech-rt-inbox-assistant/pyproject.toml .

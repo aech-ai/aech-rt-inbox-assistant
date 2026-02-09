@@ -32,7 +32,6 @@ services:
 
   # Interactive shell for testing individual commands
   # Usage: docker compose -f docker-compose.tools.yml run --rm cli aech-cli-inbox-assistant stats --human
-  # Usage: docker compose -f docker-compose.tools.yml run --rm cli aech-cli-inbox-assistant-mgmt embed --limit 50000 --human
   cli:
     image: aech-rt-inbox-assistant
     env_file:

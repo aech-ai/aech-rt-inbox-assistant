@@ -147,6 +147,25 @@ class GraphPoller:
             logger.info(f"Deleted email {message_id}", extra={"cli_stdout": data})
         except Exception as e:
             logger.error(f"Error deleting email {message_id}: {e}")
+            raise
+
+    def archive_email(self, message_id: str) -> None:
+        """Archive an email by moving it to the Archive folder."""
+        if not self.user_email:
+            raise ValueError("DELEGATED_USER is required to archive email")
+
+        headers = self._graph_client._get_headers()
+        base_path = self._graph_client._get_base_path(self.user_email)
+        move_url = f"{base_path}/messages/{message_id}/move"
+        payload = {"destinationId": "archive"}
+
+        resp = requests.post(move_url, headers=headers, json=payload, timeout=30)
+        if not resp.ok:
+            raise RuntimeError(
+                f"Archive move failed for {message_id}: {resp.status_code} {resp.text}"
+            )
+
+        logger.info(f"Archived email {message_id}")
 
     # =========================================================================
     # Full Mailbox Sync Methods (for Email Corpus Intelligence)

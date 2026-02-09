@@ -1,5 +1,6 @@
 """Working Memory Updater - processes emails to update working memory state."""
 
+import hashlib
 import json
 import logging
 import os
@@ -38,7 +39,9 @@ First, classify the email type:
 - TRANSACTIONAL: Order confirmations, account alerts. Urgency: someday. No reply needed.
 - DIRECT: Personal correspondence requiring human attention.
 
-For newsletters/automated/transactional emails: extract minimal info, no projects, no decisions.
+For newsletters/automated/transactional emails:
+- no projects, no decisions, no commitments
+- still extract lightweight learning signals about user interests (topic, source, relevance)
 
 ## For DIRECT emails (user is in TO):
 - Identify if a reply is needed and by when
@@ -66,11 +69,13 @@ DO NOT extract as projects:
 
 ## Output Guidelines
 - thread_summary_update: One sentence about what this email adds. Be concise.
-- key_points: 1-3 actionable facts (skip for newsletters/automated)
+- key_points: 1-3 actionable facts (can be empty for newsletters/automated)
 - pending_questions: Only explicit questions awaiting user's answer
 - decisions_requested: Must include the actual question and context. Empty if none.
 - commitments_made: Must include what was promised and to whom. Empty if none.
-- observations: Brief context learned. Skip generic newsletter content.
+- observations: Brief context learned.
+  For newsletters/automated content, include at most 1-2 concise "interest_signal" observations
+  when content indicates recurring topics the principal cares about.
 - project_mentions: Apply strict rules above. Return empty list for newsletters.
 - suggested_urgency: immediate/today/this_week/someday
 - needs_reply: true ONLY if human response is expected from user
@@ -159,7 +164,7 @@ class WorkingMemoryUpdater:
         self,
         email: dict,
         category_decision: dict | None = None,
-    ) -> None:
+    ) -> EmailAnalysis:
         """
         Process an email and update working memory.
 
@@ -217,6 +222,7 @@ class WorkingMemoryUpdater:
                        role_context_note = ?,
                        role_context_confidence = ?,
                        suggested_action = ?,
+                       wm_processed_at = COALESCE(wm_processed_at, datetime('now')),
                        processed_at = COALESCE(processed_at, datetime('now'))
                    WHERE id = ?""",
                 (analysis.extracted_new_content, analysis.thread_summary,
@@ -231,6 +237,7 @@ class WorkingMemoryUpdater:
             logger.debug(
                 f"Working memory updated for email {email.get('id')} (CC={is_cc})"
             )
+            return analysis
         except Exception as e:
             logger.error(f"Failed to update working memory for {email.get('id')}: {e}")
             conn.rollback()
@@ -248,6 +255,7 @@ class WorkingMemoryUpdater:
         mode = "CC (passive learning - observe only)" if is_cc else "DIRECT (may need action)"
         category = (category_decision or {}).get("category", "Unknown")
         requires_reply = (category_decision or {}).get("requires_reply", False)
+        labels = (category_decision or {}).get("labels", [])
 
         # Get body - prefer full body_markdown, fall back to preview
         body = email.get("body_markdown") or email.get("body_preview") or ""
@@ -259,6 +267,7 @@ class WorkingMemoryUpdater:
 EMAIL MODE: {mode}
 CATEGORY: {category}
 REQUIRES_REPLY (from triage): {requires_reply}
+LABELS (from triage): {json.dumps(labels)}
 PRINCIPAL_MAILBOX: {self.user_email}
 PRINCIPAL_DOMAIN: {self.user_domain or "unknown"}
 
@@ -301,6 +310,7 @@ BODY:
             "project_mention": "pattern",
             "decision_made": "preference",
             "deadline_mentioned": "pattern",
+            "interest_signal": "pattern",
             "commitment_made": "commitment",  # Should be handled by _add_commitment
         }
 
@@ -336,6 +346,13 @@ BODY:
                     now,
                 ),
             )
+            self._upsert_derived_learning(
+                conn=conn,
+                learning_type=(obs_type if obs_type == "interest_signal" else fact_type),
+                summary=obs.get("content", ""),
+                confidence=float(obs.get("confidence", 0.5) or 0.5),
+                metadata=metadata,
+            )
 
     def _add_pending_decision(
         self,
@@ -370,6 +387,13 @@ BODY:
                 now,
             ),
         )
+        self._upsert_derived_learning(
+            conn=conn,
+            learning_type="pattern",
+            summary=f"Pending decision requested: {decision['question']}",
+            confidence=float(decision.get("confidence", 0.7) or 0.7),
+            metadata=metadata,
+        )
 
     def _add_commitment(
         self,
@@ -399,6 +423,69 @@ BODY:
                 commitment.get("description", ""),
                 json.dumps(metadata) if metadata else None,
                 commitment.get("due_by"),
+                now,
+            ),
+        )
+        self._upsert_derived_learning(
+            conn=conn,
+            learning_type="pattern",
+            summary=f"Commitment pattern: {commitment['description']}",
+            confidence=float(commitment.get("confidence", 0.7) or 0.7),
+            metadata=metadata,
+        )
+
+    def _upsert_derived_learning(
+        self,
+        conn,
+        learning_type: str,
+        summary: str,
+        confidence: float,
+        metadata: dict[str, Any] | None,
+    ) -> None:
+        """Store durable derived knowledge independent from email-row retention."""
+        clean_summary = str(summary or "").strip()
+        if not clean_summary:
+            return
+
+        normalized = " ".join(clean_summary.lower().split())
+        learning_key = hashlib.sha256(
+            f"{learning_type}|{normalized}".encode("utf-8")
+        ).hexdigest()
+        now = datetime.now(timezone.utc).isoformat()
+
+        conn.execute(
+            """
+            INSERT INTO derived_learnings (
+                id, learning_key, learning_type, summary, confidence,
+                metadata_json, seen_count, created_at, updated_at, last_seen_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+            ON CONFLICT(learning_key) DO UPDATE SET
+                learning_type = excluded.learning_type,
+                summary = CASE
+                    WHEN excluded.confidence >= derived_learnings.confidence
+                    THEN excluded.summary
+                    ELSE derived_learnings.summary
+                END,
+                confidence = CASE
+                    WHEN excluded.confidence >= derived_learnings.confidence
+                    THEN excluded.confidence
+                    ELSE derived_learnings.confidence
+                END,
+                metadata_json = COALESCE(excluded.metadata_json, derived_learnings.metadata_json),
+                seen_count = derived_learnings.seen_count + 1,
+                updated_at = excluded.updated_at,
+                last_seen_at = excluded.last_seen_at
+            """,
+            (
+                str(uuid.uuid4()),
+                learning_key,
+                learning_type if learning_type in {"interest_signal", "preference", "relationship", "pattern", "other"} else "other",
+                clean_summary[:500],
+                max(0.0, min(1.0, float(confidence))),
+                json.dumps(metadata) if metadata else None,
+                now,
+                now,
                 now,
             ),
         )

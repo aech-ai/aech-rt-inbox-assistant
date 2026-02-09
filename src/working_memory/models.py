@@ -83,6 +83,7 @@ class ObservationType(str, Enum):
     MEETING_SCHEDULED = "meeting_scheduled"
     COMMITMENT_MADE = "commitment_made"
     CONTEXT_LEARNED = "context_learned"
+    INTEREST_SIGNAL = "interest_signal"
 
 
 # === Core Memory Entities ===

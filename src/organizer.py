@@ -220,6 +220,7 @@ class Organizer:
             email = dict(email)
         conn = get_connection()
         logger.info(f"Processing email {email['id']}: {email['subject']}")
+        wm_suggested_action = "keep"
 
         # Construct context for AI
         vip_senders = {str(s).strip().lower() for s in (prefs.get("vip_senders") or []) if str(s).strip()}
@@ -295,7 +296,7 @@ class Organizer:
             if self.user_email:
                 try:
                     wm_updater = WorkingMemoryUpdater(self.user_email)
-                    await wm_updater.process_email(
+                    wm_analysis = await wm_updater.process_email(
                         dict(email),
                         {
                             "outlook_categories": decision.outlook_categories,
@@ -304,8 +305,13 @@ class Organizer:
                             "labels": decision.labels,
                         },
                     )
+                    wm_suggested_action = str(getattr(wm_analysis, "suggested_action", "keep") or "keep").lower()
                 except Exception as wm_err:
                     logger.warning(f"Working memory update failed for {email['id']}: {wm_err}")
+
+            # LLM-first cleanup action (after knowledge extraction has been persisted)
+            if not self.backfill:
+                self._apply_mailbox_cleanup_action(email["id"], wm_suggested_action)
 
             # Skip triggers during backfill/onboarding
             if not self.backfill:
@@ -558,6 +564,33 @@ class Organizer:
                     updated_at = CURRENT_TIMESTAMP
                 """,
                 ("_internal.last_weekly_digest_week_start", week_start_iso),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _apply_mailbox_cleanup_action(self, message_id: str, suggested_action: str) -> None:
+        """Execute LLM-suggested mailbox cleanup action."""
+        action = (suggested_action or "keep").strip().lower()
+        if action == "keep":
+            return
+
+        if action not in {"archive", "delete"}:
+            raise ValueError(f"Unsupported suggested_action '{suggested_action}' for {message_id}")
+
+        if action == "archive":
+            self.poller.archive_email(message_id)
+        elif action == "delete":
+            self.poller.delete_email(message_id)
+
+        conn = get_connection()
+        try:
+            conn.execute(
+                """
+                DELETE FROM emails
+                WHERE id = ?
+                """,
+                (message_id,),
             )
             conn.commit()
         finally:
