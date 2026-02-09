@@ -10,6 +10,7 @@ from pydantic_ai import Agent
 
 DEFAULT_CONCURRENCY = 5
 
+from .agent_profile import append_agent_profile
 from .database import get_connection
 from .poller import GraphPoller
 from .preferences import read_preferences
@@ -210,10 +211,15 @@ Think step-by-step:
 - **availability_requested**: true if scheduling a meeting
 - **labels**: additional labels like vip, billing, marketing, newsletter, pitch, security
 """
+    instructions = append_agent_profile(
+        system_prompt,
+        capability_name="classification",
+    )
+
     return Agent(
         model_name,
         output_type=EmailClassification,
-        instructions=system_prompt,
+        instructions=instructions,
         model_settings=model_settings,
     )
 
@@ -245,10 +251,15 @@ Rules:
 Return NotificationDecision only.
 """
 
+    enriched_instructions = append_agent_profile(
+        instructions,
+        capability_name="notification_policy",
+    )
+
     return Agent(
         model_name,
         output_type=NotificationDecision,
-        instructions=instructions,
+        instructions=enriched_instructions,
         model_settings=model_settings,
     )
 
@@ -275,10 +286,15 @@ Return PeriodicInboxSummary:
 Do not invent facts not present in input.
 """
 
+    enriched_instructions = append_agent_profile(
+        instructions,
+        capability_name="periodic_summary",
+    )
+
     return Agent(
         model_name,
         output_type=PeriodicInboxSummary,
-        instructions=instructions,
+        instructions=enriched_instructions,
         model_settings=model_settings,
     )
 

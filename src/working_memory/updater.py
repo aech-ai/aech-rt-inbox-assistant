@@ -10,6 +10,7 @@ from typing import Any
 
 from pydantic_ai import Agent
 
+from ..agent_profile import append_agent_profile
 from ..database import get_connection
 from ..model_utils import parse_model_string, get_model_settings
 from .models import EmailAnalysis, ObservationType
@@ -124,10 +125,15 @@ DO NOT extract as projects:
   KEEP: real conversations, actionable items, unexpired auth codes.
 """
 
+    instructions = append_agent_profile(
+        system_prompt,
+        capability_name="working_memory",
+    )
+
     return Agent(
         model_name,
         output_type=EmailAnalysis,
-        instructions=system_prompt,
+        instructions=instructions,
         model_settings=model_settings,
     )
 

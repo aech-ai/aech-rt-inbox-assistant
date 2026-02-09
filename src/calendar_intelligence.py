@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 from zoneinfo import ZoneInfo
 
+from .agent_profile import append_agent_profile
 from .calendar import CalendarClient, TimeSlot
 from .model_utils import parse_model_string, get_model_settings
 from .triggers import make_dedupe_key, write_trigger
@@ -60,10 +61,15 @@ Rules:
 - Return ISO datetimes with timezone offsets.
 """
 
+    enriched_instructions = append_agent_profile(
+        instructions,
+        capability_name="availability_window",
+    )
+
     return Agent(
         model_name,
         output_type=AvailabilityWindowDecision,
-        instructions=instructions,
+        instructions=enriched_instructions,
         model_settings=model_settings,
     )
 
@@ -88,10 +94,15 @@ Return AvailabilityRecommendation:
 Be concrete and role-aware: this assistant works for the principal mailbox owner.
 """
 
+    enriched_instructions = append_agent_profile(
+        instructions,
+        capability_name="availability_recommendation",
+    )
+
     return Agent(
         model_name,
         output_type=AvailabilityRecommendation,
-        instructions=instructions,
+        instructions=enriched_instructions,
         model_settings=model_settings,
     )
 

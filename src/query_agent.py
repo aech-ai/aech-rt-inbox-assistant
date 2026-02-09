@@ -14,6 +14,8 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent, RunContext
 
+from .agent_profile import append_agent_profile
+
 
 def _load_local_module(module_name: str, filename: str):
     """Load module from this directory without depending on sys.path precedence."""
@@ -379,11 +381,16 @@ Rules:
 - Keep answers concise and practical.
 """
 
+    enriched_instructions = append_agent_profile(
+        instructions,
+        capability_name="query_agent",
+    )
+
     agent = Agent(
         model_name,
         deps_type=QueryAgentDeps,
         output_type=QueryAgentResponse,
-        instructions=instructions,
+        instructions=enriched_instructions,
         model_settings=model_settings,
     )
 

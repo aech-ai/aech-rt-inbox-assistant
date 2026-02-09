@@ -13,6 +13,7 @@ from typing import Optional
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 
+from .agent_profile import append_agent_profile
 from .model_utils import parse_model_string, get_model_settings
 from .database import get_connection
 from .calendar import CalendarClient
@@ -58,10 +59,15 @@ Validation rules:
 - Reject unknown action types
 """
 
+    enriched_instructions = append_agent_profile(
+        instructions,
+        capability_name="action_guard",
+    )
+
     return Agent(
         model_name,
         output_type=ActionGuardDecision,
-        instructions=instructions,
+        instructions=enriched_instructions,
         model_settings=model_settings,
     )
 

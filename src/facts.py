@@ -19,6 +19,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 
+from .agent_profile import append_agent_profile
 from .database import get_connection
 from .model_utils import parse_model_string, get_model_settings
 
@@ -126,10 +127,15 @@ Your goal is to identify key business information that users might search for la
 Return an empty list if no significant facts are found.
 """
 
+    instructions = append_agent_profile(
+        system_prompt,
+        capability_name="facts_extraction",
+    )
+
     return Agent(
         model_name,
         output_type=FactsExtraction,
-        instructions=system_prompt,
+        instructions=instructions,
         model_settings=model_settings,
     )
 

@@ -17,6 +17,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 
+from .agent_profile import append_agent_profile
 from .database import get_connection
 from .model_utils import parse_model_string, get_model_settings
 from .triggers import make_dedupe_key, write_trigger
@@ -66,10 +67,15 @@ Return ParsedConditions with event_types based on rule intent:
 Always include at least one event type.
 """
 
+    instructions = append_agent_profile(
+        system_prompt,
+        capability_name="alerts_rule_parser",
+    )
+
     return Agent(
         model_name,
         output_type=ParsedConditions,
-        instructions=system_prompt,
+        instructions=instructions,
         model_settings=model_settings,
     )
 
@@ -101,10 +107,15 @@ Return:
 - confidence: 0.0 to 1.0
 """
 
+    instructions = append_agent_profile(
+        system_prompt,
+        capability_name="alerts_semantic_matcher",
+    )
+
     return Agent(
         model_name,
         output_type=RuleMatchResult,
-        instructions=system_prompt,
+        instructions=instructions,
         model_settings=model_settings,
     )
 
