@@ -21,6 +21,7 @@ VALID_PREFERENCE_KEYS = {
     # Capability namespaces (these are dicts, not simple values)
     "meeting_prep",                  # Meeting prep config object
     "categories",                    # Email categories configuration
+    "inbox_assistant",               # Inbox autonomy + notification policy settings
 }
 
 

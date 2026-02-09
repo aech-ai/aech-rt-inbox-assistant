@@ -379,8 +379,8 @@ class EmailAnalysis(BaseModel):
             "Suggested action: 'keep', 'archive', or 'delete'. "
             "'delete' for: calendar accepts/declines/tentative, delivery receipts, "
             "out-of-office auto-replies, unsubscribe confirmations, expired auth codes "
-            "(check expiry time in email). "
-            "'archive' for: read newsletters, FYI notifications. "
+            "(check expiry time in email), and low-value newsletters after insight extraction. "
+            "'archive' for: FYI notifications that should remain in mailbox. "
             "'keep' for: real conversations, actionable items."
         ),
     )

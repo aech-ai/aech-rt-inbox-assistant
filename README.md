@@ -73,10 +73,11 @@ Triggers are written to `/triggers/outbox/*.json` (configurable via `RT_OUTBOX_D
 
 | Trigger | When | Payload |
 |---------|------|---------|
-| `urgent_email` | Email has `urgency == "immediate"` | subject, sender, message_id, reason |
-| `reply_needed` | AI detected `requires_reply == true` | message_id, subject, sender, reason |
+| `urgent_email` | Policy allows immediate interrupt for critical item | subject, sender, message_id, reason |
+| `reply_needed` | Policy decided to notify now **and** a draft reply is ready | message_id, subject, sender, reason, suggested_reply |
 | `availability_requested` | Meeting scheduling request detected | time_window, duration, constraints |
-| `availability_requested_enhanced` | Availability request + calendar context | above + actual_free_slots, proposed_slots |
+| `availability_requested_enhanced` | Availability request + calendar context + draft-ready recommendation | above + actual_free_slots, proposed_slots, suggested_reply |
+| `inbox_activity_summary_ready` | Periodic inbox summary window elapsed and new activity exists | summary, priority_items, newsletter_insights, recommended_actions |
 
 ### Executive Assistant Triggers
 
@@ -272,6 +273,7 @@ docker compose run --rm backfill-gpu
 | `DIGEST_DAY` | `friday` | Day for weekly digest |
 | `DIGEST_TIME_LOCAL` | `08:30` | Local time for digest (HH:MM) |
 | `DIGEST_WINDOW_MINUTES` | `30` | Window size for digest scheduling |
+| `INBOX_SUMMARY_INTERVAL_MINUTES` | `240` | Default cadence (minutes) for periodic inbox activity summaries |
 
 #### RT Trigger Queue
 
@@ -403,7 +405,7 @@ aech-cli-inbox-assistant actions-history --limit 20
 aech-cli-inbox-assistant prefs show
 aech-cli-inbox-assistant prefs keys
 aech-cli-inbox-assistant prefs set vip_senders '["ceo@company.com"]'
-aech-cli-inbox-assistant prefs set followup_n_days 3
+aech-cli-inbox-assistant prefs set inbox_assistant '{"teams_only": true, "alert_only_when_draft_ready": true, "periodic_summary_enabled": true, "periodic_summary_interval_minutes": 240}'
 aech-cli-inbox-assistant prefs unset vip_senders
 ```
 

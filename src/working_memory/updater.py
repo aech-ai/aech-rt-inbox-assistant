@@ -118,8 +118,9 @@ DO NOT extract as projects:
 - suggested_action: Recommend 'keep', 'archive', or 'delete'.
   DELETE: calendar accepts/declines/tentative, delivery receipts, read receipts,
           out-of-office auto-replies, unsubscribe confirmations,
-          expired auth/verification codes (check expiry time vs current time).
-  ARCHIVE: newsletters already read, FYI-only notifications, automated reports.
+          expired auth/verification codes (check expiry time vs current time),
+          and low-value newsletters/digests/marketing after extracting interest signals.
+  ARCHIVE: FYI-only notifications or automated reports that should remain in mailbox.
   KEEP: real conversations, actionable items, unexpired auth codes.
 """
 

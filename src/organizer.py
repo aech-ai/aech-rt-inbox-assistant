@@ -2,7 +2,8 @@ import asyncio
 import json
 import logging
 import os
-from typing import Optional
+from datetime import datetime, timedelta, timezone
+from typing import Any, Literal, Optional
 import subprocess
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
@@ -90,6 +91,53 @@ class EmailClassification(BaseModel):
     )
 
 
+class NotificationDecision(BaseModel):
+    """LLM policy decision for interrupting the user and preparing drafts."""
+
+    importance: Literal["critical", "important", "routine", "low"] = Field(
+        default="routine",
+        description="Overall importance of this email to the principal.",
+    )
+    notify_now: bool = Field(
+        default=False,
+        description="Whether to send an immediate notification now.",
+    )
+    notification_channel: Literal["teams", "none"] = Field(
+        default="none",
+        description="Delivery channel for immediate notifications.",
+    )
+    notification_reason: str = Field(
+        default="",
+        description="Why this should (or should not) interrupt the user now.",
+    )
+    create_reply_draft: bool = Field(
+        default=False,
+        description="Whether to prepare a suggested reply draft for the user.",
+    )
+    reply_draft: Optional[str] = Field(
+        default=None,
+        description="Suggested reply draft text. Never auto-send.",
+    )
+    include_in_periodic_summary: bool = Field(
+        default=True,
+        description="Whether this item belongs in periodic inbox summary.",
+    )
+    summary_note: str = Field(
+        default="",
+        description="Short summary note for digest context.",
+    )
+
+
+class PeriodicInboxSummary(BaseModel):
+    """Typed summary for periodic inbox digest trigger payloads."""
+
+    summary: str = Field(description="High-level summary of recent inbox activity.")
+    priority_items: list[str] = Field(default_factory=list)
+    draft_ready_items: list[str] = Field(default_factory=list)
+    newsletter_insights: list[str] = Field(default_factory=list)
+    recommended_actions: list[str] = Field(default_factory=list)
+
+
 def _build_agent(prefs: dict) -> Agent[None, EmailClassification]:
     """Create the AI agent for email classification."""
     # Use CLASSIFICATION_MODEL if set, otherwise fall back to MODEL_NAME
@@ -170,11 +218,78 @@ Think step-by-step:
     )
 
 
+def _build_notification_policy_agent() -> Agent[None, NotificationDecision]:
+    model_string = os.getenv(
+        "NOTIFICATION_POLICY_MODEL",
+        os.getenv("MODEL_NAME", "openai-responses:gpt-5-mini"),
+    )
+    model_name, _ = parse_model_string(model_string)
+    model_settings = get_model_settings(model_string)
+
+    instructions = """
+You are the inbox communication policy for an executive assistant.
+Input is JSON describing an email, its triage decision, working-memory analysis,
+and user communication preferences.
+
+Your job is to decide if the principal should be interrupted immediately.
+
+Rules:
+- Prefer NO immediate interruption for routine newsletters, automated notices, and low-value updates.
+- If immediate interruption is warranted, use notification_channel='teams'.
+- Prefer immediate notifications when a ready-to-paste reply draft would materially save user time.
+- Never send messages automatically. Drafts are suggestions only.
+- create_reply_draft=true only when a concise draft is genuinely useful.
+- If create_reply_draft=true, reply_draft must be non-empty and professional.
+- include_in_periodic_summary should usually be true unless the item is irrelevant noise.
+
+Return NotificationDecision only.
+"""
+
+    return Agent(
+        model_name,
+        output_type=NotificationDecision,
+        instructions=instructions,
+        model_settings=model_settings,
+    )
+
+
+def _build_periodic_summary_agent() -> Agent[None, PeriodicInboxSummary]:
+    model_string = os.getenv(
+        "INBOX_SUMMARY_MODEL",
+        os.getenv("MODEL_NAME", "openai-responses:gpt-5-mini"),
+    )
+    model_name, _ = parse_model_string(model_string)
+    model_settings = get_model_settings(model_string)
+
+    instructions = """
+You generate concise periodic inbox activity summaries for the principal.
+Input is JSON with recent emails and retained interest signals.
+
+Return PeriodicInboxSummary:
+- summary: 2-4 sentences, practical and concrete.
+- priority_items: short bullets for high-signal items.
+- draft_ready_items: subjects where a prepared draft is likely useful.
+- newsletter_insights: distilled insights from newsletters/automated feeds.
+- recommended_actions: concrete next actions.
+
+Do not invent facts not present in input.
+"""
+
+    return Agent(
+        model_name,
+        output_type=PeriodicInboxSummary,
+        instructions=instructions,
+        model_settings=model_settings,
+    )
+
+
 class Organizer:
     def __init__(self, poller: GraphPoller, backfill: bool = False):
         self.poller = poller
         self.user_email: str = poller.user_email or ""
         self.agent: Optional[Agent[None, EmailClassification]] = None
+        self._notification_agent: Optional[Agent[None, NotificationDecision]] = None
+        self._periodic_summary_agent: Optional[Agent[None, PeriodicInboxSummary]] = None
         self.backfill = backfill
 
     def _get_agent(self, prefs: dict) -> Agent[None, EmailClassification]:
@@ -183,6 +298,23 @@ class Organizer:
             logger.info("Building classification agent")
             self.agent = _build_agent(prefs)
         return self.agent
+
+    def _get_notification_agent(self) -> Agent[None, NotificationDecision]:
+        if self._notification_agent is None:
+            logger.info("Building notification policy agent")
+            self._notification_agent = _build_notification_policy_agent()
+        return self._notification_agent
+
+    def _get_periodic_summary_agent(self) -> Agent[None, PeriodicInboxSummary]:
+        if self._periodic_summary_agent is None:
+            logger.info("Building periodic summary agent")
+            self._periodic_summary_agent = _build_periodic_summary_agent()
+        return self._periodic_summary_agent
+
+    @staticmethod
+    def _inbox_assistant_prefs(prefs: dict[str, Any]) -> dict[str, Any]:
+        raw = prefs.get("inbox_assistant")
+        return raw if isinstance(raw, dict) else {}
 
     async def organize_emails(self, concurrency: int = DEFAULT_CONCURRENCY):
         """Iterate over unprocessed emails and organize them in parallel."""
@@ -196,6 +328,8 @@ class Organizer:
 
         if not emails:
             logger.info("No unprocessed emails found")
+            self._emit_periodic_summary_trigger(prefs)
+            self._emit_weekly_digest_trigger(prefs)
             return
 
         logger.info(f"Processing {len(emails)} emails with concurrency={concurrency}")
@@ -211,7 +345,8 @@ class Organizer:
 
         logger.info(f"Finished processing {len(emails)} emails")
 
-        # Working Memory Engine handles staleness and follow-up nudges
+        # Working Memory Engine handles staleness and follow-up nudges.
+        self._emit_periodic_summary_trigger(prefs)
         self._emit_weekly_digest_trigger(prefs)
 
     async def _process_email(self, email, prefs: dict):
@@ -221,6 +356,7 @@ class Organizer:
         conn = get_connection()
         logger.info(f"Processing email {email['id']}: {email['subject']}")
         wm_suggested_action = "keep"
+        notification_decision = NotificationDecision()
 
         # Construct context for AI
         vip_senders = {str(s).strip().lower() for s in (prefs.get("vip_senders") or []) if str(s).strip()}
@@ -309,13 +445,26 @@ class Organizer:
                 except Exception as wm_err:
                     logger.warning(f"Working memory update failed for {email['id']}: {wm_err}")
 
+            if not self.backfill:
+                notification_decision = await self._plan_notification(
+                    email=email,
+                    decision=decision,
+                    prefs=prefs,
+                    wm_suggested_action=wm_suggested_action,
+                )
+
             # LLM-first cleanup action (after knowledge extraction has been persisted)
             if not self.backfill:
                 self._apply_mailbox_cleanup_action(email["id"], wm_suggested_action)
 
             # Skip triggers during backfill/onboarding
             if not self.backfill:
-                await self._emit_triggers_for_email(email, decision, prefs)
+                await self._emit_triggers_for_email(
+                    email=email,
+                    decision=decision,
+                    prefs=prefs,
+                    notification_decision=notification_decision,
+                )
 
                 # Evaluate user-defined alert rules
                 await self._evaluate_alert_rules(email, decision)
@@ -326,45 +475,102 @@ class Organizer:
         finally:
             conn.close()
 
-    async def _emit_triggers_for_email(self, email, decision: EmailClassification, prefs: dict):
-        """Emit triggers based on classification."""
-        # Urgent trigger
-        if decision.urgency == "immediate":
-            write_trigger(
-                self.user_email,
-                "urgent_email",
-                {
-                    "subject": email['subject'],
-                    "sender": email["sender"],
-                    "message_id": email["id"],
-                    "received_at": email["received_at"],
-                    "reason": decision.reason
-                },
-                dedupe_key=make_dedupe_key("urgent_email", self.user_email, email["id"]),
-                routing={"channel": "teams"}
-            )
+    async def _plan_notification(
+        self,
+        *,
+        email: dict[str, Any],
+        decision: EmailClassification,
+        prefs: dict[str, Any],
+        wm_suggested_action: str,
+    ) -> NotificationDecision:
+        """Run LLM policy to decide whether to interrupt now and whether to prepare a draft."""
+        inbox_prefs = self._inbox_assistant_prefs(prefs)
+        context = {
+            "email": {
+                "id": email.get("id"),
+                "subject": email.get("subject"),
+                "sender": email.get("sender"),
+                "received_at": email.get("received_at"),
+                "body_preview": email.get("body_preview"),
+            },
+            "classification": {
+                "urgency": decision.urgency,
+                "reason": decision.reason,
+                "labels": decision.labels,
+                "requires_reply": decision.requires_reply,
+                "reply_reason": decision.reply_reason,
+                "availability_requested": decision.availability_requested,
+                "availability": decision.availability.model_dump(mode="json") if decision.availability else None,
+            },
+            "working_memory": {"suggested_action": wm_suggested_action},
+            "preferences": {
+                "teams_only": bool(inbox_prefs.get("teams_only", True)),
+                "alert_only_when_draft_ready": bool(
+                    inbox_prefs.get("alert_only_when_draft_ready", True)
+                ),
+            },
+            "principal_user_email": self.user_email,
+        }
 
-        # Reply needed trigger
-        if decision.requires_reply:
-            write_trigger(
-                self.user_email,
-                "reply_needed",
-                {
-                    "message_id": email["id"],
-                    "subject": email["subject"],
-                    "sender": email["sender"],
-                    "received_at": email["received_at"],
-                    "reason": decision.reply_reason or decision.reason,
-                },
-                dedupe_key=make_dedupe_key("reply_needed", self.user_email, email["id"]),
-                routing={"channel": "teams"},
-            )
+        result = await self._get_notification_agent().run(json.dumps(context, default=str))
+        policy = result.output
 
-        # Availability request trigger
+        try:
+            usage = result.usage()
+            model = os.getenv("NOTIFICATION_POLICY_MODEL", os.getenv("MODEL_NAME", "gpt-5-mini"))
+            logger.info(
+                f"LLM_USAGE task=notification_policy model={model} "
+                f"in={usage.request_tokens} out={usage.response_tokens}"
+            )
+        except Exception:
+            pass
+
+        if policy.notify_now and policy.notification_channel == "none":
+            raise ValueError("Notification policy invalid: notify_now=true requires a delivery channel")
+
+        if policy.create_reply_draft and not str(policy.reply_draft or "").strip():
+            raise ValueError("Notification policy invalid: create_reply_draft=true but reply_draft is empty")
+
+        if bool(inbox_prefs.get("teams_only", True)) and policy.notification_channel not in {"teams", "none"}:
+            raise ValueError(f"Notification policy invalid channel: {policy.notification_channel}")
+
+        if (
+            bool(inbox_prefs.get("alert_only_when_draft_ready", True))
+            and policy.notify_now
+            and not policy.create_reply_draft
+            and not decision.availability_requested
+            and decision.urgency != "immediate"
+        ):
+            policy.notify_now = False
+            policy.notification_channel = "none"
+            if not policy.notification_reason:
+                policy.notification_reason = "Deferred to summary because no useful draft was prepared."
+
+        if not policy.notify_now:
+            policy.notification_channel = "none"
+
+        return policy
+
+    async def _emit_triggers_for_email(
+        self,
+        *,
+        email: dict[str, Any],
+        decision: EmailClassification,
+        prefs: dict[str, Any],
+        notification_decision: NotificationDecision,
+    ) -> None:
+        """Emit policy-gated triggers (draft-first, Teams-only)."""
+        inbox_prefs = self._inbox_assistant_prefs(prefs)
+        alert_only_when_draft_ready = bool(inbox_prefs.get("alert_only_when_draft_ready", True))
+        notify_now = bool(notification_decision.notify_now)
+        draft_text = str(notification_decision.reply_draft or "").strip()
+
+        # Availability requests can produce a high-value draft from calendar-aware reasoning.
         if decision.availability_requested:
+            if not notify_now:
+                return
             availability = decision.availability
             default_timezone = str(prefs.get("timezone") or os.getenv("DEFAULT_TIMEZONE", "UTC"))
-
             availability_payload = {
                 "time_window": getattr(availability, "time_window", None) if availability else None,
                 "duration_minutes": (getattr(availability, "duration_minutes", None) if availability else None) or 30,
@@ -374,12 +580,87 @@ class Organizer:
                 "requester": email["sender"],
             }
 
-            from .calendar_intelligence import emit_enhanced_availability_trigger
+            from .calendar_intelligence import CalendarIntelligence
 
-            await emit_enhanced_availability_trigger(
+            intelligence = CalendarIntelligence()
+            enhanced_payload = await intelligence.enhance_availability_trigger(availability_payload)
+            enhanced_payload["message_id"] = email.get("id")
+            enhanced_payload["subject"] = email.get("subject")
+            enhanced_payload["requester"] = email.get("sender")
+            enhanced_payload["importance"] = notification_decision.importance
+            enhanced_payload["notification_reason"] = notification_decision.notification_reason or decision.reason
+            enhanced_payload["summary_note"] = notification_decision.summary_note
+
+            enhanced_draft = str(enhanced_payload.get("suggested_reply") or "").strip()
+            if not enhanced_draft and draft_text:
+                enhanced_payload["suggested_reply"] = draft_text
+                enhanced_draft = draft_text
+
+            if notify_now and (not alert_only_when_draft_ready or enhanced_draft):
+                write_trigger(
+                    self.user_email,
+                    "availability_requested_enhanced",
+                    enhanced_payload,
+                    dedupe_key=make_dedupe_key("availability_requested_enhanced", self.user_email, email["id"]),
+                    routing={"channel": "teams"},
+                )
+            elif notify_now and alert_only_when_draft_ready and not enhanced_draft:
+                logger.info(
+                    "Suppressed availability notification for %s: draft required but unavailable",
+                    email["id"],
+                )
+            return
+
+        if not notify_now:
+            return
+
+        if notification_decision.notification_channel != "teams":
+            raise ValueError(
+                f"Notification policy requested unsupported immediate channel: "
+                f"{notification_decision.notification_channel}"
+            )
+
+        has_draft = bool(draft_text)
+        if alert_only_when_draft_ready and not has_draft and decision.urgency != "immediate":
+            logger.info("Suppressed immediate notification for %s: no draft prepared", email["id"])
+            return
+
+        if decision.urgency == "immediate" and not has_draft:
+            write_trigger(
                 self.user_email,
-                {"id": email["id"], "subject": email["subject"], "sender": email["sender"]},
-                availability_payload,
+                "urgent_email",
+                {
+                    "subject": email["subject"],
+                    "sender": email["sender"],
+                    "message_id": email["id"],
+                    "received_at": email["received_at"],
+                    "reason": notification_decision.notification_reason or decision.reason,
+                    "importance": notification_decision.importance,
+                    "summary_note": notification_decision.summary_note,
+                },
+                dedupe_key=make_dedupe_key("urgent_email", self.user_email, email["id"]),
+                routing={"channel": "teams"},
+            )
+            return
+
+        if has_draft:
+            write_trigger(
+                self.user_email,
+                "reply_needed",
+                {
+                    "message_id": email["id"],
+                    "subject": email["subject"],
+                    "sender": email["sender"],
+                    "received_at": email["received_at"],
+                    "reason": notification_decision.notification_reason or decision.reply_reason or decision.reason,
+                    "suggested_reply": draft_text,
+                    "draft_ready": True,
+                    "do_not_send_automatically": True,
+                    "importance": notification_decision.importance,
+                    "summary_note": notification_decision.summary_note,
+                },
+                dedupe_key=make_dedupe_key("reply_needed", self.user_email, email["id"]),
+                routing={"channel": "teams"},
             )
 
     async def _evaluate_alert_rules(self, email: dict, decision: EmailClassification) -> None:
@@ -443,6 +724,157 @@ class Organizer:
             logger.warning(f"Timeout applying categories for {message_id}")
         except Exception as e:
             logger.warning(f"Error applying categories for {message_id}: {e}")
+
+    @staticmethod
+    def _upsert_user_preference(conn, key: str, value: str) -> None:
+        conn.execute(
+            """
+            INSERT INTO user_preferences (key, value, updated_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(key) DO UPDATE SET
+                value = excluded.value,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (key, value),
+        )
+
+    def _emit_periodic_summary_trigger(self, prefs: dict[str, Any]) -> None:
+        """Emit periodic inbox activity summary trigger using LLM synthesis."""
+        inbox_prefs = self._inbox_assistant_prefs(prefs)
+        enabled = bool(inbox_prefs.get("periodic_summary_enabled", True))
+        if not enabled:
+            return
+
+        raw_interval = inbox_prefs.get(
+            "periodic_summary_interval_minutes",
+            os.getenv("INBOX_SUMMARY_INTERVAL_MINUTES", "240"),
+        )
+        try:
+            interval_minutes = int(raw_interval)
+        except Exception as exc:
+            raise ValueError(
+                f"Invalid periodic_summary_interval_minutes: {raw_interval}"
+            ) from exc
+        if interval_minutes <= 0:
+            raise ValueError(f"periodic_summary_interval_minutes must be > 0, got {interval_minutes}")
+
+        now_utc = datetime.now(timezone.utc)
+        conn = get_connection()
+        try:
+            last_row = conn.execute(
+                "SELECT value FROM user_preferences WHERE key = ?",
+                ("_internal.last_periodic_inbox_summary_at",),
+            ).fetchone()
+
+            if last_row and str(last_row[0]).strip():
+                try:
+                    last_summary = datetime.fromisoformat(str(last_row[0]).replace("Z", "+00:00"))
+                    if last_summary.tzinfo is None:
+                        last_summary = last_summary.replace(tzinfo=timezone.utc)
+                except Exception:
+                    last_summary = now_utc - timedelta(minutes=interval_minutes + 1)
+            else:
+                last_summary = now_utc - timedelta(minutes=interval_minutes + 1)
+
+            if now_utc - last_summary < timedelta(minutes=interval_minutes):
+                return
+
+            since_iso = last_summary.isoformat()
+            email_rows = conn.execute(
+                """
+                SELECT id, subject, sender, received_at, urgency, outlook_categories,
+                       wm_needs_reply, suggested_action, thread_summary, body_preview
+                FROM emails
+                WHERE received_at IS NOT NULL
+                  AND datetime(received_at) >= datetime(?)
+                ORDER BY received_at DESC
+                LIMIT 120
+                """,
+                (since_iso,),
+            ).fetchall()
+            insight_rows = conn.execute(
+                """
+                SELECT summary, confidence, last_seen_at
+                FROM derived_learnings
+                WHERE learning_type = 'interest_signal'
+                  AND datetime(last_seen_at) >= datetime(?)
+                ORDER BY last_seen_at DESC
+                LIMIT 30
+                """,
+                (since_iso,),
+            ).fetchall()
+
+            if not email_rows and not insight_rows:
+                self._upsert_user_preference(conn, "_internal.last_periodic_inbox_summary_at", now_utc.isoformat())
+                conn.commit()
+                return
+
+            summary_context = {
+                "window_start": since_iso,
+                "window_end": now_utc.isoformat(),
+                "email_count": len(email_rows),
+                "emails": [
+                    {
+                        "subject": row["subject"],
+                        "sender": row["sender"],
+                        "received_at": row["received_at"],
+                        "urgency": row["urgency"],
+                        "outlook_categories": row["outlook_categories"],
+                        "wm_needs_reply": row["wm_needs_reply"],
+                        "suggested_action": row["suggested_action"],
+                        "thread_summary": row["thread_summary"],
+                        "body_preview": row["body_preview"],
+                    }
+                    for row in email_rows
+                ],
+                "interest_signals": [
+                    {
+                        "summary": row["summary"],
+                        "confidence": row["confidence"],
+                        "last_seen_at": row["last_seen_at"],
+                    }
+                    for row in insight_rows
+                ],
+            }
+            summary_result = self._get_periodic_summary_agent().run_sync(json.dumps(summary_context, default=str))
+            summary = summary_result.output
+
+            try:
+                usage = summary_result.usage()
+                model = os.getenv("INBOX_SUMMARY_MODEL", os.getenv("MODEL_NAME", "gpt-5-mini"))
+                logger.info(
+                    f"LLM_USAGE task=periodic_summary model={model} "
+                    f"in={usage.request_tokens} out={usage.response_tokens}"
+                )
+            except Exception:
+                pass
+
+            slot_start = int(now_utc.timestamp() // (interval_minutes * 60))
+            write_trigger(
+                self.user_email,
+                "inbox_activity_summary_ready",
+                {
+                    "window_start": since_iso,
+                    "window_end": now_utc.isoformat(),
+                    "email_count": len(email_rows),
+                    "summary": summary.summary,
+                    "priority_items": summary.priority_items,
+                    "draft_ready_items": summary.draft_ready_items,
+                    "newsletter_insights": summary.newsletter_insights,
+                    "recommended_actions": summary.recommended_actions,
+                },
+                dedupe_key=make_dedupe_key(
+                    "inbox_activity_summary_ready",
+                    self.user_email,
+                    str(slot_start),
+                ),
+                routing={"channel": "teams"},
+            )
+
+            self._upsert_user_preference(conn, "_internal.last_periodic_inbox_summary_at", now_utc.isoformat())
+            conn.commit()
+        finally:
+            conn.close()
 
     def _emit_weekly_digest_trigger(self, prefs: dict) -> None:
         enabled = os.getenv("ENABLE_WEEKLY_DIGEST", "").strip().lower() in {"1", "true", "yes"}
@@ -555,15 +987,8 @@ class Organizer:
                 routing={"channel": "teams"},
             )
 
-            conn.execute(
-                """
-                INSERT INTO user_preferences (key, value, updated_at)
-                VALUES (?, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT(key) DO UPDATE SET
-                    value = excluded.value,
-                    updated_at = CURRENT_TIMESTAMP
-                """,
-                ("_internal.last_weekly_digest_week_start", week_start_iso),
+            self._upsert_user_preference(
+                conn, "_internal.last_weekly_digest_week_start", week_start_iso
             )
             conn.commit()
         finally:
