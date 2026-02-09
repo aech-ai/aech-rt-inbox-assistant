@@ -67,7 +67,7 @@ Use the `categories` subcommand to manage your category profile:
 
 ```bash
 # List your categories (auto-populates defaults on first use)
-aech-cli-inbox-assistant categories list --human
+aech-cli-inbox-assistant categories list
 
 # Add a new category
 aech-cli-inbox-assistant categories add "Urgent" --color red --flag today -d "Time-sensitive items"
@@ -82,7 +82,7 @@ aech-cli-inbox-assistant categories remove "Old Category"
 aech-cli-inbox-assistant categories reset --yes
 
 # List available colors
-aech-cli-inbox-assistant categories colors --human
+aech-cli-inbox-assistant categories colors
 ```
 
 Categories are stored in your user profile (`preferences.json`) and auto-populated with defaults on first access.

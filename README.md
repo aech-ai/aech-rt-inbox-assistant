@@ -537,7 +537,7 @@ When the user is CC'd on an email (not in TO), the EA:
 
 ```bash
 # Complete state snapshot
-aech-cli-inbox-assistant wm snapshot --human
+aech-cli-inbox-assistant wm snapshot
 
 # Query active threads
 aech-cli-inbox-assistant wm threads --needs-reply
