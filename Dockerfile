@@ -20,9 +20,8 @@ RUN apt-get update && \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy local wheels to /tmp/wheels (for --find-links)
-COPY ../aech-cli-msgraph/dist/*.whl /tmp/wheels/
-COPY ../aech-cli-documents/dist/*.whl /tmp/wheels/
-COPY ../aech-main/packages/aech-llm-observability/dist/*.whl /tmp/wheels/
+# Wheels must be pre-staged in ./wheels/ before build (COPY cannot access paths outside build context)
+COPY wheels/*.whl /tmp/wheels/
 
 # Install Python deps as root (--find-links looks in /tmp/wheels/ first, then PyPI)
 COPY ./requirements.txt .
