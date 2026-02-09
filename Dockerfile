@@ -20,13 +20,25 @@ RUN apt-get update && \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy local wheels to /tmp/wheels (for --find-links)
-COPY aech-cli-msgraph/dist/*.whl /tmp/wheels/
-COPY aech-cli-documents/dist/*.whl /tmp/wheels/
-COPY aech-main/packages/aech-llm-observability/dist/*.whl /tmp/wheels/
+COPY ../aech-cli-msgraph/dist/*.whl /tmp/wheels/
+COPY ../aech-cli-documents/dist/*.whl /tmp/wheels/
+COPY ../aech-main/packages/aech-llm-observability/dist/*.whl /tmp/wheels/
 
 # Install Python deps as root (--find-links looks in /tmp/wheels/ first, then PyPI)
-COPY aech-rt-inbox-assistant/requirements.txt .
+COPY ./requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt --find-links /tmp/wheels/
+
+# App source
+COPY ./src/ src/
+COPY ./scripts/ scripts/
+
+# Install CLI packages
+COPY ./packages/aech-cli-inbox-assistant/ packages/aech-cli-inbox-assistant/
+RUN pip install --no-cache-dir packages/aech-cli-inbox-assistant/
+
+# Install the main package
+COPY ./pyproject.toml .
+RUN pip install --no-cache-dir -e .
 
 # Create non-root user (align with aech-main UID/GID 1001)
 RUN groupadd -r agentaech -g 1001 && \
@@ -34,25 +46,11 @@ RUN groupadd -r agentaech -g 1001 && \
     mkdir -p /home/agentaech/.inbox-assistant /data/users && \
     chown -R agentaech:agentaech /home/agentaech /app
 
-# Switch to agentaech user for application code
+# Set umask for group-writable files
+RUN echo "umask 002" >> /home/agentaech/.bashrc
 USER agentaech
-
-# Add user's local bin to PATH for CLI tools
-ENV PATH="/home/agentaech/.local/bin:${PATH}"
-
-# App source
-COPY --chown=agentaech:agentaech aech-rt-inbox-assistant/src/ src/
-COPY --chown=agentaech:agentaech aech-rt-inbox-assistant/scripts/ scripts/
-
-# Install CLI packages
-COPY --chown=agentaech:agentaech aech-rt-inbox-assistant/packages/aech-cli-inbox-assistant/ packages/aech-cli-inbox-assistant/
-RUN pip install --no-cache-dir --user packages/aech-cli-inbox-assistant/
-
-# Install the main package
-COPY --chown=agentaech:agentaech aech-rt-inbox-assistant/pyproject.toml .
-RUN pip install --no-cache-dir --user -e .
 
 # Set python path and start the service
 ENV PYTHONPATH=/app
-# umask 002 ensures files are group-writable (Linux Docker permission sharing)
+ENV PYTHONUNBUFFERED=1
 CMD ["bash", "-c", "umask 002 && exec python -m src.main"]
