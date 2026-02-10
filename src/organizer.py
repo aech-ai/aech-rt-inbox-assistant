@@ -344,7 +344,7 @@ class Organizer:
 
         if not emails:
             logger.info("No unprocessed emails found")
-            self._emit_periodic_summary_trigger(prefs)
+            await self._emit_periodic_summary_trigger(prefs)
             self._emit_weekly_digest_trigger(prefs)
             return
 
@@ -362,7 +362,7 @@ class Organizer:
         logger.info(f"Finished processing {len(emails)} emails")
 
         # Working Memory Engine handles staleness and follow-up nudges.
-        self._emit_periodic_summary_trigger(prefs)
+        await self._emit_periodic_summary_trigger(prefs)
         self._emit_weekly_digest_trigger(prefs)
 
     async def _process_email(self, email, prefs: dict):
@@ -754,7 +754,7 @@ class Organizer:
             (key, value),
         )
 
-    def _emit_periodic_summary_trigger(self, prefs: dict[str, Any]) -> None:
+    async def _emit_periodic_summary_trigger(self, prefs: dict[str, Any]) -> None:
         """Emit periodic inbox activity summary trigger using LLM synthesis."""
         inbox_prefs = self._inbox_assistant_prefs(prefs)
         enabled = bool(inbox_prefs.get("periodic_summary_enabled", True))
@@ -852,7 +852,7 @@ class Organizer:
                     for row in insight_rows
                 ],
             }
-            summary_result = self._get_periodic_summary_agent().run_sync(json.dumps(summary_context, default=str))
+            summary_result = await self._get_periodic_summary_agent().run(json.dumps(summary_context, default=str))
             summary = summary_result.output
 
             try:
