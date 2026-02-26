@@ -712,6 +712,10 @@ class Organizer:
             logger.debug(f"No categories or flags to apply for {message_id}")
             return
 
+        delegated_user = (self.poller.user_email or "").strip()
+        if not delegated_user:
+            raise RuntimeError("DELEGATED_USER is required for mailbox writes (categories/flags)")
+
         cmd = ["aech-cli-msgraph", "update-message", message_id]
 
         if categories:
@@ -724,8 +728,7 @@ class Organizer:
             if "flag_due" in flag_settings:
                 cmd.extend(["--flag-due", flag_settings["flag_due"]])
 
-        if self.user_email:
-            cmd.extend(["--user", self.user_email])
+        cmd.extend(["--user", delegated_user])
 
         try:
             logger.info(f"Applying categories/flags: {' '.join(cmd)}")
