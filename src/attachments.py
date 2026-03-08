@@ -18,7 +18,7 @@ from typing import Any, Callable, Dict, List, Optional
 import requests
 from aech_cli_msgraph.graph import GraphClient
 
-from .database import get_connection
+from .database import get_attachment_store_dir, get_connection
 
 logger = logging.getLogger(__name__)
 
@@ -193,6 +193,18 @@ class AttachmentProcessor:
             logger.error(f"Error extracting text from {filename}: {e}")
             return None
 
+    def _store_attachment_content(self, attachment_id: str, filename: str, content: bytes) -> str:
+        """Persist canonical attachment content under inbox-assistant state."""
+        safe_name = Path(filename or "attachment.bin").name or "attachment.bin"
+        relative_path = Path("attachments") / attachment_id / safe_name
+        absolute_path = get_attachment_store_dir().parent / relative_path
+        absolute_path.parent.mkdir(parents=True, exist_ok=True)
+
+        tmp_path = absolute_path.with_suffix(absolute_path.suffix + ".tmp")
+        tmp_path.write_bytes(content)
+        tmp_path.replace(absolute_path)
+        return str(relative_path)
+
     def _update_attachment_status(
         self,
         attachment_id: str,
@@ -200,6 +212,7 @@ class AttachmentProcessor:
         extracted_text: Optional[str] = None,
         error: Optional[str] = None,
         content_hash: Optional[str] = None,
+        storage_path: Optional[str] = None,
     ) -> None:
         """Update attachment extraction status in database."""
         conn = get_connection()
@@ -210,10 +223,37 @@ class AttachmentProcessor:
                 extracted_text = ?,
                 extraction_error = ?,
                 content_hash = ?,
-                extracted_at = datetime('now')
+                storage_path = COALESCE(?, storage_path),
+                downloaded_at = CASE
+                    WHEN ? IS NOT NULL AND downloaded_at IS NULL THEN datetime('now')
+                    ELSE downloaded_at
+                END,
+                stored_at = CASE
+                    WHEN ? IS NOT NULL AND stored_at IS NULL THEN datetime('now')
+                    ELSE stored_at
+                END,
+                extracted_at = datetime('now'),
+                updated_at = datetime('now')
             WHERE id = ?
             """,
-            (status, extracted_text, error, content_hash, attachment_id),
+            (
+                status,
+                extracted_text,
+                error,
+                content_hash,
+                storage_path,
+                storage_path,
+                storage_path,
+                attachment_id,
+            ),
+        )
+        conn.execute(
+            """
+            UPDATE emails
+            SET updated_at = datetime('now')
+            WHERE id = (SELECT email_id FROM attachments WHERE id = ?)
+            """,
+            (attachment_id,),
         )
         conn.commit()
         conn.close()
@@ -256,38 +296,46 @@ class AttachmentProcessor:
         # Compute hash for dedup
         content_hash = hashlib.sha256(content).hexdigest()[:32]
 
-        # Check if we already have this content
+        # Check if we already have this content and/or stored blob
         conn = get_connection()
         existing = conn.execute(
-            "SELECT id FROM attachments WHERE content_hash = ? AND id != ? AND extracted_text IS NOT NULL",
+            """
+            SELECT id, extracted_text, storage_path
+            FROM attachments
+            WHERE content_hash = ? AND id != ?
+              AND (storage_path IS NOT NULL OR extracted_text IS NOT NULL)
+            """,
             (content_hash, att_id),
         ).fetchone()
         conn.close()
 
-        if existing:
-            # Copy text from existing attachment
-            conn = get_connection()
-            try:
-                row = conn.execute(
-                    "SELECT extracted_text FROM attachments WHERE id = ?", (existing["id"],)
-                ).fetchone()
-            finally:
-                conn.close()
-            if row:
-                self._update_attachment_status(
-                    att_id, "completed", extracted_text=row["extracted_text"], content_hash=content_hash
-                )
-                # ATOMIC: Create chunks and embeddings immediately
-                self._index_attachment(att_id, filename)
-                logger.info(f"Used cached extraction for {filename}")
-                return True
+        storage_path = existing["storage_path"] if existing and existing["storage_path"] else None
+        if not storage_path:
+            storage_path = self._store_attachment_content(att_id, filename, content)
+
+        if existing and existing["extracted_text"]:
+            self._update_attachment_status(
+                att_id,
+                "completed",
+                extracted_text=existing["extracted_text"],
+                content_hash=content_hash,
+                storage_path=storage_path,
+            )
+            # ATOMIC: Create chunks and embeddings immediately
+            self._index_attachment(att_id, filename)
+            logger.info(f"Used cached extraction for {filename}")
+            return True
 
         # Extract text
         extracted_text = self._extract_text_with_documents_cli(content, filename, content_type)
 
         if extracted_text:
             self._update_attachment_status(
-                att_id, "completed", extracted_text=extracted_text, content_hash=content_hash
+                att_id,
+                "completed",
+                extracted_text=extracted_text,
+                content_hash=content_hash,
+                storage_path=storage_path,
             )
             # ATOMIC: Create chunks and embeddings immediately
             self._index_attachment(att_id, filename)
@@ -295,7 +343,11 @@ class AttachmentProcessor:
             return True
         else:
             self._update_attachment_status(
-                att_id, "failed", error="Text extraction returned empty", content_hash=content_hash
+                att_id,
+                "failed",
+                error="Text extraction returned empty",
+                content_hash=content_hash,
+                storage_path=storage_path,
             )
             return False
 

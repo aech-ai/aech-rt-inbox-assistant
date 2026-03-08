@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import importlib.util
 import os
 import sqlite3
@@ -30,13 +29,10 @@ def _load_local_module(module_name: str, filename: str):
 
 _database_mod = _load_local_module("inbox_database_local", "database.py")
 _model_utils_mod = _load_local_module("inbox_model_utils_local", "model_utils.py")
-_triggers_mod = _load_local_module("inbox_triggers_local", "triggers.py")
 
 get_connection = _database_mod.get_connection
 get_model_settings = _model_utils_mod.get_model_settings
 parse_model_string = _model_utils_mod.parse_model_string
-make_dedupe_key = _triggers_mod.make_dedupe_key
-write_trigger = _triggers_mod.write_trigger
 
 
 @dataclass
@@ -59,9 +55,6 @@ class SearchHit(BaseModel):
     snippet: str = ""
     score: float = 0.0
     evidence_types: list[str] = Field(default_factory=list)
-    wm_needs_reply: bool | None = None
-    next_action_owner: str | None = None
-    role_context_note: str | None = None
 
 
 class EmailDetail(BaseModel):
@@ -75,22 +68,6 @@ class EmailDetail(BaseModel):
     body_preview: str = ""
     body_excerpt: str = ""
     thread_summary: str | None = None
-    wm_needs_reply: bool | None = None
-    next_action_owner: str | None = None
-    sender_org_relation: str | None = None
-    value_flow_direction: str | None = None
-    role_context_note: str | None = None
-    role_context_confidence: float | None = None
-
-
-class NudgeReceipt(BaseModel):
-    """Result of nudging user via trigger."""
-
-    status: Literal["queued"]
-    trigger_type: str
-    dedupe_key: str
-    title: str
-    urgency: str
 
 
 class QueryAgentResponse(BaseModel):
@@ -130,9 +107,7 @@ def _fetch_email_row(conn, email_id: str):
     return conn.execute(
         """
         SELECT id, subject, sender, received_at, conversation_id, web_link,
-               body_preview, body_markdown, thread_summary,
-               wm_needs_reply, next_action_owner, sender_org_relation,
-               value_flow_direction, role_context_note, role_context_confidence
+               body_preview, body_markdown, thread_summary
         FROM emails
         WHERE id = ?
         """,
@@ -170,9 +145,6 @@ def _add_hit(
             "snippet": snippet[:300],
             "score": score,
             "evidence_types": {evidence_type},
-            "wm_needs_reply": row["wm_needs_reply"],
-            "next_action_owner": row["next_action_owner"],
-            "role_context_note": row["role_context_note"],
         }
         return
 
@@ -203,7 +175,7 @@ def _search_and_enrich(query: str, limit: int, mode: str) -> list[SearchHit]:
         email_rows = conn.execute(
             """
             SELECT e.id, e.subject, e.sender, e.received_at, e.conversation_id, e.web_link,
-                   e.body_preview, e.wm_needs_reply, e.next_action_owner, e.role_context_note,
+                   e.body_preview,
                    bm25(emails_fts) AS rank
             FROM emails_fts
             JOIN emails e ON emails_fts.id = e.id
@@ -336,9 +308,6 @@ def _search_and_enrich(query: str, limit: int, mode: str) -> list[SearchHit]:
                     snippet=(row["summary"] or "")[:300],
                     score=_score_from_rank(row["rank"]),
                     evidence_types=["derived_learning"],
-                    wm_needs_reply=None,
-                    next_action_owner=None,
-                    role_context_note=None,
                 )
             )
 
@@ -377,7 +346,6 @@ Rules:
 - Do not fabricate IDs, links, or facts.
 - If only derived-learning hits are available, state that source emails were removed by retention policy.
 - If results are ambiguous, ask one clarification question.
-- Use nudge_user only when asked or when user explicitly wants a reminder/nudge.
 - Keep answers concise and practical.
 """
 
@@ -422,16 +390,10 @@ Rules:
                     sender="Derived Knowledge",
                     received_at=learning["last_seen_at"],
                     web_link=None,
-                    body_preview=learning["summary"] or "",
-                    body_excerpt=f"{learning['summary'] or ''}\n{metadata_text}".strip()[:1500],
-                    thread_summary=None,
-                    wm_needs_reply=None,
-                    next_action_owner=None,
-                    sender_org_relation=None,
-                    value_flow_direction=None,
-                    role_context_note=None,
-                    role_context_confidence=learning["confidence"],
-                )
+                body_preview=learning["summary"] or "",
+                body_excerpt=f"{learning['summary'] or ''}\n{metadata_text}".strip()[:1500],
+                thread_summary=None,
+            )
 
             row = _fetch_email_row(conn, email_id)
             if row is None:
@@ -447,53 +409,9 @@ Rules:
                 body_preview=row["body_preview"] or "",
                 body_excerpt=body_markdown[:1500],
                 thread_summary=row["thread_summary"],
-                wm_needs_reply=row["wm_needs_reply"],
-                next_action_owner=row["next_action_owner"],
-                sender_org_relation=row["sender_org_relation"],
-                value_flow_direction=row["value_flow_direction"],
-                role_context_note=row["role_context_note"],
-                role_context_confidence=row["role_context_confidence"],
             )
         finally:
             conn.close()
-
-    @agent.tool
-    def nudge_user(
-        ctx: RunContext[QueryAgentDeps],
-        title: str,
-        message: str,
-        urgency: Literal["immediate", "today", "this_week", "someday"] = "today",
-    ) -> NudgeReceipt:
-        """Create a user nudge trigger for Teams."""
-        user_email = (ctx.deps.user_email or "").strip().lower()
-        if not user_email:
-            raise ValueError("Cannot nudge user without user_email in agent deps")
-
-        fingerprint = hashlib.sha256(
-            f"{user_email}|{title}|{message}|{urgency}".encode("utf-8")
-        ).hexdigest()[:24]
-        dedupe_key = make_dedupe_key("assistant_query_nudge", user_email, fingerprint)
-
-        write_trigger(
-            user_email,
-            "working_memory_nudge",
-            {
-                "type": "assistant_query_nudge",
-                "urgency": urgency,
-                "title": title,
-                "message": message,
-            },
-            dedupe_key=dedupe_key,
-            routing={"channel": "teams"},
-        )
-
-        return NudgeReceipt(
-            status="queued",
-            trigger_type="working_memory_nudge",
-            dedupe_key=dedupe_key,
-            title=title,
-            urgency=urgency,
-        )
 
     return agent
 

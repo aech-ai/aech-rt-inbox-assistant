@@ -88,9 +88,9 @@ class GraphPoller:
                     INSERT INTO emails (
                         id, conversation_id, internet_message_id, subject, sender,
                         to_emails, cc_emails, received_at, body_preview, has_attachments,
-                        is_read, etag, web_link, outlook_categories, processed_at
+                        is_read, etag, web_link, outlook_categories, processed_at, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                     ON CONFLICT(id) DO UPDATE SET
                         conversation_id=excluded.conversation_id,
                         internet_message_id=excluded.internet_message_id,
@@ -105,7 +105,8 @@ class GraphPoller:
                         etag=excluded.etag,
                         web_link=excluded.web_link,
                         outlook_categories=COALESCE(excluded.outlook_categories, emails.outlook_categories),
-                        processed_at=COALESCE(emails.processed_at, excluded.processed_at)
+                        processed_at=COALESCE(emails.processed_at, excluded.processed_at),
+                        updated_at=CURRENT_TIMESTAMP
                     """,
                     (
                         msg.get("id"),
@@ -343,9 +344,9 @@ class GraphPoller:
                 id, conversation_id, internet_message_id, subject, sender,
                 to_emails, cc_emails, received_at, body_preview, has_attachments,
                 is_read, etag, body_html, body_markdown, signature_block, body_hash, web_link,
-                outlook_categories, processed_at
+                outlook_categories, processed_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             ON CONFLICT(id) DO UPDATE SET
                 conversation_id=excluded.conversation_id,
                 internet_message_id=excluded.internet_message_id,
@@ -364,7 +365,8 @@ class GraphPoller:
                 body_hash=COALESCE(excluded.body_hash, emails.body_hash),
                 web_link=excluded.web_link,
                 outlook_categories=COALESCE(excluded.outlook_categories, emails.outlook_categories),
-                processed_at=COALESCE(emails.processed_at, excluded.processed_at)
+                processed_at=COALESCE(emails.processed_at, excluded.processed_at),
+                updated_at=CURRENT_TIMESTAMP
             """,
             (
                 msg_data["id"],
@@ -399,7 +401,8 @@ class GraphPoller:
                 ON CONFLICT(id) DO UPDATE SET
                     filename=excluded.filename,
                     content_type=excluded.content_type,
-                    size_bytes=excluded.size_bytes
+                    size_bytes=excluded.size_bytes,
+                    updated_at=CURRENT_TIMESTAMP
                 """,
                 (
                     att.get("id"),

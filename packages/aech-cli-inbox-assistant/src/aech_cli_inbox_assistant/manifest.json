@@ -1,663 +1,373 @@
 {
   "name": "inbox-assistant",
   "type": "cli",
+  "description": "Query inbox-assistant state, content, and preferences.",
   "command": "aech-cli-inbox-assistant",
-  "spec_version": 5,
-  "description": "Query Inbox Assistant state: emails, calendar, working memory, alerts, and preferences. All output is JSON. Use for inbox management, scheduling, and executive assistant workflows.",
-  "available_in_sandbox": false,
-  "bundled_skills": [],
   "actions": [
     {
-      "name": "list",
-      "description": "List ingested emails from the inbox. Input: optional limit and read filter. Output: JSON array of email objects with id, subject, sender, received_at, body_preview. Use when user wants to see recent emails.",
-      "parameters": [
-        {
-          "name": "limit",
-          "type": "option",
-          "required": false,
-          "description": "Number of emails to return. Default: 20."
-        },
-        {
-          "name": "include-read",
-          "type": "option",
-          "required": false,
-          "description": "Include read emails in results. Flag: pass to include, omit to show only unread."
-        }
-      ]
-    },
-    {
-      "name": "history",
-      "description": "View email triage history showing classification decisions. Input: optional limit. Output: JSON array of triage log entries with email_id, subject, timestamp, action. Use when reviewing how emails were categorized.",
-      "parameters": [
-        {
-          "name": "limit",
-          "type": "option",
-          "required": false,
-          "description": "Number of entries to return. Default: 20."
-        }
-      ]
-    },
-    {
-      "name": "search",
-      "description": "Search emails, attachments, and facts using hybrid vector/FTS search. Input: query string. Output: JSON array of search results with content_preview, score, email metadata. Use when user needs to find specific emails or information.",
-      "parameters": [
-        {
-          "name": "query",
-          "type": "argument",
-          "required": true,
-          "description": "Search query text. Supports natural language queries."
-        },
-        {
-          "name": "limit",
-          "type": "option",
-          "required": false,
-          "description": "Number of results to return. Default: 20."
-        },
-        {
-          "name": "mode",
-          "type": "option",
-          "required": false,
-          "description": "Search mode. Values: hybrid (default), fts (full-text only), vector (semantic only)."
-        },
-        {
-          "name": "facts",
-          "type": "option",
-          "required": false,
-          "description": "Include extracted facts in search. Flag: --facts (default) or --no-facts."
-        }
-      ]
-    },
-    {
-      "name": "ask",
-      "description": "Ask the inbox assistant a natural-language question. Uses PydanticAI tools to search inbox corpus, retrieve relevant emails, and return grounded answers with links and enrichment.",
-      "parameters": [
-        {
-          "name": "query",
-          "type": "argument",
-          "required": true,
-          "description": "Natural-language question (e.g., 'remember that email that mentioned budget cut?')."
-        },
-        {
-          "name": "max-results",
-          "type": "option",
-          "required": false,
-          "description": "Maximum matched emails to include. Default: 5."
-        }
-      ]
-    },
-    {
-      "name": "stats",
-      "description": "Show corpus statistics. Input: none. Output: JSON with counts for emails, attachments, chunks, embeddings. Use when checking sync status or data health.",
-      "parameters": []
-    },
-    {
-      "name": "dbpath",
-      "description": "Get the database file path. Input: none. Output: JSON with absolute path to assistant.sqlite. Use when needing direct database access.",
-      "parameters": []
-    },
-    {
-      "name": "timezone",
-      "description": "Show current timezone configuration. Input: none. Output: JSON with timezone name, current time, today's date. Use when debugging calendar queries.",
-      "parameters": []
-    },
-    {
-      "name": "sync-status",
-      "description": "Show sync status for all mail folders. Input: none. Output: JSON array of folder sync states with last_sync_at, messages_synced. Use when checking if inbox is up to date.",
-      "parameters": []
-    },
-    {
-      "name": "attachment-status",
-      "description": "Show attachment extraction status. Input: optional limit and status filter. Output: JSON array of attachments with extraction_status, filename, email_subject. Use when checking document processing progress.",
-      "parameters": [
-        {
-          "name": "limit",
-          "type": "option",
-          "required": false,
-          "description": "Number of attachments to show. Default: 20."
-        },
-        {
-          "name": "status",
-          "type": "option",
-          "required": false,
-          "description": "Filter by extraction status. Values: pending, completed, failed."
-        }
-      ]
-    },
-    {
-      "name": "schema",
-      "description": "Get database schema. Input: none. Output: JSON array of CREATE TABLE statements. Use when understanding data structure.",
-      "parameters": []
-    },
-    {
-      "name": "reply-needed",
-      "description": "List threads requiring user reply. Input: optional limit and stale filter. Output: JSON array of threads with subject, urgency, last_activity_at. Use when prioritizing inbox responses.",
-      "parameters": [
-        {
-          "name": "limit",
-          "type": "option",
-          "required": false,
-          "description": "Number of threads to return. Default: 20."
-        },
-        {
-          "name": "include-stale",
-          "type": "option",
-          "required": false,
-          "description": "Include stale threads (no recent activity). Flag."
-        }
-      ]
-    },
-    {
-      "name": "calendar-today",
-      "description": "Show today's calendar events. Input: none. Output: JSON array of events with subject, start_at, end_at, location. Use when user asks about today's schedule.",
-      "parameters": []
-    },
-    {
-      "name": "calendar-week",
-      "description": "Show this week's calendar events. Input: none. Output: JSON array of events for next 7 days. Use when user wants weekly overview.",
-      "parameters": []
-    },
-    {
-      "name": "calendar-upcoming",
-      "description": "Show upcoming events in next N hours. Input: optional hours. Output: JSON array of imminent events. Use when checking what's coming up soon.",
-      "parameters": [
-        {
-          "name": "hours",
-          "type": "option",
-          "required": false,
-          "description": "Hours to look ahead. Default: 24."
-        }
-      ]
-    },
-    {
-      "name": "calendar-free",
-      "description": "Find free time slots on a specific date. Input: date. Output: JSON array of free slots with start, end, duration_minutes. Use when scheduling meetings.",
-      "parameters": [
-        {
-          "name": "date",
-          "type": "argument",
-          "required": true,
-          "description": "Date to check. Format: YYYY-MM-DD."
-        }
-      ]
-    },
-    {
-      "name": "calendar-busy",
-      "description": "Check if user is busy during a time range. Input: start and end datetimes. Output: JSON with is_busy boolean and conflicts array. Use when validating meeting times.",
-      "parameters": [
-        {
-          "name": "start",
-          "type": "argument",
-          "required": true,
-          "description": "Start datetime. Format: YYYY-MM-DDTHH:MM:SS or YYYY-MM-DD HH:MM:SS."
-        },
-        {
-          "name": "end",
-          "type": "argument",
-          "required": true,
-          "description": "End datetime. Same format as start."
-        }
-      ]
-    },
-    {
-      "name": "calendar-event",
-      "description": "Get details of a specific calendar event. Input: event ID. Output: JSON with full event details including attendees, location, body. Use when user asks about a specific meeting.",
-      "parameters": [
-        {
-          "name": "event_id",
-          "type": "argument",
-          "required": true,
-          "description": "Calendar event ID from calendar-today/week/search results."
-        }
-      ]
-    },
-    {
-      "name": "calendar-search",
-      "description": "Search calendar events by subject or attendee. Input: query string. Output: JSON array of matching events. Use when finding meetings about a topic or with someone.",
-      "parameters": [
-        {
-          "name": "query",
-          "type": "argument",
-          "required": true,
-          "description": "Search text to match against subject, attendees, or organizer."
-        },
-        {
-          "name": "limit",
-          "type": "option",
-          "required": false,
-          "description": "Number of results. Default: 20."
-        }
-      ]
-    },
-    {
-      "name": "calendar-meetings-with",
-      "description": "List all meetings with a specific person. Input: email address. Output: JSON array of events involving that person. Use when reviewing meeting history with someone.",
-      "parameters": [
-        {
-          "name": "email",
-          "type": "argument",
-          "required": true,
-          "description": "Email address of the person to search for."
-        },
-        {
-          "name": "limit",
-          "type": "option",
-          "required": false,
-          "description": "Number of results. Default: 50."
-        }
-      ]
-    },
-    {
-      "name": "calendar-prep",
-      "description": "Prepare meeting briefing with attendee email history. Input: event ID or --next flag. Output: JSON with event details, attendee list, and recent emails from attendees. Use before meetings for context.",
-      "parameters": [
-        {
-          "name": "event_id",
-          "type": "argument",
-          "required": false,
-          "description": "Event ID to prepare for. Omit if using --next."
-        },
-        {
-          "name": "next",
-          "type": "option",
-          "required": false,
-          "description": "Prepare for the next upcoming meeting. Flag."
-        }
-      ]
-    },
-    {
-      "name": "event-create",
-      "description": "Schedule a new calendar event (queued for RT execution). Input: subject, start, end times, optional attendees/location/body. Output: JSON with action_id for tracking. Use when user wants to create a meeting.",
-      "parameters": [
-        {
-          "name": "subject",
-          "type": "argument",
-          "required": true,
-          "description": "Meeting title/subject."
-        },
-        {
-          "name": "start",
-          "type": "argument",
-          "required": true,
-          "description": "Start datetime. Format: YYYY-MM-DDTHH:MM:SS."
-        },
-        {
-          "name": "end",
-          "type": "argument",
-          "required": true,
-          "description": "End datetime. Format: YYYY-MM-DDTHH:MM:SS."
-        },
-        {
-          "name": "attendees",
-          "type": "option",
-          "required": false,
-          "description": "Comma-separated list of attendee email addresses."
-        },
-        {
-          "name": "location",
-          "type": "option",
-          "required": false,
-          "description": "Meeting location or room name."
-        },
-        {
-          "name": "body",
-          "type": "option",
-          "required": false,
-          "description": "Meeting description/agenda."
-        },
-        {
-          "name": "online",
-          "type": "option",
-          "required": false,
-          "description": "Create as Teams online meeting. Flag."
-        }
-      ]
-    },
-    {
-      "name": "event-update",
-      "description": "Update/reschedule a calendar event (queued for RT execution). Input: event ID and fields to update. Output: JSON with action_id. Use when user wants to change meeting details.",
-      "parameters": [
-        {
-          "name": "event_id",
-          "type": "argument",
-          "required": true,
-          "description": "Event ID to update."
-        },
-        {
-          "name": "subject",
-          "type": "option",
-          "required": false,
-          "description": "New meeting title."
-        },
-        {
-          "name": "start",
-          "type": "option",
-          "required": false,
-          "description": "New start datetime."
-        },
-        {
-          "name": "end",
-          "type": "option",
-          "required": false,
-          "description": "New end datetime."
-        },
-        {
-          "name": "location",
-          "type": "option",
-          "required": false,
-          "description": "New location."
-        }
-      ]
-    },
-    {
-      "name": "event-cancel",
-      "description": "Cancel a calendar event (queued for RT execution). Input: event ID. Output: JSON with action_id. Use when user wants to cancel a meeting.",
-      "parameters": [
-        {
-          "name": "event_id",
-          "type": "argument",
-          "required": true,
-          "description": "Event ID to cancel."
-        },
-        {
-          "name": "notify",
-          "type": "option",
-          "required": false,
-          "description": "Send cancellation notice to attendees. Flag: --notify (default) or --no-notify."
-        }
-      ]
-    },
-    {
-      "name": "event-respond",
-      "description": "Respond to a meeting invite (queued for RT execution). Input: event ID and response. Output: JSON with action_id. Use when user wants to accept/decline/tentative a meeting.",
-      "parameters": [
-        {
-          "name": "event_id",
-          "type": "argument",
-          "required": true,
-          "description": "Event ID to respond to."
-        },
-        {
-          "name": "response",
-          "type": "argument",
-          "required": true,
-          "description": "Response type. Values: accept, tentative, decline."
-        }
-      ]
-    },
-    {
-      "name": "actions-pending",
-      "description": "List pending actions awaiting RT service execution. Input: none. Output: JSON array of queued actions. Use when checking action queue status.",
-      "parameters": []
-    },
-    {
-      "name": "actions-history",
-      "description": "Show action execution history. Input: optional limit. Output: JSON array of past actions with status, timestamps. Use when auditing action results.",
-      "parameters": [
-        {
-          "name": "limit",
-          "type": "option",
-          "required": false,
-          "description": "Number of actions to show. Default: 20."
-        }
-      ]
-    },
-    {
-      "name": "wm snapshot",
-      "description": "Get complete working memory snapshot for context injection. Input: optional --llm flag. Output: JSON with active threads, decisions, commitments, calendar. Use when loading EA context.",
-      "parameters": [
-        {
-          "name": "llm",
-          "type": "option",
-          "required": false,
-          "description": "LLM-optimized format with condensed fields. Flag."
-        }
-      ]
-    },
-    {
-      "name": "wm threads",
-      "description": "Query active email threads. Input: optional filters. Output: JSON array of threads with urgency, needs_reply, summary. Use when reviewing conversation status.",
-      "parameters": [
-        {
-          "name": "needs-reply",
-          "type": "option",
-          "required": false,
-          "description": "Only threads needing user reply. Flag."
-        },
-        {
-          "name": "urgency",
-          "type": "option",
-          "required": false,
-          "description": "Filter by urgency. Values: immediate, today, this_week, someday."
-        },
-        {
-          "name": "limit",
-          "type": "option",
-          "required": false,
-          "description": "Number of threads to return. Default: 20."
-        }
-      ]
-    },
-    {
-      "name": "wm decisions",
-      "description": "List pending decisions awaiting user response. Input: none. Output: JSON array of decisions with question, context, requester, urgency. Use when reviewing what needs deciding.",
-      "parameters": []
-    },
-    {
-      "name": "wm commitments",
-      "description": "List open commitments user has made. Input: optional overdue filter. Output: JSON array of commitments with description, to_whom, due_by. Use when tracking promises.",
-      "parameters": [
-        {
-          "name": "overdue",
-          "type": "option",
-          "required": false,
-          "description": "Only show overdue commitments. Flag."
-        }
-      ]
-    },
-    {
-      "name": "wm contacts",
-      "description": "Query known contacts. Input: optional filters. Output: JSON array of contacts with email, name, last_interaction_at. Use when looking up contact info.",
-      "parameters": [
-        {
-          "name": "external",
-          "type": "option",
-          "required": false,
-          "description": "Only external contacts (not internal). Flag."
-        },
-        {
-          "name": "search",
-          "type": "option",
-          "required": false,
-          "description": "Search by email or name."
-        },
-        {
-          "name": "limit",
-          "type": "option",
-          "required": false,
-          "description": "Number of contacts to return. Default: 20."
-        }
-      ]
-    },
-    {
-      "name": "wm observations",
-      "description": "View recent passive observations about user behavior. Input: optional days. Output: JSON array of observations with type, content. Use when reviewing learned patterns.",
-      "parameters": [
-        {
-          "name": "days",
-          "type": "option",
-          "required": false,
-          "description": "Days of history to show. Default: 7."
-        }
-      ]
-    },
-    {
-      "name": "wm projects",
-      "description": "View inferred active projects. Input: none. Output: JSON array of projects with name, description, status. Use when checking project context.",
-      "parameters": []
-    },
-    {
       "name": "prefs show",
-      "description": "Show current user preferences. Input: none. Output: JSON preferences object. Use when checking user settings.",
+      "description": "Show preferences.json.",
       "parameters": []
     },
     {
       "name": "prefs set",
-      "description": "Set a user preference. Input: key and value. Output: JSON confirmation with path. Use when user wants to change a setting.",
+      "description": "Set a top-level preference key.",
       "parameters": [
         {
           "name": "key",
           "type": "argument",
           "required": true,
-          "description": "Preference key. Use 'prefs keys' to list valid keys."
+          "description": ""
         },
         {
           "name": "value",
           "type": "argument",
           "required": true,
-          "description": "Value to set. JSON values (arrays, objects) must be quoted properly."
+          "description": ""
         }
       ]
     },
     {
       "name": "prefs keys",
-      "description": "List all valid preference keys. Input: none. Output: JSON array of key names. Use before setting preferences.",
+      "description": "List valid top-level preference keys.",
       "parameters": []
     },
     {
       "name": "prefs unset",
-      "description": "Remove a preference key. Input: key name. Output: JSON confirmation. Use when resetting a preference to default.",
+      "description": "Remove a preference key.",
       "parameters": [
         {
           "name": "key",
           "type": "argument",
           "required": true,
-          "description": "Preference key to remove."
+          "description": ""
         }
       ]
     },
     {
-      "name": "alerts list",
-      "description": "List all alert rules. Input: optional enabled-only filter. Output: JSON array of rules with id, natural_language_rule, enabled. Use when reviewing alert configuration.",
-      "parameters": [
-        {
-          "name": "enabled-only",
-          "type": "option",
-          "required": false,
-          "description": "Only show enabled rules. Flag."
-        }
-      ]
+      "name": "categories show",
+      "description": "Show configured categories or defaults.",
+      "parameters": []
     },
     {
-      "name": "alerts add",
-      "description": "Add a new alert rule using natural language. Input: rule description. Output: JSON with rule_id and event types. Use when user wants notifications for specific events.",
+      "name": "categories init-defaults",
+      "description": "Initialize default categories if none are configured.",
+      "parameters": []
+    },
+    {
+      "name": "categories add",
+      "description": "Add a category to the category configuration.",
       "parameters": [
         {
-          "name": "rule",
+          "name": "name",
           "type": "argument",
           "required": true,
-          "description": "Natural language rule description. Example: 'Alert me when I get email from john@example.com'."
+          "description": ""
         },
         {
-          "name": "cooldown",
+          "name": "color",
           "type": "option",
           "required": false,
-          "description": "Minutes between repeat triggers. Default: 30."
-        }
-      ]
-    },
-    {
-      "name": "alerts show",
-      "description": "Show details of a specific alert rule. Input: rule ID (full or prefix). Output: JSON with full rule details. Use when inspecting a rule.",
-      "parameters": [
+          "description": "Category color name",
+          "default": "blue"
+        },
         {
-          "name": "rule_id",
-          "type": "argument",
-          "required": true,
-          "description": "Rule ID from 'alerts list' (can be prefix like 'abc123')."
-        }
-      ]
-    },
-    {
-      "name": "alerts remove",
-      "description": "Remove an alert rule. Input: rule ID. Output: JSON confirmation. Use when user wants to delete a rule.",
-      "parameters": [
-        {
-          "name": "rule_id",
-          "type": "argument",
-          "required": true,
-          "description": "Rule ID to remove."
-        }
-      ]
-    },
-    {
-      "name": "alerts enable",
-      "description": "Enable a disabled alert rule. Input: rule ID. Output: JSON status. Use when reactivating a rule.",
-      "parameters": [
-        {
-          "name": "rule_id",
-          "type": "argument",
-          "required": true,
-          "description": "Rule ID to enable."
-        }
-      ]
-    },
-    {
-      "name": "alerts disable",
-      "description": "Disable an alert rule without deleting. Input: rule ID. Output: JSON status. Use when temporarily pausing alerts.",
-      "parameters": [
-        {
-          "name": "rule_id",
-          "type": "argument",
-          "required": true,
-          "description": "Rule ID to disable."
-        }
-      ]
-    },
-    {
-      "name": "alerts history",
-      "description": "View alert trigger history. Input: optional rule filter and limit. Output: JSON array of triggers with timestamp, match_reason. Use when reviewing alert activity.",
-      "parameters": [
-        {
-          "name": "rule-id",
+          "name": "description",
           "type": "option",
           "required": false,
-          "description": "Filter by specific rule ID."
+          "description": "Description for when to use this category",
+          "default": ""
+        },
+        {
+          "name": "flag_urgency",
+          "type": "option",
+          "required": false,
+          "description": "Optional default flag urgency"
+        }
+      ]
+    },
+    {
+      "name": "categories remove",
+      "description": "Remove a configured category.",
+      "parameters": [
+        {
+          "name": "name",
+          "type": "argument",
+          "required": true,
+          "description": ""
+        }
+      ]
+    },
+    {
+      "name": "categories update",
+      "description": "Update an existing category.",
+      "parameters": [
+        {
+          "name": "name",
+          "type": "argument",
+          "required": true,
+          "description": ""
+        },
+        {
+          "name": "new_name",
+          "type": "option",
+          "required": false,
+          "description": "Rename the category"
+        },
+        {
+          "name": "color",
+          "type": "option",
+          "required": false,
+          "description": "New category color"
+        },
+        {
+          "name": "description",
+          "type": "option",
+          "required": false,
+          "description": "New description"
+        },
+        {
+          "name": "flag_urgency",
+          "type": "option",
+          "required": false,
+          "description": "New default flag urgency"
+        },
+        {
+          "name": "clear_flag_urgency",
+          "type": "flag",
+          "required": false,
+          "description": "Remove the default flag urgency"
+        }
+      ]
+    },
+    {
+      "name": "categories reset",
+      "description": "Reset categories to the default set.",
+      "parameters": []
+    },
+    {
+      "name": "categories colors",
+      "description": "List valid Outlook category colors.",
+      "parameters": []
+    },
+    {
+      "name": "email list",
+      "description": "List ingested emails.",
+      "parameters": [
+        {
+          "name": "limit",
+          "type": "option",
+          "required": false,
+          "description": "Number of emails to list",
+          "default": 20
+        },
+        {
+          "name": "include_read",
+          "type": "flag",
+          "required": false,
+          "description": "Include read emails"
+        }
+      ]
+    },
+    {
+      "name": "email changes",
+      "description": "List emails changed since a checkpoint.",
+      "parameters": [
+        {
+          "name": "since",
+          "type": "option",
+          "required": false,
+          "description": "Only emails updated after this ISO timestamp"
         },
         {
           "name": "limit",
           "type": "option",
           "required": false,
-          "description": "Number of entries. Default: 20."
+          "description": "Maximum changed emails to return",
+          "default": 100
+        },
+        {
+          "name": "include_read",
+          "type": "flag",
+          "required": false,
+          "description": "Include read emails"
         }
       ]
+    },
+    {
+      "name": "email get",
+      "description": "Get a single email plus attachment manifests.",
+      "parameters": [
+        {
+          "name": "message_id",
+          "type": "argument",
+          "required": true,
+          "description": ""
+        }
+      ]
+    },
+    {
+      "name": "email thread",
+      "description": "Get all emails in a thread plus attachment manifests.",
+      "parameters": [
+        {
+          "name": "conversation_id",
+          "type": "argument",
+          "required": true,
+          "description": ""
+        },
+        {
+          "name": "limit",
+          "type": "option",
+          "required": false,
+          "description": "Maximum messages to return",
+          "default": 200
+        }
+      ]
+    },
+    {
+      "name": "attachment list",
+      "description": "List attachment manifests.",
+      "parameters": [
+        {
+          "name": "email_id",
+          "type": "option",
+          "required": false,
+          "description": "Filter to a specific email"
+        },
+        {
+          "name": "status_filter",
+          "type": "option",
+          "required": false,
+          "description": "Filter by extraction status"
+        },
+        {
+          "name": "limit",
+          "type": "option",
+          "required": false,
+          "description": "Number of attachments to list",
+          "default": 50
+        }
+      ]
+    },
+    {
+      "name": "attachment meta",
+      "description": "Get attachment manifest metadata.",
+      "parameters": [
+        {
+          "name": "attachment_id",
+          "type": "argument",
+          "required": true,
+          "description": ""
+        }
+      ]
+    },
+    {
+      "name": "attachment text",
+      "description": "Get extracted text for an attachment.",
+      "parameters": [
+        {
+          "name": "attachment_id",
+          "type": "argument",
+          "required": true,
+          "description": ""
+        }
+      ]
+    },
+    {
+      "name": "attachment fetch",
+      "description": "Resolve or copy a stored attachment blob.",
+      "parameters": [
+        {
+          "name": "attachment_id",
+          "type": "argument",
+          "required": true,
+          "description": ""
+        },
+        {
+          "name": "output",
+          "type": "option",
+          "required": false,
+          "description": "Optional output path to copy the attachment to"
+        }
+      ]
+    },
+    {
+      "name": "search",
+      "description": "Search emails, attachments, and facts using unified search.",
+      "parameters": [
+        {
+          "name": "query",
+          "type": "argument",
+          "required": true,
+          "description": ""
+        },
+        {
+          "name": "limit",
+          "type": "option",
+          "required": false,
+          "description": "Number of results to return",
+          "default": 20
+        },
+        {
+          "name": "mode",
+          "type": "option",
+          "required": false,
+          "description": "Search mode: hybrid, fts, or vector",
+          "default": "hybrid"
+        },
+        {
+          "name": "facts",
+          "type": "flag",
+          "required": false,
+          "description": "Include facts in search",
+          "default": true
+        }
+      ]
+    },
+    {
+      "name": "ask",
+      "description": "Ask inbox-assistant in natural language with grounded retrieval.",
+      "parameters": [
+        {
+          "name": "query",
+          "type": "argument",
+          "required": true,
+          "description": ""
+        },
+        {
+          "name": "max_results",
+          "type": "option",
+          "required": false,
+          "description": "Maximum matched emails to return",
+          "default": 5
+        }
+      ]
+    },
+    {
+      "name": "dbpath",
+      "description": "Get the absolute path to the inbox database.",
+      "parameters": []
+    },
+    {
+      "name": "sync-status",
+      "description": "Show per-folder sync checkpoints.",
+      "parameters": []
+    },
+    {
+      "name": "stats",
+      "description": "Show mailbox corpus statistics.",
+      "parameters": []
     }
   ],
   "documentation": {
-    "outputs": {
-      "email_list": {
-        "path": "stdout",
-        "description": "JSON array of email objects from list/search commands"
-      },
-      "calendar_events": {
-        "path": "stdout",
-        "description": "JSON array of event objects from calendar-* commands"
-      },
-      "working_memory": {
-        "path": "stdout",
-        "description": "JSON snapshot of EA cognitive state from wm snapshot"
-      },
-      "action_confirmation": {
-        "path": "stdout",
-        "description": "JSON with action_id from event-create/update/cancel commands"
-      }
-    },
-    "notes": [
-      "All commands output JSON to stdout - no human-readable format option",
-      "Errors output JSON to stderr with {error, message} structure",
-      "Calendar commands use user's timezone from DEFAULT_TIMEZONE env var or preferences",
-      "Action commands (event-create, event-update, etc) queue work for RT service execution",
-      "Check exit code: 0 for success, non-zero for errors",
-      "Database must be initialized by RT service before CLI queries work"
+    "usage": "aech-cli-inbox-assistant <command> [options]",
+    "examples": [
+      "aech-cli-inbox-assistant email list --limit 10",
+      "aech-cli-inbox-assistant email get <message-id>",
+      "aech-cli-inbox-assistant attachment text <attachment-id>",
+      "aech-cli-inbox-assistant ask 'remember that email about budget?'",
+      "aech-cli-inbox-assistant search 'budget' --limit 10"
     ]
   }
 }

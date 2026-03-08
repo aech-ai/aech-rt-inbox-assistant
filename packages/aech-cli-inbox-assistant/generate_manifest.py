@@ -112,10 +112,11 @@ def introspect_click_app(group: click.Group, name: str, command: str) -> dict[st
         "documentation": {
             "usage": f"{command} <command> [options]",
             "examples": [
-                f"{command} list --limit 10",
-                f"{command} search 'query' --limit 10",
+                f"{command} email list --limit 10",
+                f"{command} email get <message-id>",
+                f"{command} attachment text <attachment-id>",
                 f"{command} ask 'remember that email about budget?'",
-                f"{command} reply-needed",
+                f"{command} search 'budget' --limit 10",
             ],
         },
     }

@@ -6,22 +6,10 @@ from typing import Any, Dict, Optional
 
 CAPABILITY_NAME = "inbox-assistant"
 
-# Valid top-level preference keys that the agent can set
-# Keys not in this list will be rejected to prevent hallucinated preferences
+# Valid top-level preference keys that the agent can set.
+# Keep this list intentionally small until a real preference contract exists.
 VALID_PREFERENCE_KEYS = {
-    # Core settings
-    "timezone",                      # IANA timezone (e.g., "America/Los_Angeles")
-    "vip_senders",                   # List of VIP email addresses
-    "teams_default_target",          # Default Teams channel/user for messages
-
-    # Digest settings
-    "digest_day",                    # Day of week for weekly digest (e.g., "friday")
-    "digest_time_local",             # Local time for digest (e.g., "08:30")
-
-    # Capability namespaces (these are dicts, not simple values)
-    "meeting_prep",                  # Meeting prep config object
-    "categories",                    # Email categories configuration
-    "inbox_assistant",               # Inbox autonomy + notification policy settings
+    "categories",
 }
 
 
@@ -144,64 +132,27 @@ def set_preference_from_string(key: str, raw_value: str) -> Path:
     return set_preference(key, _parse_value(raw_value))
 
 
-# =============================================================================
-# Namespaced Preferences (capability-scoped)
-# =============================================================================
-
 def get_capability_prefs(namespace: str) -> Dict[str, Any]:
-    """Get all preferences for a specific capability namespace.
-
-    Args:
-        namespace: Capability name (e.g., "inbox_assistant", "calendar")
-
-    Returns:
-        Dict of preferences for that capability, empty dict if not set
-    """
+    """Get all preferences for a specific namespace."""
     prefs = read_preferences()
     return prefs.get(namespace, {})
 
 
 def set_capability_prefs(namespace: str, capability_prefs: Dict[str, Any]) -> Path:
-    """Set all preferences for a specific capability namespace.
-
-    Args:
-        namespace: Capability name
-        capability_prefs: Dict of preferences to set
-
-    Returns:
-        Path to preferences file
-    """
+    """Set all preferences for a specific namespace."""
     prefs = read_preferences()
     prefs[namespace] = capability_prefs
     return write_preferences(prefs)
 
 
 def get_capability_pref(namespace: str, key: str, default: Any = None) -> Any:
-    """Get a specific preference from a capability namespace.
-
-    Args:
-        namespace: Capability name
-        key: Preference key within the namespace
-        default: Default value if not set
-
-    Returns:
-        The preference value or default
-    """
+    """Get a specific preference from a namespace."""
     capability_prefs = get_capability_prefs(namespace)
     return capability_prefs.get(key, default)
 
 
 def set_capability_pref(namespace: str, key: str, value: Any) -> Path:
-    """Set a specific preference in a capability namespace.
-
-    Args:
-        namespace: Capability name
-        key: Preference key within the namespace
-        value: Value to set
-
-    Returns:
-        Path to preferences file
-    """
+    """Set a specific preference in a namespace."""
     prefs = read_preferences()
     if namespace not in prefs:
         prefs[namespace] = {}

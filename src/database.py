@@ -43,6 +43,19 @@ def get_state_dir() -> Path:
     return get_user_root() / f".{CAPABILITY_NAME}"
 
 
+def get_attachment_store_dir() -> Path:
+    """Directory for canonical attachment blobs owned by inbox-assistant."""
+    return get_state_dir() / "attachments"
+
+
+def resolve_state_path(path_str: str) -> Path:
+    """Resolve a stored state-relative or absolute path."""
+    path = Path(path_str).expanduser()
+    if path.is_absolute():
+        return path.resolve()
+    return (get_state_dir() / path).resolve()
+
+
 def get_db_path() -> Path:
     """
     Get the path to the capability-owned SQLite state.
@@ -67,7 +80,7 @@ def init_db(db_path: Optional[Path] = None) -> None:
     cursor.execute("PRAGMA journal_mode=WAL;")
     cursor.execute("PRAGMA foreign_keys=ON;")
     
-    # Emails table - categories mode (no folders)
+    # Canonical email corpus
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS emails (
         id TEXT PRIMARY KEY,
@@ -88,20 +101,11 @@ def init_db(db_path: Optional[Path] = None) -> None:
         is_read BOOLEAN DEFAULT 0,
         etag TEXT,
         web_link TEXT,
-        -- Categories mode fields
         outlook_categories TEXT NOT NULL DEFAULT '[]', -- JSON array of applied Outlook categories
         urgency TEXT DEFAULT 'someday' CHECK(urgency IN ('immediate', 'today', 'this_week', 'someday')),
-        wm_needs_reply BOOLEAN,
-        wm_reply_deadline TEXT,
-        next_action_owner TEXT CHECK(next_action_owner IN ('principal', 'counterparty', 'shared', 'unknown')),
-        sender_org_relation TEXT CHECK(sender_org_relation IN ('internal', 'external', 'unknown')),
-        value_flow_direction TEXT CHECK(value_flow_direction IN ('toward_principal', 'away_from_principal', 'not_applicable', 'unknown')),
-        role_context_note TEXT,
-        role_context_confidence REAL,
-        suggested_action TEXT DEFAULT 'keep' CHECK(suggested_action IN ('keep', 'archive', 'delete')),
         processed_at DATETIME,
-        wm_processed_at DATETIME,  -- When working memory analysis was done
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
     """)
     # Indexes for common email queries
@@ -110,71 +114,7 @@ def init_db(db_path: Optional[Path] = None) -> None:
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_emails_received ON emails(received_at)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_emails_urgency ON emails(urgency)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_emails_processed ON emails(processed_at)")
-    # Migrate existing databases
-    _ensure_columns(cursor, "emails", {
-        "wm_processed_at": "DATETIME",
-        "wm_needs_reply": "BOOLEAN",
-        "wm_reply_deadline": "TEXT",
-        "next_action_owner": "TEXT",
-        "sender_org_relation": "TEXT",
-        "value_flow_direction": "TEXT",
-        "role_context_note": "TEXT",
-        "role_context_confidence": "REAL",
-    })
-
-    # Triage Log table - categories mode
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS triage_log (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        email_id TEXT NOT NULL,
-        outlook_categories TEXT NOT NULL DEFAULT '[]', -- JSON array of applied categories
-        urgency TEXT CHECK(urgency IN ('immediate', 'today', 'this_week', 'someday')),
-        reason TEXT,
-        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY(email_id) REFERENCES emails(id) ON DELETE CASCADE
-    )
-    """)
-
-    # User preferences table for Executive Assistant
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS user_preferences (
-        key TEXT PRIMARY KEY,
-        value TEXT,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-    """)
-
-    # Labels (e.g. vip, action_required, billing, marketing)
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS labels (
-        message_id TEXT NOT NULL,
-        label TEXT NOT NULL,
-        confidence REAL,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        PRIMARY KEY(message_id, label),
-        FOREIGN KEY(message_id) REFERENCES emails(id) ON DELETE CASCADE
-    )
-    """)
-
-    # NOTE: reply_tracking table removed - Working Memory (wm_threads) is now the source of truth
-    # for tracking which threads need replies. The WM Engine handles staleness and nudges.
-
-    # NOTE: Calendar events are synced to calendar_events table by RT service.
-    # See src/calendar_sync.py for sync implementation.
-
-    # Internal work queue
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS work_items (
-        id TEXT PRIMARY KEY,
-        type TEXT NOT NULL,
-        status TEXT NOT NULL CHECK(status IN ('pending', 'processing', 'completed', 'failed')),
-        payload_json TEXT NOT NULL DEFAULT '{}',
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-    """)
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_work_items_status ON work_items(status)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_work_items_type ON work_items(type)")
+    _ensure_columns(cursor, "emails", {"updated_at": "DATETIME DEFAULT CURRENT_TIMESTAMP"})
 
     # Sync state for delta sync tracking (per-folder)
     cursor.execute("""
@@ -199,15 +139,23 @@ def init_db(db_path: Optional[Path] = None) -> None:
         extracted_text TEXT,
         extraction_status TEXT DEFAULT 'pending' CHECK(extraction_status IN ('pending', 'extracting', 'completed', 'failed', 'skipped')),
         extraction_error TEXT,
+        storage_path TEXT,
         downloaded_at DATETIME,
+        stored_at DATETIME,
         extracted_at DATETIME,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY(email_id) REFERENCES emails(id) ON DELETE CASCADE
     )
     """)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_attachments_email ON attachments(email_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_attachments_hash ON attachments(content_hash)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_attachments_status ON attachments(extraction_status)")
+    _ensure_columns(cursor, "attachments", {
+        "storage_path": "TEXT",
+        "stored_at": "DATETIME",
+        "updated_at": "DATETIME DEFAULT CURRENT_TIMESTAMP",
+    })
 
     # Chunks table for searchable text segments
     cursor.execute("""
@@ -241,265 +189,31 @@ def init_db(db_path: Optional[Path] = None) -> None:
     END;
     """)
 
-    # === Working Memory Tables ===
-
-    # Active threads being tracked
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS wm_threads (
-        id TEXT PRIMARY KEY,
-        conversation_id TEXT NOT NULL UNIQUE,
-        subject TEXT,
-        participants_json TEXT NOT NULL DEFAULT '[]',
-        status TEXT DEFAULT 'active' CHECK(status IN ('active', 'awaiting_reply', 'awaiting_action', 'stale', 'resolved', 'archived')),
-        urgency TEXT DEFAULT 'this_week' CHECK(urgency IN ('immediate', 'today', 'this_week', 'someday')),
-        started_at DATETIME,
-        last_activity_at DATETIME,
-        user_last_action_at DATETIME,
-        summary TEXT,
-        key_points_json TEXT NOT NULL DEFAULT '[]',
-        pending_questions_json TEXT NOT NULL DEFAULT '[]',
-        message_count INTEGER DEFAULT 0,
-        user_is_cc BOOLEAN DEFAULT 0,
-        needs_reply BOOLEAN DEFAULT 0,
-        reply_deadline DATETIME,
-        labels_json TEXT NOT NULL DEFAULT '[]',
-        project_refs_json TEXT NOT NULL DEFAULT '[]',
-        latest_email_id TEXT,
-        latest_web_link TEXT,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-    """)
-    _ensure_columns(cursor, "wm_threads", {"latest_email_id": "TEXT", "latest_web_link": "TEXT"})
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_wm_threads_status ON wm_threads(status)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_wm_threads_urgency ON wm_threads(urgency)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_wm_threads_needs_reply ON wm_threads(needs_reply)")
-
-    # Known contacts with interaction history
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS wm_contacts (
-        id TEXT PRIMARY KEY,
-        email TEXT NOT NULL UNIQUE,
-        name TEXT,
-        organization TEXT,
-        relationship TEXT DEFAULT 'unknown' CHECK(relationship IN ('unknown', 'colleague', 'client', 'vendor', 'partner', 'personal', 'other')),
-        first_seen_at DATETIME,
-        last_interaction_at DATETIME,
-        total_interactions INTEGER DEFAULT 0,
-        user_initiated_count INTEGER DEFAULT 0,
-        they_initiated_count INTEGER DEFAULT 0,
-        cc_count INTEGER DEFAULT 0,
-        topics_json TEXT NOT NULL DEFAULT '[]',
-        notes TEXT,
-        is_vip BOOLEAN DEFAULT 0,
-        is_internal BOOLEAN DEFAULT 0,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-    """)
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_wm_contacts_email ON wm_contacts(email)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_wm_contacts_relationship ON wm_contacts(relationship)")
-
-    # Inferred projects/initiatives
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS wm_projects (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        description TEXT,
-        related_threads_json TEXT NOT NULL DEFAULT '[]',
-        participants_json TEXT NOT NULL DEFAULT '[]',
-        status TEXT DEFAULT 'active' CHECK(status IN ('active', 'completed', 'on_hold', 'cancelled')),
-        confidence REAL DEFAULT 0.5 CHECK(confidence >= 0.0 AND confidence <= 1.0),
-        first_mentioned_at DATETIME,
-        last_activity_at DATETIME,
-        key_decisions_json TEXT NOT NULL DEFAULT '[]',
-        deadlines_json TEXT NOT NULL DEFAULT '[]',
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-    """)
-
-    # Observations from passive learning (CC emails)
-    # Types match ObservationType enum in src/working_memory/models.py
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS wm_observations (
-        id TEXT PRIMARY KEY,
-        type TEXT NOT NULL CHECK(type IN (
-            'project_mention', 'decision_made', 'deadline_mentioned',
-            'person_introduced', 'status_update', 'meeting_scheduled',
-            'commitment_made', 'context_learned'
-        )),
-        content TEXT NOT NULL,
-        source_email_id TEXT,
-        source_thread_id TEXT,
-        related_contacts_json TEXT NOT NULL DEFAULT '[]',
-        related_projects_json TEXT NOT NULL DEFAULT '[]',
-        importance REAL DEFAULT 0.5 CHECK(importance >= 0.0 AND importance <= 1.0),
-        confidence REAL DEFAULT 0.5 CHECK(confidence >= 0.0 AND confidence <= 1.0),
-        observed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        relevant_until DATETIME,
-        FOREIGN KEY(source_email_id) REFERENCES emails(id) ON DELETE CASCADE
-    )
-    """)
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_wm_observations_type ON wm_observations(type)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_wm_observations_observed ON wm_observations(observed_at)")
-
-    # Pending decisions requiring user response
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS wm_decisions (
-        id TEXT PRIMARY KEY,
-        question TEXT NOT NULL,
-        context TEXT,
-        options_json TEXT NOT NULL DEFAULT '[]',
-        source_email_id TEXT,
-        source_thread_id TEXT,
-        requester TEXT,
-        urgency TEXT DEFAULT 'this_week' CHECK(urgency IN ('immediate', 'today', 'this_week', 'someday')),
-        deadline DATETIME,
-        is_resolved BOOLEAN DEFAULT 0,
-        resolution TEXT,
-        resolved_at DATETIME,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY(source_email_id) REFERENCES emails(id) ON DELETE CASCADE
-    )
-    """)
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_wm_decisions_resolved ON wm_decisions(is_resolved)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_wm_decisions_urgency ON wm_decisions(urgency)")
-
-    # User commitments to others
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS wm_commitments (
-        id TEXT PRIMARY KEY,
-        description TEXT NOT NULL,
-        to_whom TEXT,
-        source_email_id TEXT,
-        committed_at DATETIME,
-        due_by DATETIME,
-        is_completed BOOLEAN DEFAULT 0,
-        completed_at DATETIME,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY(source_email_id) REFERENCES emails(id) ON DELETE CASCADE
-    )
-    """)
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_wm_commitments_completed ON wm_commitments(is_completed)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_wm_commitments_due ON wm_commitments(due_by)")
-
-    # === Calendar Events Table ===
-    # Synced from Microsoft Graph API for offline access by CLI
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS calendar_events (
-        id TEXT PRIMARY KEY,
-        subject TEXT,
-        start_at TEXT,
-        end_at TEXT,
-        is_all_day INTEGER DEFAULT 0,
-        location TEXT,
-        is_online_meeting INTEGER DEFAULT 0,
-        online_meeting_url TEXT,
-        organizer_email TEXT,
-        organizer_name TEXT,
-        attendees_json TEXT NOT NULL DEFAULT '[]',
-        body_preview TEXT,
-        response_status TEXT,
-        sensitivity TEXT,
-        show_as TEXT,
-        importance TEXT,
-        is_cancelled INTEGER DEFAULT 0,
-        web_link TEXT,
-        last_modified_at TEXT,
-        synced_at TEXT
-    )
-    """)
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_calendar_events_start ON calendar_events(start_at)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_calendar_events_end ON calendar_events(end_at)")
-
-    # === Actions Table ===
-    # Queue for CLI-initiated actions executed by RT service
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS actions (
-        id TEXT PRIMARY KEY,
-        item_type TEXT NOT NULL,
-        item_id TEXT,
-        action_type TEXT NOT NULL,
-        payload_json TEXT,
-        status TEXT NOT NULL DEFAULT 'proposed',
-        proposed_at TEXT,
-        executed_at TEXT,
-        result_json TEXT,
-        error TEXT
-    )
-    """)
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_actions_status ON actions(status)")
-
-    # === Alert Rules Tables ===
-    # User-defined alert rules for custom notifications
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS alert_rules (
-        id TEXT PRIMARY KEY,
-        natural_language_rule TEXT NOT NULL,
-        event_types TEXT NOT NULL DEFAULT '["email_received"]',
-        enabled BOOLEAN DEFAULT 1,
-        cooldown_minutes INTEGER DEFAULT 30,
-        last_triggered_at DATETIME,
-        trigger_count INTEGER DEFAULT 0,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        created_by TEXT DEFAULT 'user'
-    )
-    """)
-    _migrate_alert_rules_schema(cursor)
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_alert_rules_enabled ON alert_rules(enabled)")
-
-    # Alert trigger history for deduplication and auditing
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS alert_triggers (
-        id TEXT PRIMARY KEY,
-        rule_id TEXT NOT NULL,
-        event_type TEXT NOT NULL,
-        event_id TEXT NOT NULL,
-        triggered_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        match_reason TEXT,
-        trigger_payload_json TEXT,
-        FOREIGN KEY(rule_id) REFERENCES alert_rules(id) ON DELETE CASCADE,
-        UNIQUE(rule_id, event_type, event_id)
-    )
-    """)
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_alert_triggers_rule ON alert_triggers(rule_id)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_alert_triggers_event ON alert_triggers(event_type, event_id)")
-
-    # === Unified Facts Table ===
-    # Consolidates: wm_decisions, wm_commitments, wm_observations, plus key business facts
+    # Unified structured facts extracted from email and attachment content.
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS facts (
         id TEXT PRIMARY KEY,
-        source_type TEXT NOT NULL CHECK(source_type IN ('email', 'attachment', 'calendar')),
+        source_type TEXT NOT NULL CHECK(source_type IN ('email', 'attachment')),
         source_id TEXT NOT NULL,
         fact_type TEXT NOT NULL CHECK(fact_type IN (
-            -- Action items (from WM)
-            'decision',        -- Pending decision requiring response
-            'commitment',      -- Promise made by user
-            'action_item',     -- Task extracted from email
-
-            -- Key details
+            'decision',
+            'commitment',
+            'action_item',
             'tax_id', 'business_number', 'account_number',
             'amount', 'address', 'phone', 'deadline',
             'person_name', 'company_name', 'contract_number',
-
-            -- Observations
-            'preference',      -- User preference learned
-            'relationship',    -- Org structure insight
-            'pattern',         -- Recurring pattern
-
+            'preference',
+            'relationship',
+            'pattern',
             'other'
         )),
         fact_value TEXT NOT NULL,
-        context TEXT,                    -- Surrounding text for disambiguation
+        context TEXT,
         confidence REAL DEFAULT 0.8 CHECK(confidence >= 0.0 AND confidence <= 1.0),
-        entity_normalized TEXT,          -- Normalized form (dates, phones, etc)
-        metadata_json TEXT,              -- Additional structured data
+        entity_normalized TEXT,
+        metadata_json TEXT,
         status TEXT DEFAULT 'active' CHECK(status IN ('active', 'resolved', 'expired')),
-        due_date DATETIME,               -- For deadlines, commitments
+        due_date DATETIME,
         extracted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         resolved_at DATETIME,
         FOREIGN KEY(source_id) REFERENCES emails(id) ON DELETE CASCADE
@@ -510,7 +224,7 @@ def init_db(db_path: Optional[Path] = None) -> None:
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_facts_status ON facts(status)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_facts_due ON facts(due_date)")
 
-    # Compliance-safe retained intelligence not tied to email row lifecycle.
+    # Compliance-safe retained intelligence not tied directly to a single email row.
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS derived_learnings (
         id TEXT PRIMARY KEY,
@@ -528,81 +242,6 @@ def init_db(db_path: Optional[Path] = None) -> None:
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_derived_learnings_type ON derived_learnings(learning_type)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_derived_learnings_seen ON derived_learnings(last_seen_at)")
 
-    # === Derived Views (replace wm_threads and wm_contacts) ===
-
-    # Active threads view - computed from latest email state per conversation.
-    # Reply/context signals are sourced from LLM-derived columns on emails.
-    cursor.execute("DROP VIEW IF EXISTS active_threads")
-    cursor.execute("""
-    CREATE VIEW active_threads AS
-    SELECT
-        e.conversation_id,
-        MAX(e.received_at) as last_activity,
-        COUNT(*) as message_count,
-        GROUP_CONCAT(DISTINCT e.sender) as participants,
-        (SELECT e2.subject FROM emails e2
-         WHERE e2.conversation_id = e.conversation_id
-         ORDER BY e2.received_at DESC LIMIT 1) as subject,
-        (SELECT e3.sender FROM emails e3
-         WHERE e3.conversation_id = e.conversation_id
-         ORDER BY e3.received_at DESC LIMIT 1) as last_sender,
-        (SELECT e4.id FROM emails e4
-         WHERE e4.conversation_id = e.conversation_id
-         ORDER BY e4.received_at DESC LIMIT 1) as latest_email_id,
-        (SELECT e5.web_link FROM emails e5
-         WHERE e5.conversation_id = e.conversation_id
-         ORDER BY e5.received_at DESC LIMIT 1) as latest_web_link,
-        (SELECT e6.urgency FROM emails e6
-         WHERE e6.conversation_id = e.conversation_id
-         ORDER BY e6.received_at DESC LIMIT 1) as urgency,
-        (SELECT e7.wm_needs_reply FROM emails e7
-         WHERE e7.conversation_id = e.conversation_id
-         ORDER BY e7.received_at DESC LIMIT 1) as wm_needs_reply,
-        (SELECT e8.wm_reply_deadline FROM emails e8
-         WHERE e8.conversation_id = e.conversation_id
-         ORDER BY e8.received_at DESC LIMIT 1) as wm_reply_deadline,
-        (SELECT e9.next_action_owner FROM emails e9
-         WHERE e9.conversation_id = e.conversation_id
-         ORDER BY e9.received_at DESC LIMIT 1) as next_action_owner,
-        (SELECT e10.sender_org_relation FROM emails e10
-         WHERE e10.conversation_id = e.conversation_id
-         ORDER BY e10.received_at DESC LIMIT 1) as sender_org_relation,
-        (SELECT e11.value_flow_direction FROM emails e11
-         WHERE e11.conversation_id = e.conversation_id
-         ORDER BY e11.received_at DESC LIMIT 1) as value_flow_direction,
-        (SELECT e12.role_context_note FROM emails e12
-         WHERE e12.conversation_id = e.conversation_id
-         ORDER BY e12.received_at DESC LIMIT 1) as role_context_note,
-        (SELECT e13.role_context_confidence FROM emails e13
-         WHERE e13.conversation_id = e.conversation_id
-         ORDER BY e13.received_at DESC LIMIT 1) as role_context_confidence,
-        EXISTS(SELECT 1 FROM facts f
-               WHERE f.source_id IN (SELECT id FROM emails WHERE conversation_id = e.conversation_id)
-               AND f.fact_type IN ('decision', 'commitment', 'action_item')
-               AND f.status = 'active') as has_action_items
-    FROM emails e
-    WHERE datetime(e.received_at) > datetime('now', '-30 days')
-      AND e.conversation_id IS NOT NULL
-    GROUP BY e.conversation_id
-    """)
-
-    # Contacts view - computed from emails on demand
-    cursor.execute("""
-    CREATE VIEW IF NOT EXISTS contacts AS
-    SELECT
-        e.sender as email,
-        CASE
-            WHEN e.sender LIKE '%<%>' THEN TRIM(SUBSTR(e.sender, 1, INSTR(e.sender, '<')-1))
-            ELSE e.sender
-        END as name,
-        COUNT(*) as email_count,
-        MAX(e.received_at) as last_interaction,
-        MIN(e.received_at) as first_interaction,
-        COUNT(DISTINCT e.conversation_id) as thread_count
-    FROM emails e
-    GROUP BY e.sender
-    """)
-
     conn.commit()
     _ensure_fts(cursor)
     conn.commit()
@@ -619,79 +258,6 @@ def get_connection(db_path: Optional[Path] = None) -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys=ON;")
     conn.execute("PRAGMA busy_timeout = 30000;")
     return conn
-
-
-def _migrate_alert_rules_schema(cursor: sqlite3.Cursor) -> None:
-    """
-    Enforce the current alert_rules schema.
-
-    This removes legacy columns that are no longer supported:
-    - parsed_conditions_json
-    - channel
-    - channel_target
-    """
-    rows = list(cursor.execute("PRAGMA table_info(alert_rules)"))
-    if not rows:
-        return
-
-    existing_columns = {str(row[1]) for row in rows}
-    expected_columns = {
-        "id",
-        "natural_language_rule",
-        "event_types",
-        "enabled",
-        "cooldown_minutes",
-        "last_triggered_at",
-        "trigger_count",
-        "created_at",
-        "updated_at",
-        "created_by",
-    }
-    if existing_columns == expected_columns:
-        return
-
-    logger.warning("Migrating alert_rules schema to remove legacy columns.")
-    cursor.execute("PRAGMA foreign_keys=OFF;")
-    cursor.execute("DROP TABLE IF EXISTS alert_rules_new")
-    cursor.execute(
-        """
-        CREATE TABLE alert_rules_new (
-            id TEXT PRIMARY KEY,
-            natural_language_rule TEXT NOT NULL,
-            event_types TEXT NOT NULL DEFAULT '["email_received"]',
-            enabled BOOLEAN DEFAULT 1,
-            cooldown_minutes INTEGER DEFAULT 30,
-            last_triggered_at DATETIME,
-            trigger_count INTEGER DEFAULT 0,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            created_by TEXT DEFAULT 'user'
-        )
-        """
-    )
-    cursor.execute(
-        """
-        INSERT INTO alert_rules_new (
-            id, natural_language_rule, event_types, enabled, cooldown_minutes,
-            last_triggered_at, trigger_count, created_at, updated_at, created_by
-        )
-        SELECT
-            id,
-            natural_language_rule,
-            COALESCE(event_types, '["email_received"]'),
-            COALESCE(enabled, 1),
-            COALESCE(cooldown_minutes, 30),
-            last_triggered_at,
-            COALESCE(trigger_count, 0),
-            COALESCE(created_at, CURRENT_TIMESTAMP),
-            COALESCE(updated_at, CURRENT_TIMESTAMP),
-            COALESCE(created_by, 'user')
-        FROM alert_rules
-        """
-    )
-    cursor.execute("DROP TABLE alert_rules")
-    cursor.execute("ALTER TABLE alert_rules_new RENAME TO alert_rules")
-    cursor.execute("PRAGMA foreign_keys=ON;")
 
 
 def _ensure_columns(cursor: sqlite3.Cursor, table: str, columns: dict[str, str]) -> None:
