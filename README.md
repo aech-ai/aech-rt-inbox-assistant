@@ -28,7 +28,11 @@ That loop lives in [src/main.py](/Users/steven/work/github/agent@aech.ai/aech-rt
 
 All state belongs under `INBOX_STATE_DIR` when set. Otherwise it falls back to `~/.inbox-assistant`.
 
-Important paths:
+In multi-instance deployments, `INBOX_STATE_DIR` should be mailbox-scoped, for example:
+- `$AECH_HOST_DATA/app_context/inbox-assistant/steven@aech.ai`
+- `$AECH_HOST_DATA/app_context/inbox-assistant/agent@customer.com`
+
+Important paths inside each mailbox-scoped state root:
 - SQLite DB: `assistant.sqlite`
 - canonical attachment store: `attachments/<attachment-id>/<filename>`
 - logs/other capability state: same state root

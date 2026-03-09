@@ -31,6 +31,7 @@ services:
       - OPENAI_API_KEY
       - MSGRAPH_TOKEN
       - DELEGATED_USER
+      - INBOX_STATE_DIR=/app/state/${DELEGATED_USER}
       - POLL_INTERVAL
       - MODEL_NAME
       - AZURE_CLIENT_ID
