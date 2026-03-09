@@ -151,6 +151,100 @@ def _load_attachments(conn, email_id: str) -> list[dict[str, Any]]:
     return [_row_to_attachment_dict(row) for row in rows]
 
 
+def _stable_message_key(email: dict[str, Any]) -> str:
+    import hashlib
+
+    stable_id = (
+        str(email.get("internet_message_id") or "").strip()
+        or str(email.get("id") or "").strip()
+        or "|".join(
+            [
+                str(email.get("conversation_id") or "").strip(),
+                str(email.get("received_at") or "").strip(),
+                str(email.get("sender") or "").strip(),
+                str(email.get("subject") or "").strip(),
+            ]
+        )
+    )
+    return hashlib.sha256(stable_id.encode("utf-8")).hexdigest()[:24]
+
+
+def _load_thread_messages(conn, conversation_id: str, *, limit: int = 200) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT * FROM emails
+        WHERE conversation_id = ?
+        ORDER BY received_at ASC
+        LIMIT ?
+        """,
+        (conversation_id, limit),
+    ).fetchall()
+    messages: list[dict[str, Any]] = []
+    for row in rows:
+        email = _row_to_email_dict(row)
+        email["attachments"] = _load_attachments(conn, email["id"])
+        messages.append(email)
+    return messages
+
+
+def _project_batch_output(
+    conn,
+    *,
+    since: str | None,
+    received_after: str | None,
+    received_before: str | None,
+    limit: int,
+    include_read: bool,
+) -> dict[str, Any]:
+    query = "SELECT * FROM emails WHERE 1=1"
+    params: list[Any] = []
+    if since:
+        query += " AND COALESCE(updated_at, created_at) > ?"
+        params.append(since)
+    if received_after:
+        query += " AND received_at >= ?"
+        params.append(received_after)
+    if received_before:
+        query += " AND received_at < ?"
+        params.append(received_before)
+    if not include_read:
+        query += " AND is_read = 0"
+    query += " ORDER BY received_at DESC LIMIT ?"
+    params.append(limit)
+
+    rows = conn.execute(query, params).fetchall()
+    items: list[dict[str, Any]] = []
+    latest_updated_at: str | None = None
+    oldest_received_at: str | None = None
+    for row in rows:
+        email = _row_to_email_dict(row)
+        email["attachments"] = _load_attachments(conn, email["id"])
+        thread_messages = _load_thread_messages(conn, str(email.get("conversation_id") or ""))
+        item = {
+            "message_key": _stable_message_key(email),
+            "email": email,
+            "thread": {
+                "conversation_id": email.get("conversation_id"),
+                "message_count": len(thread_messages),
+                "messages": thread_messages,
+            },
+        }
+        items.append(item)
+        updated_at = str(email.get("updated_at") or email.get("created_at") or "").strip() or None
+        received_at = str(email.get("received_at") or "").strip() or None
+        if updated_at and (latest_updated_at is None or updated_at > latest_updated_at):
+            latest_updated_at = updated_at
+        if received_at and (oldest_received_at is None or received_at < oldest_received_at):
+            oldest_received_at = received_at
+
+    return {
+        "count": len(items),
+        "latest_updated_at": latest_updated_at,
+        "oldest_received_at": oldest_received_at,
+        "items": items,
+    }
+
+
 @click.group(cls=JSONGroup, help="Query inbox-assistant state, content, and preferences.")
 def app():
     pass
@@ -386,6 +480,33 @@ def email_thread(conversation_id: str, limit: int) -> None:
             "messages": messages,
         }
     )
+
+
+@email_app.command(cls=JSONCommand, name="project-batch")
+@click.option("--since", default=None, help="Only emails updated after this ISO timestamp")
+@click.option("--received-after", default=None, help="Only emails received at or after this ISO timestamp")
+@click.option("--received-before", default=None, help="Only emails received before this ISO timestamp")
+@click.option("--limit", default=100, help="Maximum email bundles to return")
+@click.option("--include-read", is_flag=True, help="Include read emails")
+def email_project_batch(
+    since: str | None,
+    received_after: str | None,
+    received_before: str | None,
+    limit: int,
+    include_read: bool,
+) -> None:
+    """Return message bundles for manager-side inbox projection."""
+    conn = connect_db()
+    payload = _project_batch_output(
+        conn,
+        since=since,
+        received_after=received_after,
+        received_before=received_before,
+        limit=limit,
+        include_read=include_read,
+    )
+    conn.close()
+    output_json(payload)
 
 
 @attachment_app.command(cls=JSONCommand, name="list")

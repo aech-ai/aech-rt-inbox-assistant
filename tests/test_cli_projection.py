@@ -132,6 +132,38 @@ def test_cli_email_changes_uses_updated_at(monkeypatch, tmp_path: Path):
     assert [row["id"] for row in rows] == ["new-email"]
 
 
+def test_cli_email_project_batch_returns_email_thread_and_attachment_manifests(monkeypatch, tmp_path: Path):
+    state_dir = tmp_path / ".inbox-assistant"
+    db_path = state_dir / "assistant.sqlite"
+    monkeypatch.setenv("INBOX_STATE_DIR", str(state_dir))
+    monkeypatch.setenv("INBOX_DB_PATH", str(db_path))
+
+    init_db(db_path)
+    _seed_db(db_path, state_dir)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "email",
+            "project-batch",
+            "--received-after",
+            "2026-03-01T00:00:00",
+            "--limit",
+            "10",
+            "--include-read",
+        ],
+    )
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["count"] == 1
+    assert payload["items"][0]["message_key"]
+    assert payload["items"][0]["email"]["id"] == "email-1"
+    assert payload["items"][0]["email"]["attachments"][0]["id"] == "att-1"
+    assert payload["items"][0]["thread"]["conversation_id"] == "thread-1"
+    assert payload["items"][0]["thread"]["message_count"] == 1
+
+
 def test_cli_categories_workflow(monkeypatch, tmp_path: Path):
     state_dir = tmp_path / ".inbox-assistant"
     db_path = state_dir / "assistant.sqlite"
