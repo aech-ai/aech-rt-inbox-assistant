@@ -1,0 +1,53 @@
+FROM nvcr.io/nvidia/pytorch:25.11-py3
+
+WORKDIR /app
+
+# System deps: match aech-main worker for full document processing support
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        pandoc \
+        sqlite3 \
+        libsqlite3-dev \
+        build-essential \
+        poppler-utils \
+        libreoffice \
+        libreoffice-java-common \
+        imagemagick \
+        ghostscript \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy dependency wheels from sibling repos (provided via additional_contexts: repos in docker-compose)
+COPY --from=aech-main packages/aech-cli-msgraph/dist/*.whl /tmp/wheels/
+COPY --from=aech-cli-documents dist/*.whl /tmp/wheels/
+COPY --from=aech-main packages/aech-llm-observability/dist/*.whl /tmp/wheels/
+
+# Install Python deps as root (--find-links looks in /tmp/wheels/ first, then PyPI)
+COPY ./requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt --find-links /tmp/wheels/
+
+# App source
+COPY ./src/ src/
+COPY ./scripts/ scripts/
+
+# Install CLI packages
+COPY ./packages/aech-cli-inbox-assistant/ packages/aech-cli-inbox-assistant/
+RUN pip install --no-cache-dir packages/aech-cli-inbox-assistant/
+
+# Install the main package
+COPY ./pyproject.toml .
+RUN pip install --no-cache-dir -e .
+
+# Create non-root user (align with aech-main UID/GID 1001)
+RUN groupadd -r agentaech -g 1001 && \
+    useradd -r -g agentaech -u 1001 -m -d /home/agentaech -s /bin/bash agentaech && \
+    mkdir -p /home/agentaech/.inbox-assistant /data/users && \
+    chown -R agentaech:agentaech /home/agentaech /app
+
+# Set umask for group-writable files
+RUN echo "umask 002" >> /home/agentaech/.bashrc
+USER agentaech
+
+# Set python path and start the service
+ENV PYTHONPATH=/app
+ENV PYTHONUNBUFFERED=1
+CMD ["bash", "-c", "umask 002 && exec python -m src.main"]

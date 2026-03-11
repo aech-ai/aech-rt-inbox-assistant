@@ -1,0 +1,13 @@
+services:
+  inbox-assistant:
+    build:
+      dockerfile: Dockerfile.gpu
+    gpus: all
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+              count: "all"
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
