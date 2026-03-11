@@ -82,13 +82,13 @@ async def process_pending_content(concurrency: int = 5) -> None:
 
         email_results = process_unindexed_emails(limit=50)
         att_chunk_results = process_unindexed_attachments(limit=50)
-        fallback_chunks = email_results.get("chunks_created", 0) + att_chunk_results.get("chunks_created", 0)
-        if fallback_chunks > 0:
-            logger.info("Fallback indexing created %s chunks", fallback_chunks)
+        catch_up_chunks = email_results.get("chunks_created", 0) + att_chunk_results.get("chunks_created", 0)
+        if catch_up_chunks > 0:
+            logger.info("Catch-up indexing created %s chunks", catch_up_chunks)
 
         embed_results = embed_pending_chunks(limit=50, batch_size=32)
         if embed_results["processed"] > 0:
-            logger.info("Fallback embedding wrote %s embeddings", embed_results["processed"])
+            logger.info("Catch-up embedding wrote %s embeddings", embed_results["processed"])
     except Exception as exc:
         logger.error("Content processing error: %s", exc)
         raise

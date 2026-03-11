@@ -8,4 +8,4 @@ markdownify
 sentence-transformers
 aech-cli-msgraph
 aech-cli-documents
-aech-llm-observability
+aech-llm-observability>=0.2.0,<0.3.0

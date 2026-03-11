@@ -29,6 +29,22 @@ class GraphPoller:
             raise ValueError("DELEGATED_USER environment variable must be set")
 
         self._graph_client = GraphClient()
+        self._ignored_senders = self._load_ignored_senders()
+
+    @staticmethod
+    def _normalize_email(address: Optional[str]) -> str:
+        return (address or "").strip().lower()
+
+    def _load_ignored_senders(self) -> set[str]:
+        configured = os.getenv("INBOX_IGNORED_SENDERS", "")
+        return {
+            self._normalize_email(address)
+            for address in configured.split(",")
+            if self._normalize_email(address)
+        }
+
+    def _is_ignored_sender(self, sender: Optional[str]) -> bool:
+        return self._normalize_email(sender) in self._ignored_senders
 
     def _run_cli(self, args: List[str]) -> str:
         """Run aech-cli-msgraph with the delegated user and return stdout."""
@@ -67,6 +83,9 @@ class GraphPoller:
             conn = get_connection()
             for msg in messages:
                 sender = msg.get("from", {}).get("emailAddress", {}).get("address", "")
+                if self._is_ignored_sender(sender):
+                    logger.debug("Skipping ignored sender during poll-inbox: %s", sender)
+                    continue
                 to_emails = [
                     r.get("emailAddress", {}).get("address", "")
                     for r in (msg.get("toRecipients") or [])
@@ -322,6 +341,11 @@ class GraphPoller:
             "processed_at": processed_at,
         }
 
+    def _delete_message_if_present(self, conn, message_id: Optional[str]) -> None:
+        if not message_id:
+            return
+        conn.execute("DELETE FROM emails WHERE id = ?", (message_id,))
+
     def _upsert_message(self, conn, msg_data: Dict[str, Any], body_html: Optional[str] = None) -> None:
         """Upsert a message into the database."""
         # Parse HTML body into structured markdown
@@ -488,6 +512,12 @@ class GraphPoller:
 
                 # Now upsert with bodies
                 for msg, msg_data in page_messages:
+                    if self._is_ignored_sender(msg_data["sender"]):
+                        self._delete_message_if_present(conn, msg_data["id"])
+                        logger.debug(
+                            "Skipping ignored sender during full sync: %s", msg_data["sender"]
+                        )
+                        continue
                     body_html = bodies.get(msg["id"]) if fetch_body else None
                     self._upsert_message(conn, msg_data, body_html)
 
@@ -614,6 +644,12 @@ class GraphPoller:
 
                 # Upsert updates with bodies
                 for msg, msg_data in to_update:
+                    if self._is_ignored_sender(msg_data["sender"]):
+                        self._delete_message_if_present(conn, msg_data["id"])
+                        logger.debug(
+                            "Skipping ignored sender during delta sync: %s", msg_data["sender"]
+                        )
+                        continue
                     body_html = bodies.get(msg["id"]) if fetch_body else None
                     self._upsert_message(conn, msg_data, body_html)
                     messages_updated += 1

@@ -12,6 +12,33 @@ logger = logging.getLogger(__name__)
 
 CAPABILITY_NAME = "inbox-assistant"
 
+FACTS_COLUMNS = [
+    "id",
+    "source_type",
+    "source_id",
+    "fact_type",
+    "fact_value",
+    "context",
+    "confidence",
+    "entity_normalized",
+    "metadata_json",
+    "status",
+    "due_date",
+    "extracted_at",
+    "resolved_at",
+]
+
+FACTS_COLUMN_DEFAULTS = {
+    "context": "NULL",
+    "confidence": "0.8",
+    "entity_normalized": "NULL",
+    "metadata_json": "NULL",
+    "status": "'active'",
+    "due_date": "NULL",
+    "extracted_at": "CURRENT_TIMESTAMP",
+    "resolved_at": "NULL",
+}
+
 
 def get_user_root() -> Path:
     """
@@ -190,39 +217,23 @@ def init_db(db_path: Optional[Path] = None) -> None:
     """)
 
     # Unified structured facts extracted from email and attachment content.
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS facts (
-        id TEXT PRIMARY KEY,
-        source_type TEXT NOT NULL CHECK(source_type IN ('email', 'attachment')),
-        source_id TEXT NOT NULL,
-        fact_type TEXT NOT NULL CHECK(fact_type IN (
-            'decision',
-            'commitment',
-            'action_item',
-            'tax_id', 'business_number', 'account_number',
-            'amount', 'address', 'phone', 'deadline',
-            'person_name', 'company_name', 'contract_number',
-            'preference',
-            'relationship',
-            'pattern',
-            'other'
-        )),
-        fact_value TEXT NOT NULL,
-        context TEXT,
-        confidence REAL DEFAULT 0.8 CHECK(confidence >= 0.0 AND confidence <= 1.0),
-        entity_normalized TEXT,
-        metadata_json TEXT,
-        status TEXT DEFAULT 'active' CHECK(status IN ('active', 'resolved', 'expired')),
-        due_date DATETIME,
-        extracted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        resolved_at DATETIME,
-        FOREIGN KEY(source_id) REFERENCES emails(id) ON DELETE CASCADE
-    )
-    """)
+    _ensure_facts_table(cursor)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_facts_source ON facts(source_type, source_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_facts_type ON facts(fact_type)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_facts_status ON facts(status)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_facts_due ON facts(due_date)")
+    cursor.execute("""
+    CREATE TRIGGER IF NOT EXISTS emails_delete_facts
+    AFTER DELETE ON emails BEGIN
+        DELETE FROM facts WHERE source_type = 'email' AND source_id = old.id;
+    END;
+    """)
+    cursor.execute("""
+    CREATE TRIGGER IF NOT EXISTS attachments_delete_facts
+    AFTER DELETE ON attachments BEGIN
+        DELETE FROM facts WHERE source_type = 'attachment' AND source_id = old.id;
+    END;
+    """)
 
     # Compliance-safe retained intelligence not tied directly to a single email row.
     cursor.execute("""
@@ -266,6 +277,74 @@ def _ensure_columns(cursor: sqlite3.Cursor, table: str, columns: dict[str, str])
         if name in existing:
             continue
         cursor.execute(f"ALTER TABLE {table} ADD COLUMN {name} {column_type}")
+
+
+def _create_facts_table(cursor: sqlite3.Cursor) -> None:
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS facts (
+        id TEXT PRIMARY KEY,
+        source_type TEXT NOT NULL CHECK(source_type IN ('email', 'attachment')),
+        source_id TEXT NOT NULL,
+        fact_type TEXT NOT NULL CHECK(fact_type IN (
+            'decision',
+            'commitment',
+            'action_item',
+            'tax_id', 'business_number', 'account_number',
+            'amount', 'address', 'phone', 'deadline',
+            'person_name', 'company_name', 'contract_number',
+            'preference',
+            'relationship',
+            'pattern',
+            'other'
+        )),
+        fact_value TEXT NOT NULL,
+        context TEXT,
+        confidence REAL DEFAULT 0.8 CHECK(confidence >= 0.0 AND confidence <= 1.0),
+        entity_normalized TEXT,
+        metadata_json TEXT,
+        status TEXT DEFAULT 'active' CHECK(status IN ('active', 'resolved', 'expired')),
+        due_date DATETIME,
+        extracted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        resolved_at DATETIME
+    )
+    """)
+
+
+def _ensure_facts_table(cursor: sqlite3.Cursor) -> None:
+    existing = cursor.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'facts'"
+    ).fetchone()
+    if not existing:
+        _create_facts_table(cursor)
+        return
+
+    legacy_fk = cursor.execute("PRAGMA foreign_key_list(facts)").fetchall()
+    if not legacy_fk:
+        return
+
+    logger.info("Migrating facts table to polymorphic source references")
+    cursor.execute("DROP TRIGGER IF EXISTS facts_ai_fts")
+    cursor.execute("DROP TRIGGER IF EXISTS facts_ad_fts")
+    cursor.execute("DROP TRIGGER IF EXISTS facts_au_fts")
+    cursor.execute("DROP TABLE IF EXISTS facts_fts")
+    cursor.execute("ALTER TABLE facts RENAME TO facts_legacy")
+    _create_facts_table(cursor)
+
+    existing_columns = {
+        row[1] for row in cursor.execute("PRAGMA table_info(facts_legacy)")
+    }
+    select_columns = [
+        column if column in existing_columns else FACTS_COLUMN_DEFAULTS[column]
+        for column in FACTS_COLUMNS
+    ]
+    cursor.execute(
+        f"""
+        INSERT INTO facts ({", ".join(FACTS_COLUMNS)})
+        SELECT {", ".join(select_columns)}
+        FROM facts_legacy
+        """
+    )
+    cursor.execute("DROP TABLE facts_legacy")
 
 
 def _ensure_fts(cursor: sqlite3.Cursor) -> None:

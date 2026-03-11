@@ -7,13 +7,6 @@ services:
         aech-main: ../aech-main
         aech-cli-documents: ../aech-cli-documents
     image: aech-rt-inbox-assistant
-    gpus: all
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - capabilities: [gpu]
-              count: 'all' # or 'all' to use all available GPUs
     env_file:
       - .env
     volumes:
@@ -32,6 +25,7 @@ services:
       - MSGRAPH_TOKEN
       - DELEGATED_USER
       - INBOX_STATE_DIR=/app/state/${DELEGATED_USER}
+      - INBOX_DB_PATH=/app/state/${DELEGATED_USER}/assistant.sqlite
       - POLL_INTERVAL
       - MODEL_NAME
       - AZURE_CLIENT_ID
@@ -41,5 +35,3 @@ services:
       - DEFAULT_TIMEZONE=${DEFAULT_TIMEZONE:-America/Los_Angeles}
       # LLM observability
       - LLM_LOG_DIR=/app/state/llm_logs
-      # Optional: set specific environment variables for Spark/CUDA if needed
-      - NVIDIA_VISIBLE_DEVICES=all

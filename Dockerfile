@@ -1,20 +1,20 @@
-# MacOS
-# FROM python:3.11-slim
-# DGX Spark
-FROM nvcr.io/nvidia/pytorch:25.11-py3
+FROM python:3.13-slim
 
 WORKDIR /app
 
 # System deps: match aech-main worker for full document processing support
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
+        bash \
         pandoc \
         sqlite3 \
         libsqlite3-dev \
         build-essential \
+        gcc \
         poppler-utils \
         libreoffice \
         libreoffice-java-common \
+        default-jre \
         imagemagick \
         ghostscript \
     && rm -rf /var/lib/apt/lists/*

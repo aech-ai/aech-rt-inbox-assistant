@@ -14,18 +14,19 @@ source = { editable = "../aech-cli-documents" }
 dependencies = [
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "openai" },
     { name = "pdf2image" },
     { name = "pillow" },
     { name = "pydantic" },
     { name = "pydantic-ai" },
     { name = "rich" },
-    { name = "sentence-transformers" },
     { name = "typer" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "numpy" },
+    { name = "openai" },
     { name = "pdf2image" },
     { name = "pillow" },
     { name = "pydantic", specifier = ">=2.0" },
@@ -33,7 +34,6 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'" },
     { name = "pytest-asyncio", marker = "extra == 'dev'" },
     { name = "rich" },
-    { name = "sentence-transformers" },
     { name = "typer" },
 ]
 provides-extras = ["dev"]

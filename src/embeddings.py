@@ -1,13 +1,9 @@
 """
 Embedding generation for Email Corpus Intelligence.
 
-Uses sentence-transformers with configurable model (default: BAAI/bge-m3).
-Embeddings are stored as BLOBs in SQLite for vector similarity search.
-
-bge-m3 features:
-- 8192 token context (handles long attachment chunks)
-- Multi-lingual support
-- Strong retrieval performance
+Supports either local sentence-transformers models or an OpenAI-compatible
+embeddings endpoint such as LM Studio. Embeddings are stored as BLOBs in
+SQLite for vector similarity search.
 """
 
 import json
@@ -20,29 +16,68 @@ from .database import get_connection
 
 logger = logging.getLogger(__name__)
 
-# Model configuration - configurable via environment
 DEFAULT_MODEL = "BAAI/bge-m3"
-MODEL_NAME = os.getenv("EMBEDDING_MODEL", DEFAULT_MODEL)
-BATCH_SIZE = int(os.getenv("EMBEDDING_BATCH_SIZE", "8"))  # Lower default for memory efficiency
+DEFAULT_BACKEND = "sentence-transformers"
 
-# Lazy-loaded model and dimension
+# Lazy-loaded providers and dimension
 _model = None
+_model_config = None
+_client = None
+_client_config = None
 _embedding_dim = None
+
+
+def _get_backend() -> str:
+    backend = os.getenv("EMBEDDING_BACKEND", "").strip().lower()
+    if not backend and os.getenv("EMBEDDING_BASE_URL", "").strip():
+        return "openai-compatible"
+    if backend in {"lmstudio", "openai", "openai-compatible", "openai_compatible"}:
+        return "openai-compatible"
+    if not backend:
+        return DEFAULT_BACKEND
+    return backend
+
+
+def _get_model_name() -> str:
+    return os.getenv("EMBEDDING_MODEL", DEFAULT_MODEL)
+
+
+def _get_batch_size() -> int:
+    return int(os.getenv("EMBEDDING_BATCH_SIZE", "8"))
+
+
+def _get_base_url() -> str:
+    return os.getenv("EMBEDDING_BASE_URL", "").strip()
+
+
+def _get_api_key() -> str:
+    return os.getenv("EMBEDDING_API_KEY", "").strip() or "lm-studio"
+
+
+def _get_timeout_seconds() -> float:
+    return float(os.getenv("EMBEDDING_TIMEOUT_SECONDS", "60"))
+
+
+def _pack_embedding(embedding: List[float]) -> bytes:
+    return struct.pack(f"{len(embedding)}f", *embedding)
 
 
 def get_model():
     """Lazy-load the sentence transformer model."""
-    global _model, _embedding_dim
-    if _model is None:
+    global _model, _model_config, _embedding_dim
+    model_name = _get_model_name()
+    config = (_get_backend(), model_name)
+    if _model is None or _model_config != config:
         try:
             from sentence_transformers import SentenceTransformer
 
-            logger.info(f"Loading embedding model: {MODEL_NAME}")
-            _model = SentenceTransformer(MODEL_NAME, trust_remote_code=True)
+            logger.info("Loading sentence-transformers embedding model: %s", model_name)
+            _model = SentenceTransformer(model_name, trust_remote_code=True)
+            _model_config = config
 
             # Auto-detect embedding dimension
             _embedding_dim = _model.get_sentence_embedding_dimension()
-            logger.info(f"Model loaded successfully (dim={_embedding_dim})")
+            logger.info("Embedding model loaded successfully (dim=%s)", _embedding_dim)
         except ImportError:
             logger.error(
                 "sentence-transformers not installed. "
@@ -52,11 +87,59 @@ def get_model():
     return _model
 
 
+def _get_openai_client():
+    """Lazy-load an OpenAI-compatible embeddings client."""
+    global _client, _client_config
+    base_url = _get_base_url()
+    if not base_url:
+        raise RuntimeError(
+            "EMBEDDING_BASE_URL is required for the OpenAI-compatible embedding backend"
+        )
+
+    config = (_get_backend(), base_url, _get_api_key(), _get_timeout_seconds())
+    if _client is None or _client_config != config:
+        from openai import OpenAI
+
+        logger.info(
+            "Connecting to OpenAI-compatible embedding backend at %s with model %s",
+            base_url,
+            _get_model_name(),
+        )
+        _client = OpenAI(
+            base_url=base_url,
+            api_key=_get_api_key(),
+            timeout=_get_timeout_seconds(),
+        )
+        _client_config = config
+
+    return _client
+
+
+def _encode_openai_compatible(texts: List[str]) -> List[bytes]:
+    global _embedding_dim
+
+    client = _get_openai_client()
+    response = client.embeddings.create(model=_get_model_name(), input=texts)
+    ordered = [item.embedding for item in sorted(response.data, key=lambda item: item.index)]
+
+    if ordered and _embedding_dim is None:
+        _embedding_dim = len(ordered[0])
+        logger.info("Detected embedding dimension from OpenAI-compatible backend: %s", _embedding_dim)
+
+    return [_pack_embedding(embedding) for embedding in ordered]
+
+
 def get_embedding_dim() -> int:
     """Get the embedding dimension (loads model if needed)."""
     global _embedding_dim
     if _embedding_dim is None:
-        get_model()
+        backend = _get_backend()
+        if backend == "sentence-transformers":
+            get_model()
+        elif backend == "openai-compatible":
+            _encode_openai_compatible(["dimension probe"])
+        else:
+            raise ValueError(f"Unsupported embedding backend: {backend}")
     return _embedding_dim or 0
 
 
@@ -65,11 +148,14 @@ def encode_text(text: str) -> bytes:
     Encode text to embedding vector and serialize to bytes.
     Returns the embedding as a binary blob (float32 array).
     """
-    model = get_model()
-    embedding = model.encode(text, convert_to_numpy=True)
-
-    # Serialize to bytes (float32)
-    return struct.pack(f"{len(embedding)}f", *embedding)
+    backend = _get_backend()
+    if backend == "sentence-transformers":
+        model = get_model()
+        embedding = model.encode(text, convert_to_numpy=True)
+        return _pack_embedding(embedding)
+    if backend == "openai-compatible":
+        return _encode_openai_compatible([text])[0]
+    raise ValueError(f"Unsupported embedding backend: {backend}")
 
 
 def decode_embedding(blob: bytes) -> List[float]:
@@ -86,10 +172,14 @@ def encode_batch(texts: List[str]) -> List[bytes]:
     if not texts:
         return []
 
-    model = get_model()
-    embeddings = model.encode(texts, convert_to_numpy=True, batch_size=BATCH_SIZE)
-
-    return [struct.pack(f"{len(emb)}f", *emb) for emb in embeddings]
+    backend = _get_backend()
+    if backend == "sentence-transformers":
+        model = get_model()
+        embeddings = model.encode(texts, convert_to_numpy=True, batch_size=_get_batch_size())
+        return [_pack_embedding(embedding) for embedding in embeddings]
+    if backend == "openai-compatible":
+        return _encode_openai_compatible(texts)
+    raise ValueError(f"Unsupported embedding backend: {backend}")
 
 
 def cosine_similarity(a: bytes, b: bytes) -> float:

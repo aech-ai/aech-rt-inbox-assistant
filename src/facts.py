@@ -76,7 +76,7 @@ def _build_facts_agent() -> Agent:
     """Build the AI agent for facts extraction."""
     model_string = os.getenv(
         "FACTS_MODEL",
-        os.getenv("MODEL_NAME", "openai:gpt-4o-mini")
+        os.getenv("MODEL_NAME", "openai:gpt-5.2")
     )
     model_name, _ = parse_model_string(model_string)
     model_settings = get_model_settings(model_string)
@@ -253,6 +253,21 @@ class FactsExtractor:
             return 0
 
         conn = get_connection()
+        source_table = {"email": "emails", "attachment": "attachments"}.get(source_type)
+        if source_table is None:
+            logger.warning(f"Unsupported fact source_type: {source_type}")
+            conn.close()
+            return 0
+
+        source_exists = conn.execute(
+            f"SELECT 1 FROM {source_table} WHERE id = ?",
+            (source_id,),
+        ).fetchone()
+        if not source_exists:
+            logger.warning(f"Cannot store facts for missing {source_type}:{source_id}")
+            conn.close()
+            return 0
+
         stored = 0
 
         for fact in facts:

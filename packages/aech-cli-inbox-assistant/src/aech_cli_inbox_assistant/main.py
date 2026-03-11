@@ -8,6 +8,7 @@ It does not implement role-specific reasoning.
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
 import os
 import shutil
@@ -120,6 +121,18 @@ def _resolve_storage_path(path_str: str | None) -> str | None:
     if path.is_absolute():
         return str(path.resolve())
     return str((get_state_dir() / path).resolve())
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[5]
+
+
+def _load_runtime_attr(module_name: str, attr_name: str) -> Any:
+    repo_root = _repo_root()
+    if str(repo_root) not in sys.path:
+        sys.path.append(str(repo_root))
+    module = importlib.import_module(f"src.{module_name}")
+    return getattr(module, attr_name)
 
 
 def _row_to_email_dict(row) -> dict[str, Any]:
@@ -623,28 +636,11 @@ def attachment_fetch(attachment_id: str, output: str | None) -> None:
 @click.option("--facts/--no-facts", default=True, help="Include facts in search")
 def search(query: str, limit: int, mode: str, facts: bool) -> None:
     """Search emails, attachments, and facts using unified search."""
-    src_path = Path(__file__).parent.parent.parent.parent.parent / "src"
-    if str(src_path) not in sys.path:
-        sys.path.append(str(src_path))
-
     try:
-        from search import unified_search  # type: ignore
-    except ImportError:
-        conn = connect_db()
-        rows = conn.execute(
-            """
-            SELECT e.id, e.subject, e.body_preview, e.received_at, e.sender, e.web_link
-            FROM emails_fts
-            JOIN emails e ON emails_fts.id = e.id
-            WHERE emails_fts MATCH ?
-            ORDER BY bm25(emails_fts)
-            LIMIT ?
-            """,
-            (query, limit),
-        ).fetchall()
-        conn.close()
-        output_json([dict(row) for row in rows])
-        return
+        unified_search = _load_runtime_attr("search", "unified_search")
+    except (AttributeError, ImportError) as exc:
+        output_error(f"Failed to import unified search: {exc}", "import_error")
+        raise SystemExit(1)
 
     results = unified_search(
         query=query,
@@ -693,13 +689,9 @@ def ask_query(query: str, max_results: int) -> None:
         output_error("DELEGATED_USER environment variable must be set", "missing_user")
         raise SystemExit(1)
 
-    src_path = Path(__file__).parent.parent.parent.parent.parent / "src"
-    if str(src_path) not in sys.path:
-        sys.path.append(str(src_path))
-
     try:
-        from query_agent import run_query_agent  # type: ignore
-    except ImportError as exc:
+        run_query_agent = _load_runtime_attr("query_agent", "run_query_agent")
+    except (AttributeError, ImportError) as exc:
         output_error(f"Failed to import query agent: {exc}", "import_error")
         raise SystemExit(1)
 
