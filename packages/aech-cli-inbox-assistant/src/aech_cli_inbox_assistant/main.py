@@ -410,7 +410,7 @@ def categories_colors() -> None:
 @click.option("--include-read", is_flag=True, help="Include read emails")
 def email_list(limit: int, include_read: bool) -> None:
     """List ingested emails."""
-    conn = connect_db()
+    conn = connect_db(read_only=True)
     query = "SELECT * FROM emails WHERE 1=1"
     params: list[Any] = []
     if not include_read:
@@ -428,7 +428,7 @@ def email_list(limit: int, include_read: bool) -> None:
 @click.option("--include-read", is_flag=True, help="Include read emails")
 def email_changes(since: str | None, limit: int, include_read: bool) -> None:
     """List emails changed since a checkpoint."""
-    conn = connect_db()
+    conn = connect_db(read_only=True)
     query = "SELECT * FROM emails WHERE 1=1"
     params: list[Any] = []
     if since:
@@ -447,7 +447,7 @@ def email_changes(since: str | None, limit: int, include_read: bool) -> None:
 @click.argument("message_id")
 def email_get(message_id: str) -> None:
     """Get a single email plus attachment manifests."""
-    conn = connect_db()
+    conn = connect_db(read_only=True)
     row = conn.execute("SELECT * FROM emails WHERE id = ?", (message_id,)).fetchone()
     if not row:
         conn.close()
@@ -465,7 +465,7 @@ def email_get(message_id: str) -> None:
 @click.option("--limit", default=200, help="Maximum messages to return")
 def email_thread(conversation_id: str, limit: int) -> None:
     """Get all emails in a thread plus attachment manifests."""
-    conn = connect_db()
+    conn = connect_db(read_only=True)
     rows = conn.execute(
         """
         SELECT * FROM emails
@@ -509,7 +509,7 @@ def email_project_batch(
     include_read: bool,
 ) -> None:
     """Return message bundles for manager-side inbox projection."""
-    conn = connect_db()
+    conn = connect_db(read_only=True)
     payload = _project_batch_output(
         conn,
         since=since,
@@ -528,7 +528,7 @@ def email_project_batch(
 @click.option("--limit", default=50, help="Number of attachments to list")
 def attachment_list(email_id: str | None, status_filter: str | None, limit: int) -> None:
     """List attachment manifests."""
-    conn = connect_db()
+    conn = connect_db(read_only=True)
     query = """
         SELECT id, email_id, filename, content_type, size_bytes, extraction_status,
                extraction_error, content_hash, storage_path, downloaded_at, stored_at,
@@ -554,7 +554,7 @@ def attachment_list(email_id: str | None, status_filter: str | None, limit: int)
 @click.argument("attachment_id")
 def attachment_meta(attachment_id: str) -> None:
     """Get attachment manifest metadata."""
-    conn = connect_db()
+    conn = connect_db(read_only=True)
     row = conn.execute(
         """
         SELECT id, email_id, filename, content_type, size_bytes, extraction_status,
@@ -576,7 +576,7 @@ def attachment_meta(attachment_id: str) -> None:
 @click.argument("attachment_id")
 def attachment_text(attachment_id: str) -> None:
     """Get extracted text for an attachment."""
-    conn = connect_db()
+    conn = connect_db(read_only=True)
     row = conn.execute(
         """
         SELECT id, filename, content_type, extraction_status, extracted_text
@@ -597,7 +597,7 @@ def attachment_text(attachment_id: str) -> None:
 @click.option("--output", default=None, help="Optional output path to copy the attachment to")
 def attachment_fetch(attachment_id: str, output: str | None) -> None:
     """Resolve or copy a stored attachment blob."""
-    conn = connect_db()
+    conn = connect_db(read_only=True)
     row = conn.execute(
         """
         SELECT id, filename, content_type, size_bytes, extraction_status, storage_path
@@ -719,7 +719,7 @@ def dbpath() -> None:
 @app.command(cls=JSONCommand, name="sync-status")
 def sync_status() -> None:
     """Show per-folder sync checkpoints."""
-    conn = connect_db()
+    conn = connect_db(read_only=True)
     rows = conn.execute(
         """
         SELECT folder_id, last_sync_at, sync_type, messages_synced,
@@ -735,7 +735,7 @@ def sync_status() -> None:
 @app.command(cls=JSONCommand)
 def stats() -> None:
     """Show mailbox corpus statistics."""
-    conn = connect_db()
+    conn = connect_db(read_only=True)
     cursor = conn.cursor()
 
     data: dict[str, Any] = {}

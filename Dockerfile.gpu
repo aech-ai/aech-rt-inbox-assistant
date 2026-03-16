@@ -45,9 +45,8 @@ RUN groupadd -r agentaech -g 1001 && \
 
 # Set umask for group-writable files
 RUN echo "umask 002" >> /home/agentaech/.bashrc
-USER agentaech
-
 # Set python path and start the service
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
-CMD ["bash", "-c", "umask 002 && exec python -m src.main"]
+ENTRYPOINT ["python", "/app/scripts/container_entrypoint.py"]
+CMD ["python", "-m", "src.main"]

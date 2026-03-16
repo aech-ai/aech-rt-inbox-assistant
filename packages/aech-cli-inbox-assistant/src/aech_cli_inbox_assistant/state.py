@@ -51,14 +51,19 @@ def get_preferences_path() -> Path:
     return get_user_root() / "preferences.json"
 
 
-def connect_db() -> sqlite3.Connection:
+def connect_db(*, read_only: bool = False) -> sqlite3.Connection:
     db_path = get_db_path()
     if not db_path.exists():
         raise FileNotFoundError(
             f"Database not found at {db_path}. "
             "The inbox has not been synced yet."
         )
-    conn = sqlite3.connect(db_path)
+    if read_only:
+        # Subagents mount the shared inbox read-only. When the database uses WAL,
+        # SQLite needs immutable mode to read table data without creating shm locks.
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro&immutable=1", uri=True)
+    else:
+        conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     return conn
 
