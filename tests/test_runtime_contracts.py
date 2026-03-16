@@ -1,6 +1,7 @@
 import importlib
 import json
 import sys
+import tomllib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -71,6 +72,20 @@ def test_cli_search_imports_runtime_module_from_src_package(monkeypatch):
     assert payload[0]["web_link"] == "https://example.com/mail/1"
 
 
+def test_cli_search_reports_missing_runtime_package(monkeypatch):
+    def fake_import_module(name: str):
+        raise ModuleNotFoundError("No module named 'src'")
+
+    monkeypatch.setattr(cli_main.importlib, "import_module", fake_import_module)
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["search", "budget"])
+    assert result.exit_code == 1
+    payload = json.loads(result.stderr)
+    assert payload["error"] == "import_error"
+    assert "runtime package is not installed" in payload["message"]
+
+
 def test_cli_ask_imports_runtime_module_from_src_package(monkeypatch):
     imported: list[str] = []
 
@@ -97,6 +112,22 @@ def test_cli_ask_imports_runtime_module_from_src_package(monkeypatch):
     payload = json.loads(result.output)
     assert imported == ["src.query_agent"]
     assert payload["answer"] == "Found it."
+
+
+def test_cli_package_declares_runtime_dependency():
+    pyproject_path = (
+        Path(__file__).resolve().parents[1]
+        / "packages"
+        / "aech-cli-inbox-assistant"
+        / "pyproject.toml"
+    )
+    pyproject = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+
+    dependencies = pyproject["project"]["dependencies"]
+    assert "aech-rt-inbox-assistant==0.1.1" in dependencies
+
+    sources = pyproject["tool"]["uv"]["sources"]
+    assert sources["aech-rt-inbox-assistant"]["path"] == "../.."
 
 
 def test_cli_draft_create_imports_runtime_module_from_src_package(monkeypatch, tmp_path: Path):

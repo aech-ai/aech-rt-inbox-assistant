@@ -12,7 +12,6 @@ import importlib
 import json
 import os
 import shutil
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -123,16 +122,21 @@ def _resolve_storage_path(path_str: str | None) -> str | None:
     return str((get_state_dir() / path).resolve())
 
 
-def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[5]
-
-
 def _load_runtime_attr(module_name: str, attr_name: str) -> Any:
-    repo_root = _repo_root()
-    if str(repo_root) not in sys.path:
-        sys.path.append(str(repo_root))
-    module = importlib.import_module(f"src.{module_name}")
-    return getattr(module, attr_name)
+    module_path = f"src.{module_name}"
+    try:
+        module = importlib.import_module(module_path)
+    except ModuleNotFoundError as exc:
+        if exc.name == "src" or "No module named 'src'" in str(exc):
+            raise ImportError(
+                "aech-rt-inbox-assistant runtime package is not installed in this environment"
+            ) from exc
+        raise ImportError(f"Failed to import {module_path}: {exc}") from exc
+
+    try:
+        return getattr(module, attr_name)
+    except AttributeError as exc:
+        raise ImportError(f"{module_path} does not export {attr_name}") from exc
 
 
 def _row_to_email_dict(row) -> dict[str, Any]:

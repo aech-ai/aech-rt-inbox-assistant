@@ -4,10 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aech-cli-inbox-assistant"
-version = "0.20.1"
+version = "0.20.2"
 description = "CLI for Agent Aech to query and manage Inbox Assistant state"
 requires-python = ">=3.10"
 dependencies = [
+    "aech-rt-inbox-assistant==0.1.1",
     "click>=8.0",
 ]
 
@@ -19,3 +20,9 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 aech_cli_inbox_assistant = ["manifest.json"]
+
+[tool.uv.sources]
+aech-rt-inbox-assistant = { path = "../..", editable = true }
+aech-cli-msgraph = { path = "../../../aech-main/packages/aech-cli-msgraph", editable = true }
+aech-llm-observability = { path = "../../../aech-main/packages/aech-llm-observability", editable = true }
+aech-cli-documents = { path = "../../../aech-cli-documents", editable = true }
