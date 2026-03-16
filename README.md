@@ -2,11 +2,12 @@
 
 `aech-rt-inbox-assistant` is the shared mailbox substrate for Agent Aech.
 
-It does four things:
+It does five things:
 - ingests delegated mailbox email into SQLite
 - downloads and stores attachments canonically
 - extracts/indexes text for search
 - exposes a JSON CLI for email, thread, attachment, and search retrieval
+- creates delegated mailbox drafts on demand
 
 It does **not** decide what any role should do with an email. COO, CFO, Sales, HR, or any other subagent should consume this repo as infrastructure.
 
@@ -43,6 +44,8 @@ Attachments are stored once by inbox-assistant and referenced by manifest in CLI
 
 The packaged CLI is JSON-only:
 - `aech-cli-inbox-assistant categories show|init-defaults|add|update|remove|reset|colors`
+- `aech-cli-inbox-assistant draft create [--attachment <path> ...]`
+- `aech-cli-inbox-assistant draft reply <message-id> [--reply-all] [--subject <text>] [--attachment <path> ...]`
 - `aech-cli-inbox-assistant email list`
 - `aech-cli-inbox-assistant email changes --since <iso>`
 - `aech-cli-inbox-assistant email get <message-id>`
@@ -59,6 +62,9 @@ The packaged CLI is JSON-only:
 
 Categories are still supported, but only as explicit agent-editable configuration. This repo no longer auto-classifies mail or applies policy-driven category actions on its own.
 
+Draft creation writes only draft messages. This repo does not send outbound mail.
+Drafts are also synced into the local corpus and marked with `is_draft` plus folder metadata in the `emails` table.
+
 The CLI entrypoint lives in [packages/aech-cli-inbox-assistant/src/aech_cli_inbox_assistant/main.py](/Users/steven/work/github/agent@aech.ai/aech-rt-inbox-assistant/packages/aech-cli-inbox-assistant/src/aech_cli_inbox_assistant/main.py).
 
 ## Environment
@@ -72,6 +78,7 @@ Optional:
 - `POLL_INTERVAL`: loop sleep between cycles
 - `DELTA_SYNC_INTERVAL`: inbox delta sync cadence
 - `SENT_SYNC_INTERVAL`: sent items delta sync cadence
+- `DRAFT_SYNC_INTERVAL`: drafts delta sync cadence
 
 ## Development
 

@@ -3,8 +3,11 @@ import json
 import subprocess
 import os
 import hashlib
+import html
+import mimetypes
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple, Callable
 
 import requests
@@ -15,6 +18,14 @@ from .body_parser import parse_email_body
 logger = logging.getLogger(__name__)
 
 GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0"
+MESSAGE_SELECT_FIELDS = (
+    "id,conversationId,internetMessageId,subject,from,toRecipients,ccRecipients,bccRecipients,"
+    "receivedDateTime,createdDateTime,lastModifiedDateTime,bodyPreview,hasAttachments,isRead,"
+    "webLink,categories,isDraft,parentFolderId"
+)
+ATTACHMENT_EXPAND_FIELDS = "attachments($select=id,name,contentType,size)"
+SIMPLE_ATTACHMENT_MAX_BYTES = 3 * 1024 * 1024
+UPLOAD_CHUNK_SIZE = 327680 * 16
 
 
 class GraphPoller:
@@ -45,6 +56,61 @@ class GraphPoller:
 
     def _is_ignored_sender(self, sender: Optional[str]) -> bool:
         return self._normalize_email(sender) in self._ignored_senders
+
+    @staticmethod
+    def _normalize_recipient_list(addresses: Optional[List[str]]) -> List[str]:
+        recipients: List[str] = []
+        for address in addresses or []:
+            cleaned = str(address or "").strip()
+            if cleaned:
+                recipients.append(cleaned)
+        return recipients
+
+    @staticmethod
+    def _format_recipients(addresses: Optional[List[str]]) -> List[Dict[str, Dict[str, str]]]:
+        return [
+            {"emailAddress": {"address": address}}
+            for address in GraphPoller._normalize_recipient_list(addresses)
+        ]
+
+    @staticmethod
+    def _resolve_body_content_type(body_content_type: str) -> str:
+        normalized = (body_content_type or "text").strip().lower()
+        if normalized == "text":
+            return "Text"
+        if normalized == "html":
+            return "HTML"
+        raise ValueError(f"Unsupported body content type: {body_content_type}")
+
+    @staticmethod
+    def _message_body_to_html(body: Optional[Dict[str, Any]]) -> Optional[str]:
+        if not body:
+            return None
+        content = str(body.get("content") or "")
+        content_type = str(body.get("contentType") or "text").strip().lower()
+        if not content:
+            return ""
+        if content_type == "html":
+            return content
+        return f"<pre>{html.escape(content)}</pre>"
+
+    @staticmethod
+    def _render_body_html(body: str, body_content_type: str) -> str:
+        if not body:
+            return ""
+        if GraphPoller._resolve_body_content_type(body_content_type) == "HTML":
+            return body
+        escaped = html.escape(body)
+        return f"<div>{escaped.replace(chr(10), '<br>')}</div>"
+
+    @classmethod
+    def _prepend_reply_body(cls, existing_html: str, body: str, body_content_type: str) -> str:
+        rendered = cls._render_body_html(body, body_content_type)
+        if not existing_html:
+            return rendered
+        if not rendered:
+            return existing_html
+        return f"{rendered}<br><br>{existing_html}"
 
     def _run_cli(self, args: List[str]) -> str:
         """Run aech-cli-msgraph with the delegated user and return stdout."""
@@ -82,69 +148,13 @@ class GraphPoller:
 
             conn = get_connection()
             for msg in messages:
-                sender = msg.get("from", {}).get("emailAddress", {}).get("address", "")
-                if self._is_ignored_sender(sender):
-                    logger.debug("Skipping ignored sender during poll-inbox: %s", sender)
+                msg_data = self._extract_message_data(msg, folder_name="Inbox")
+                if self._is_ignored_sender(msg_data["sender"]):
+                    logger.debug("Skipping ignored sender during poll-inbox: %s", msg_data["sender"])
                     continue
-                to_emails = [
-                    r.get("emailAddress", {}).get("address", "")
-                    for r in (msg.get("toRecipients") or [])
-                    if r.get("emailAddress", {}).get("address")
-                ]
-                cc_emails = [
-                    r.get("emailAddress", {}).get("address", "")
-                    for r in (msg.get("ccRecipients") or [])
-                    if r.get("emailAddress", {}).get("address")
-                ]
-                conversation_id = msg.get("conversationId") or msg.get("conversation_id")
-                internet_message_id = msg.get("internetMessageId") or msg.get("internet_message_id")
-                etag = msg.get("@odata.etag") or msg.get("etag")
-                categories = msg.get("categories") or []
-                categories_json = json.dumps(categories) if categories else None
-                processed_at = datetime.now(timezone.utc).isoformat() if categories else None
-                conn.execute(
-                    """
-                    INSERT INTO emails (
-                        id, conversation_id, internet_message_id, subject, sender,
-                        to_emails, cc_emails, received_at, body_preview, has_attachments,
-                        is_read, etag, web_link, outlook_categories, processed_at, updated_at
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                    ON CONFLICT(id) DO UPDATE SET
-                        conversation_id=excluded.conversation_id,
-                        internet_message_id=excluded.internet_message_id,
-                        subject=excluded.subject,
-                        sender=excluded.sender,
-                        to_emails=excluded.to_emails,
-                        cc_emails=excluded.cc_emails,
-                        received_at=excluded.received_at,
-                        body_preview=excluded.body_preview,
-                        has_attachments=excluded.has_attachments,
-                        is_read=excluded.is_read,
-                        etag=excluded.etag,
-                        web_link=excluded.web_link,
-                        outlook_categories=COALESCE(excluded.outlook_categories, emails.outlook_categories),
-                        processed_at=COALESCE(emails.processed_at, excluded.processed_at),
-                        updated_at=CURRENT_TIMESTAMP
-                    """,
-                    (
-                        msg.get("id"),
-                        conversation_id,
-                        internet_message_id,
-                        msg.get("subject", ""),
-                        sender,
-                        json.dumps(to_emails),
-                        json.dumps(cc_emails),
-                        msg.get("receivedDateTime") or datetime.now(timezone.utc).isoformat(),
-                        msg.get("bodyPreview", ""),
-                        bool(msg.get("hasAttachments")) if msg.get("hasAttachments") is not None else None,
-                        msg.get("isRead", False),
-                        etag,
-                        msg.get("webLink"),
-                        categories_json or json.dumps([]),
-                        processed_at,
-                    ),
-                )
+                self._upsert_message(conn, msg_data)
+                if msg.get("attachments"):
+                    self._upsert_attachments_metadata(conn, msg["id"], msg["attachments"])
             conn.commit()
             conn.close()
             logger.debug(f"Poll-inbox returned {len(messages)} messages")
@@ -186,6 +196,295 @@ class GraphPoller:
             )
 
         logger.info(f"Archived email {message_id}")
+
+    def _get_message_detail(
+        self,
+        message_id: str,
+        *,
+        include_body: bool = False,
+        include_attachments: bool = False,
+    ) -> Dict[str, Any]:
+        if not self.user_email:
+            raise ValueError("DELEGATED_USER is required to fetch message details")
+
+        headers = self._graph_client._get_headers()
+        base_path = self._graph_client._get_base_path(self.user_email)
+        select_fields = MESSAGE_SELECT_FIELDS
+        if include_body:
+            select_fields += ",body"
+
+        url = f"{base_path}/messages/{message_id}?$select={select_fields}"
+        if include_attachments:
+            url += f"&$expand={ATTACHMENT_EXPAND_FIELDS}"
+
+        resp = requests.get(url, headers=headers, timeout=30)
+        if not resp.ok:
+            raise RuntimeError(
+                f"Message fetch failed for {message_id}: {resp.status_code} {resp.text}"
+            )
+        return resp.json()
+
+    def _persist_message_record(
+        self,
+        message: Dict[str, Any],
+        *,
+        folder_id: str | None = None,
+        folder_name: str | None = None,
+    ) -> None:
+        msg_data = self._extract_message_data(message, folder_id=folder_id, folder_name=folder_name)
+        if self._is_ignored_sender(msg_data["sender"]):
+            conn = get_connection()
+            try:
+                self._delete_message_if_present(conn, msg_data["id"])
+                conn.commit()
+            finally:
+                conn.close()
+            return
+
+        body_html = self._message_body_to_html(message.get("body"))
+        conn = get_connection()
+        try:
+            self._upsert_message(conn, msg_data, body_html)
+            if message.get("attachments"):
+                self._upsert_attachments_metadata(conn, msg_data["id"], message["attachments"])
+            conn.commit()
+        finally:
+            conn.close()
+
+    def sync_message_to_db(
+        self,
+        message_id: str,
+        *,
+        folder_name: str | None = None,
+        fetch_body: bool = True,
+    ) -> Dict[str, Any]:
+        message = self._get_message_detail(
+            message_id,
+            include_body=fetch_body,
+            include_attachments=True,
+        )
+        self._persist_message_record(message, folder_name=folder_name)
+        return message
+
+    def update_draft(
+        self,
+        message_id: str,
+        *,
+        subject: str | None = None,
+        body: str | None = None,
+        body_content_type: str = "text",
+        prepend_to_existing: bool = False,
+    ) -> Dict[str, Any]:
+        if not self.user_email:
+            raise ValueError("DELEGATED_USER is required to update a draft")
+
+        payload: Dict[str, Any] = {}
+        if subject is not None:
+            payload["subject"] = subject
+
+        if body is not None:
+            body_value = body
+            content_type = self._resolve_body_content_type(body_content_type)
+            if prepend_to_existing:
+                current_message = self._get_message_detail(message_id, include_body=True)
+                existing_html = self._message_body_to_html(current_message.get("body")) or ""
+                body_value = self._prepend_reply_body(existing_html, body, body_content_type)
+                content_type = "HTML"
+            payload["body"] = {
+                "contentType": content_type,
+                "content": body_value,
+            }
+
+        if not payload:
+            return self._get_message_detail(message_id, include_body=True, include_attachments=True)
+
+        headers = self._graph_client._get_headers()
+        base_path = self._graph_client._get_base_path(self.user_email)
+        resp = requests.patch(
+            f"{base_path}/messages/{message_id}",
+            headers=headers,
+            json=payload,
+            timeout=30,
+        )
+        if not resp.ok:
+            raise RuntimeError(
+                f"Draft update failed for {message_id}: {resp.status_code} {resp.text}"
+            )
+        return resp.json()
+
+    def add_message_attachment(self, message_id: str, file_path: str) -> None:
+        if not self.user_email:
+            raise ValueError("DELEGATED_USER is required to add draft attachments")
+
+        path = Path(file_path).expanduser().resolve()
+        if not path.is_file():
+            raise ValueError(f"Attachment file not found: {file_path}")
+
+        content = path.read_bytes()
+        content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        headers = self._graph_client._get_headers()
+        base_path = self._graph_client._get_base_path(self.user_email)
+
+        if len(content) <= SIMPLE_ATTACHMENT_MAX_BYTES:
+            import base64
+
+            payload = {
+                "@odata.type": "#microsoft.graph.fileAttachment",
+                "name": path.name,
+                "contentType": content_type,
+                "contentBytes": base64.b64encode(content).decode("utf-8"),
+            }
+            resp = requests.post(
+                f"{base_path}/messages/{message_id}/attachments",
+                headers=headers,
+                json=payload,
+                timeout=30,
+            )
+            if not resp.ok:
+                raise RuntimeError(
+                    f"Attachment upload failed for {path.name}: {resp.status_code} {resp.text}"
+                )
+            return
+
+        session_payload = {
+            "AttachmentItem": {
+                "attachmentType": "file",
+                "name": path.name,
+                "size": len(content),
+                "contentType": content_type,
+            }
+        }
+        session_resp = requests.post(
+            f"{base_path}/messages/{message_id}/attachments/createUploadSession",
+            headers=headers,
+            json=session_payload,
+            timeout=30,
+        )
+        if not session_resp.ok:
+            raise RuntimeError(
+                f"Attachment upload session failed for {path.name}: "
+                f"{session_resp.status_code} {session_resp.text}"
+            )
+
+        upload_url = (session_resp.json() or {}).get("uploadUrl")
+        if not upload_url:
+            raise RuntimeError(f"Attachment upload session returned no uploadUrl for {path.name}")
+
+        for offset in range(0, len(content), UPLOAD_CHUNK_SIZE):
+            chunk = content[offset: offset + UPLOAD_CHUNK_SIZE]
+            end_byte = offset + len(chunk) - 1
+            chunk_headers = {
+                "Content-Length": str(len(chunk)),
+                "Content-Range": f"bytes {offset}-{end_byte}/{len(content)}",
+            }
+            upload_resp = requests.put(
+                upload_url,
+                headers=chunk_headers,
+                data=chunk,
+                timeout=60,
+            )
+            if upload_resp.status_code not in (200, 201, 202):
+                raise RuntimeError(
+                    f"Attachment chunk upload failed for {path.name}: "
+                    f"{upload_resp.status_code} {upload_resp.text}"
+                )
+
+    def create_draft(
+        self,
+        *,
+        subject: str = "",
+        body: str = "",
+        body_content_type: str = "text",
+        to_recipients: Optional[List[str]] = None,
+        cc_recipients: Optional[List[str]] = None,
+        bcc_recipients: Optional[List[str]] = None,
+        attachments: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Create a new draft message in the delegated mailbox."""
+        if not self.user_email:
+            raise ValueError("DELEGATED_USER is required to create a draft")
+
+        headers = self._graph_client._get_headers()
+        base_path = self._graph_client._get_base_path(self.user_email)
+        payload: Dict[str, Any] = {
+            "subject": subject or "",
+            "body": {
+                "contentType": self._resolve_body_content_type(body_content_type),
+                "content": body or "",
+            },
+        }
+
+        to_payload = self._format_recipients(to_recipients)
+        cc_payload = self._format_recipients(cc_recipients)
+        bcc_payload = self._format_recipients(bcc_recipients)
+        if to_payload:
+            payload["toRecipients"] = to_payload
+        if cc_payload:
+            payload["ccRecipients"] = cc_payload
+        if bcc_payload:
+            payload["bccRecipients"] = bcc_payload
+
+        resp = requests.post(f"{base_path}/messages", headers=headers, json=payload, timeout=30)
+        if not resp.ok:
+            raise RuntimeError(
+                f"Draft create failed: {resp.status_code} {resp.text}"
+            )
+        draft = resp.json()
+        draft_id = draft.get("id")
+        if not draft_id:
+            raise RuntimeError("Draft create succeeded but returned no message id")
+
+        for attachment_path in attachments or []:
+            self.add_message_attachment(draft_id, attachment_path)
+
+        return self.sync_message_to_db(draft_id, folder_name="Drafts", fetch_body=True)
+
+    def create_reply_draft(
+        self,
+        message_id: str,
+        *,
+        subject: str | None = None,
+        body: str = "",
+        body_content_type: str = "text",
+        attachments: Optional[List[str]] = None,
+        reply_all: bool = False,
+    ) -> Dict[str, Any]:
+        """Create a reply or reply-all draft in the delegated mailbox."""
+        if not self.user_email:
+            raise ValueError("DELEGATED_USER is required to create a reply draft")
+
+        headers = self._graph_client._get_headers()
+        base_path = self._graph_client._get_base_path(self.user_email)
+        action = "createReplyAll" if reply_all else "createReply"
+
+        resp = requests.post(
+            f"{base_path}/messages/{message_id}/{action}",
+            headers=headers,
+            json=None,
+            timeout=30,
+        )
+        if not resp.ok:
+            raise RuntimeError(
+                f"Reply draft create failed for {message_id}: {resp.status_code} {resp.text}"
+            )
+        draft = resp.json()
+        draft_id = draft.get("id")
+        if not draft_id:
+            raise RuntimeError(f"Reply draft create succeeded but returned no draft id for {message_id}")
+
+        if subject is not None or body:
+            self.update_draft(
+                draft_id,
+                subject=subject,
+                body=body if body else None,
+                body_content_type=body_content_type,
+                prepend_to_existing=bool(body),
+            )
+
+        for attachment_path in attachments or []:
+            self.add_message_attachment(draft_id, attachment_path)
+
+        return self.sync_message_to_db(draft_id, folder_name="Drafts", fetch_body=True)
 
     # =========================================================================
     # Full Mailbox Sync Methods (for Email Corpus Intelligence)
@@ -303,7 +602,13 @@ class GraphPoller:
         logger.warning(f"Max retries exceeded for {message_id}")
         return None
 
-    def _extract_message_data(self, msg: Dict[str, Any]) -> Dict[str, Any]:
+    def _extract_message_data(
+        self,
+        msg: Dict[str, Any],
+        *,
+        folder_id: str | None = None,
+        folder_name: str | None = None,
+    ) -> Dict[str, Any]:
         """Extract and normalize message data from Graph API response."""
         sender = msg.get("from", {}).get("emailAddress", {}).get("address", "")
         to_emails = [
@@ -316,12 +621,22 @@ class GraphPoller:
             for r in (msg.get("ccRecipients") or [])
             if r.get("emailAddress", {}).get("address")
         ]
+        bcc_emails = [
+            r.get("emailAddress", {}).get("address", "")
+            for r in (msg.get("bccRecipients") or [])
+            if r.get("emailAddress", {}).get("address")
+        ]
 
         categories = msg.get("categories") or []
         categories_json = json.dumps(categories) if categories else None
 
         # If this message already has categories in Outlook, assume it was triaged before.
         processed_at = datetime.now(timezone.utc).isoformat() if categories else None
+        effective_folder_name = folder_name or None
+        effective_folder_id = folder_id or msg.get("parentFolderId")
+        is_draft = bool(msg.get("isDraft"))
+        if not is_draft and effective_folder_name:
+            is_draft = effective_folder_name.strip().lower() == "drafts"
 
         return {
             "id": msg.get("id"),
@@ -331,12 +646,21 @@ class GraphPoller:
             "sender": sender,
             "to_emails": json.dumps(to_emails),
             "cc_emails": json.dumps(cc_emails),
-            "received_at": msg.get("receivedDateTime") or datetime.now(timezone.utc).isoformat(),
+            "bcc_emails": json.dumps(bcc_emails),
+            "received_at": (
+                msg.get("receivedDateTime")
+                or msg.get("createdDateTime")
+                or msg.get("lastModifiedDateTime")
+                or datetime.now(timezone.utc).isoformat()
+            ),
             "body_preview": msg.get("bodyPreview", ""),
             "has_attachments": bool(msg.get("hasAttachments")),
+            "is_draft": is_draft,
             "is_read": msg.get("isRead", False),
             "etag": msg.get("@odata.etag"),
             "web_link": msg.get("webLink"),
+            "mail_folder_id": effective_folder_id,
+            "mail_folder_name": effective_folder_name,
             "outlook_categories": categories_json,
             "processed_at": processed_at,
         }
@@ -366,11 +690,12 @@ class GraphPoller:
             """
             INSERT INTO emails (
                 id, conversation_id, internet_message_id, subject, sender,
-                to_emails, cc_emails, received_at, body_preview, has_attachments,
-                is_read, etag, body_html, body_markdown, signature_block, body_hash, web_link,
+                to_emails, cc_emails, bcc_emails, received_at, body_preview, has_attachments,
+                is_draft, is_read, etag, body_html, body_markdown, signature_block, body_hash, web_link,
+                mail_folder_id, mail_folder_name,
                 outlook_categories, processed_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             ON CONFLICT(id) DO UPDATE SET
                 conversation_id=excluded.conversation_id,
                 internet_message_id=excluded.internet_message_id,
@@ -378,9 +703,11 @@ class GraphPoller:
                 sender=excluded.sender,
                 to_emails=excluded.to_emails,
                 cc_emails=excluded.cc_emails,
+                bcc_emails=excluded.bcc_emails,
                 received_at=excluded.received_at,
                 body_preview=excluded.body_preview,
                 has_attachments=excluded.has_attachments,
+                is_draft=excluded.is_draft,
                 is_read=excluded.is_read,
                 etag=excluded.etag,
                 body_html=COALESCE(excluded.body_html, emails.body_html),
@@ -388,6 +715,8 @@ class GraphPoller:
                 signature_block=COALESCE(excluded.signature_block, emails.signature_block),
                 body_hash=COALESCE(excluded.body_hash, emails.body_hash),
                 web_link=excluded.web_link,
+                mail_folder_id=COALESCE(excluded.mail_folder_id, emails.mail_folder_id),
+                mail_folder_name=COALESCE(excluded.mail_folder_name, emails.mail_folder_name),
                 outlook_categories=COALESCE(excluded.outlook_categories, emails.outlook_categories),
                 processed_at=COALESCE(emails.processed_at, excluded.processed_at),
                 updated_at=CURRENT_TIMESTAMP
@@ -400,9 +729,11 @@ class GraphPoller:
                 msg_data["sender"],
                 msg_data["to_emails"],
                 msg_data["cc_emails"],
+                msg_data["bcc_emails"],
                 msg_data["received_at"],
                 msg_data["body_preview"],
                 msg_data["has_attachments"],
+                msg_data["is_draft"],
                 msg_data["is_read"],
                 msg_data["etag"],
                 body_html,
@@ -410,6 +741,8 @@ class GraphPoller:
                 signature_block,
                 body_hash,
                 msg_data.get("web_link"),
+                msg_data.get("mail_folder_id"),
+                msg_data.get("mail_folder_name"),
                 categories_value or json.dumps([]),
                 processed_at_value,
             ),
@@ -467,7 +800,7 @@ class GraphPoller:
         headers = self._graph_client._get_headers()
         base_path = self._graph_client._get_base_path(self.user_email)
 
-        select_fields = "id,conversationId,internetMessageId,subject,from,toRecipients,ccRecipients,receivedDateTime,bodyPreview,hasAttachments,isRead,webLink,categories"
+        select_fields = MESSAGE_SELECT_FIELDS
         url = f"{base_path}/mailFolders/{folder_id}/messages?$select={select_fields}&$top={page_size}&$expand=attachments($select=id,name,contentType,size)"
 
         # Add date filter if specified
@@ -491,7 +824,7 @@ class GraphPoller:
                 # Extract message data first
                 page_messages = []
                 for msg in messages:
-                    msg_data = self._extract_message_data(msg)
+                    msg_data = self._extract_message_data(msg, folder_id=folder_id, folder_name=folder_name)
                     page_messages.append((msg, msg_data))
 
                 # Fetch bodies concurrently if enabled
@@ -626,32 +959,48 @@ class GraphPoller:
                     conn.execute("DELETE FROM emails WHERE id = ?", (msg_id,))
                     messages_deleted += 1
 
-                # Fetch bodies concurrently for updates
-                bodies = {}
-                if fetch_body and to_update:
+                # Fetch message details when body and/or attachments are required.
+                details: dict[str, Dict[str, Any]] = {}
+                if to_update:
                     with ThreadPoolExecutor(max_workers=body_concurrency) as executor:
-                        future_to_id = {
-                            executor.submit(self._get_message_body, msg["id"]): msg["id"]
-                            for msg, _ in to_update
-                        }
+                        future_to_id = {}
+                        for msg, _ in to_update:
+                            if fetch_body or bool(msg.get("hasAttachments")):
+                                future = executor.submit(
+                                    self._get_message_detail,
+                                    msg["id"],
+                                    include_body=fetch_body,
+                                    include_attachments=bool(msg.get("hasAttachments")),
+                                )
+                                future_to_id[future] = msg["id"]
                         for future in as_completed(future_to_id):
                             msg_id = future_to_id[future]
                             try:
-                                bodies[msg_id] = future.result()
+                                details[msg_id] = future.result()
                             except Exception as e:
-                                logger.warning(f"Failed to fetch body for {msg_id}: {e}")
-                                bodies[msg_id] = None
+                                logger.warning(f"Failed to fetch details for {msg_id}: {e}")
 
                 # Upsert updates with bodies
                 for msg, msg_data in to_update:
+                    source_msg = details.get(msg["id"]) or msg
+                    msg_data = self._extract_message_data(
+                        source_msg,
+                        folder_id=folder_id,
+                        folder_name=folder_name,
+                    )
                     if self._is_ignored_sender(msg_data["sender"]):
                         self._delete_message_if_present(conn, msg_data["id"])
                         logger.debug(
                             "Skipping ignored sender during delta sync: %s", msg_data["sender"]
                         )
                         continue
-                    body_html = bodies.get(msg["id"]) if fetch_body else None
+                    body_html = (
+                        self._message_body_to_html(source_msg.get("body"))
+                        if fetch_body else None
+                    )
                     self._upsert_message(conn, msg_data, body_html)
+                    if source_msg.get("attachments"):
+                        self._upsert_attachments_metadata(conn, msg["id"], source_msg["attachments"])
                     messages_updated += 1
 
                     if message_callback:

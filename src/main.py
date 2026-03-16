@@ -123,6 +123,7 @@ def service_loop(
     run_once: bool,
     concurrency: int = 5,
     sync_sent_items: bool = True,
+    sync_draft_items: bool = True,
 ) -> None:
     logger.info("Initializing database")
     init_db()
@@ -132,9 +133,11 @@ def service_loop(
 
     delta_sync_interval = int(os.environ.get("DELTA_SYNC_INTERVAL", 300))
     sent_sync_interval = int(os.environ.get("SENT_SYNC_INTERVAL", 300))
+    draft_sync_interval = int(os.environ.get("DRAFT_SYNC_INTERVAL", 300))
     last_delta_sync = 0.0
     last_sent_sync = 0.0
-    folder_cache: dict[str, str | None] = {"inbox": None, "sent": None}
+    last_draft_sync = 0.0
+    folder_cache: dict[str, str | None] = {"inbox": None, "sent": None, "drafts": None}
 
     logger.info("Starting inbox-assistant sync service")
     logger.info("User: %s", user_email)
@@ -142,6 +145,7 @@ def service_loop(
     logger.info("Concurrency: %s", concurrency)
     logger.info("Delta Sync Interval: %ss", delta_sync_interval)
     logger.info("Sync Sent Items: %s", sync_sent_items)
+    logger.info("Sync Draft Items: %s", sync_draft_items)
 
     while True:
         try:
@@ -184,6 +188,27 @@ def service_loop(
                     last_sent_sync = now
                 except Exception as exc:
                     logger.warning("Sent Items delta sync error: %s", exc)
+
+            now = time.time()
+            if sync_draft_items and now - last_draft_sync >= draft_sync_interval:
+                try:
+                    drafts_folder_id = _cache_folder_id(
+                        poller,
+                        folder_cache,
+                        "drafts",
+                        ("drafts",),
+                    )
+                    if drafts_folder_id:
+                        updated, deleted = poller.delta_sync_folder(
+                            drafts_folder_id,
+                            "Drafts",
+                            fetch_body=True,
+                        )
+                        if updated > 0 or deleted > 0:
+                            logger.info("Drafts delta sync: %s updated, %s deleted", updated, deleted)
+                    last_draft_sync = now
+                except Exception as exc:
+                    logger.warning("Drafts delta sync error: %s", exc)
         except Exception as exc:
             logger.error("Error in main loop: %s", exc)
 

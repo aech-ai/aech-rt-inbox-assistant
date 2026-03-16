@@ -12,10 +12,13 @@ The inbox assistant runs as `agent@aech.ai` and manages mailboxes that are share
 
 ✅ **Reading emails works** - Steven's mailbox is shared for read access
 ❌ **Creating folders fails (404)** - Need additional permissions
+Draft creation also requires delegated mailbox write access.
 
 ## Required Permissions
 
 Steven needs to grant `agent@aech.ai` **Editor** or **Full Access** permissions to their mailbox.
+That is enough for draft creation and other mailbox write operations in this repo.
+If draft attachments are used, the same mailbox write access is still sufficient.
 
 ### Grant Mailbox Permissions
 
@@ -31,7 +34,7 @@ Steven needs to grant `agent@aech.ai` **Editor** or **Full Access** permissions 
 3. Select `steven@aech.ai`
 4. Go to **Mail** tab → **Manage mailbox permissions**
 5. Under **Full Access**, add `agent@aech.ai`
-6. Under **Send As** (optional), add `agent@aech.ai` if you want the agent to send emails
+6. Under **Send As** (optional), add `agent@aech.ai` only if you want a different system to send emails
 7. **Save** changes
 
 **Option C: Via PowerShell (Exchange Online)**
@@ -68,6 +71,5 @@ curl -H "Authorization: Bearer $TOKEN" \
 
 The `agent@aech.ai` token already has these scopes (configured in `aech-cli-msgraph`):
 - ✅ `Mail.Read.Shared` - Read messages in shared mailboxes
-- ✅ `Mail.ReadWrite.Shared` - Create/manage folders in shared mailboxes
-- ✅ `Mail.Send.Shared` - Send emails from shared mailboxes
-
+- ✅ `Mail.ReadWrite.Shared` - Create drafts and manage content in shared mailboxes
+- ✅ `Mail.Send.Shared` - Optional if another tool needs to send mail; inbox-assistant does not send

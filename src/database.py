@@ -117,6 +117,7 @@ def init_db(db_path: Optional[Path] = None) -> None:
         sender TEXT NOT NULL,
         to_emails TEXT NOT NULL DEFAULT '[]', -- JSON array
         cc_emails TEXT NOT NULL DEFAULT '[]', -- JSON array
+        bcc_emails TEXT NOT NULL DEFAULT '[]', -- JSON array
         received_at DATETIME NOT NULL,
         body_preview TEXT,
         body_html TEXT,
@@ -125,9 +126,12 @@ def init_db(db_path: Optional[Path] = None) -> None:
         thread_summary TEXT,       -- LLM-generated thread summary
         body_hash TEXT,
         has_attachments BOOLEAN DEFAULT 0,
+        is_draft BOOLEAN DEFAULT 0,
         is_read BOOLEAN DEFAULT 0,
         etag TEXT,
         web_link TEXT,
+        mail_folder_id TEXT,
+        mail_folder_name TEXT,
         outlook_categories TEXT NOT NULL DEFAULT '[]', -- JSON array of applied Outlook categories
         urgency TEXT DEFAULT 'someday' CHECK(urgency IN ('immediate', 'today', 'this_week', 'someday')),
         processed_at DATETIME,
@@ -141,7 +145,13 @@ def init_db(db_path: Optional[Path] = None) -> None:
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_emails_received ON emails(received_at)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_emails_urgency ON emails(urgency)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_emails_processed ON emails(processed_at)")
-    _ensure_columns(cursor, "emails", {"updated_at": "DATETIME DEFAULT CURRENT_TIMESTAMP"})
+    _ensure_columns(cursor, "emails", {
+        "bcc_emails": "TEXT NOT NULL DEFAULT '[]'",
+        "is_draft": "BOOLEAN DEFAULT 0",
+        "mail_folder_id": "TEXT",
+        "mail_folder_name": "TEXT",
+        "updated_at": "DATETIME DEFAULT CURRENT_TIMESTAMP",
+    })
 
     # Sync state for delta sync tracking (per-folder)
     cursor.execute("""

@@ -139,6 +139,7 @@ def _row_to_email_dict(row) -> dict[str, Any]:
     item = dict(row)
     item["to_emails"] = json.loads(item.get("to_emails") or "[]")
     item["cc_emails"] = json.loads(item.get("cc_emails") or "[]")
+    item["bcc_emails"] = json.loads(item.get("bcc_emails") or "[]")
     item["outlook_categories"] = json.loads(item.get("outlook_categories") or "[]")
     return item
 
@@ -147,6 +148,70 @@ def _row_to_attachment_dict(row) -> dict[str, Any]:
     item = dict(row)
     item["stored_path"] = _resolve_storage_path(item.get("storage_path"))
     return item
+
+
+def _normalize_recipient_inputs(values: tuple[str, ...]) -> list[str]:
+    recipients: list[str] = []
+    for value in values:
+        for part in str(value or "").split(","):
+            cleaned = part.strip()
+            if cleaned:
+                recipients.append(cleaned)
+    return recipients
+
+
+def _read_body_input(body: str | None, body_file: str | None) -> str:
+    if body is not None and body_file is not None:
+        raise ValueError("Provide either --body or --body-file, not both.")
+    if body_file:
+        try:
+            return Path(body_file).expanduser().read_text(encoding="utf-8")
+        except OSError as exc:
+            raise ValueError(f"Failed to read body file: {exc}") from exc
+    return body or ""
+
+
+def _extract_recipient_addresses(recipients: Any) -> list[str]:
+    output: list[str] = []
+    for recipient in recipients or []:
+        email_address = recipient.get("emailAddress") or {}
+        address = str(email_address.get("address") or "").strip()
+        if address:
+            output.append(address)
+    return output
+
+
+def _project_graph_attachment(attachment: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": attachment.get("id"),
+        "filename": attachment.get("name") or "",
+        "content_type": attachment.get("contentType"),
+        "size_bytes": attachment.get("size"),
+    }
+
+
+def _project_graph_message(message: dict[str, Any]) -> dict[str, Any]:
+    sender = ((message.get("from") or {}).get("emailAddress") or {}).get("address")
+    return {
+        "id": message.get("id"),
+        "internet_message_id": message.get("internetMessageId"),
+        "conversation_id": message.get("conversationId"),
+        "subject": message.get("subject") or "",
+        "sender": sender or "",
+        "web_link": message.get("webLink"),
+        "body_preview": message.get("bodyPreview") or "",
+        "is_draft": bool(message.get("isDraft", False)),
+        "created_at": message.get("createdDateTime"),
+        "updated_at": message.get("lastModifiedDateTime"),
+        "to_recipients": _extract_recipient_addresses(message.get("toRecipients")),
+        "cc_recipients": _extract_recipient_addresses(message.get("ccRecipients")),
+        "bcc_recipients": _extract_recipient_addresses(message.get("bccRecipients")),
+        "has_attachments": bool(message.get("hasAttachments") or message.get("attachments")),
+        "attachments": [
+            _project_graph_attachment(attachment)
+            for attachment in (message.get("attachments") or [])
+        ],
+    }
 
 
 def _load_attachments(conn, email_id: str) -> list[dict[str, Any]]:
@@ -280,6 +345,11 @@ def email_app():
 
 @app.group(cls=JSONGroup, name="attachment", help="Inspect and retrieve canonical attachments.")
 def attachment_app():
+    pass
+
+
+@app.group(cls=JSONGroup, name="draft", help="Create delegated mailbox drafts without sending.")
+def draft_app():
     pass
 
 
@@ -520,6 +590,143 @@ def email_project_batch(
     )
     conn.close()
     output_json(payload)
+
+
+@draft_app.command(cls=JSONCommand, name="create")
+@click.option(
+    "--to",
+    "to_recipients",
+    multiple=True,
+    help="To recipient email. Repeat or use comma-separated values.",
+)
+@click.option(
+    "--cc",
+    "cc_recipients",
+    multiple=True,
+    help="CC recipient email. Repeat or use comma-separated values.",
+)
+@click.option(
+    "--bcc",
+    "bcc_recipients",
+    multiple=True,
+    help="BCC recipient email. Repeat or use comma-separated values.",
+)
+@click.option("--subject", default="", help="Draft subject")
+@click.option("--body", default=None, help="Draft body content")
+@click.option("--body-file", default=None, help="Read draft body from a UTF-8 text file")
+@click.option(
+    "--content-type",
+    type=click.Choice(["text", "html"], case_sensitive=False),
+    default="text",
+    show_default=True,
+    help="Draft body content type",
+)
+@click.option(
+    "--attachment",
+    "attachments",
+    multiple=True,
+    type=click.Path(exists=True, dir_okay=False, path_type=str),
+    help="Attach a local file. Repeat to add multiple attachments.",
+)
+def draft_create(
+    to_recipients: tuple[str, ...],
+    cc_recipients: tuple[str, ...],
+    bcc_recipients: tuple[str, ...],
+    subject: str,
+    body: str | None,
+    body_file: str | None,
+    content_type: str,
+    attachments: tuple[str, ...],
+) -> None:
+    """Create a new draft message in the delegated mailbox."""
+    try:
+        GraphPoller = _load_runtime_attr("poller", "GraphPoller")
+    except (AttributeError, ImportError) as exc:
+        output_error(f"Failed to import draft runtime: {exc}", "import_error")
+        raise SystemExit(1)
+
+    try:
+        draft_body = _read_body_input(body, body_file)
+        poller = GraphPoller()
+        draft = poller.create_draft(
+            subject=subject,
+            body=draft_body,
+            body_content_type=content_type.lower(),
+            to_recipients=_normalize_recipient_inputs(to_recipients),
+            cc_recipients=_normalize_recipient_inputs(cc_recipients),
+            bcc_recipients=_normalize_recipient_inputs(bcc_recipients),
+            attachments=list(attachments),
+        )
+    except ValueError as exc:
+        output_error(str(exc), "invalid_input")
+        raise SystemExit(1)
+    except Exception as exc:
+        output_error(f"Draft creation failed: {exc}", "draft_create_error")
+        raise SystemExit(1)
+
+    output_json({"created_via": "new", "draft": _project_graph_message(draft)})
+
+
+@draft_app.command(cls=JSONCommand, name="reply")
+@click.argument("message_id")
+@click.option("--subject", default=None, help="Optional subject override for the reply draft")
+@click.option("--body", default=None, help="Reply text to place above the quoted thread")
+@click.option("--body-file", default=None, help="Read reply text from a UTF-8 text file")
+@click.option(
+    "--content-type",
+    type=click.Choice(["text", "html"], case_sensitive=False),
+    default="text",
+    show_default=True,
+    help="Reply body content type",
+)
+@click.option(
+    "--attachment",
+    "attachments",
+    multiple=True,
+    type=click.Path(exists=True, dir_okay=False, path_type=str),
+    help="Attach a local file. Repeat to add multiple attachments.",
+)
+@click.option("--reply-all", is_flag=True, help="Create a reply-all draft instead of reply")
+def draft_reply(
+    message_id: str,
+    subject: str | None,
+    body: str | None,
+    body_file: str | None,
+    content_type: str,
+    attachments: tuple[str, ...],
+    reply_all: bool,
+) -> None:
+    """Create a reply or reply-all draft for an existing message."""
+    try:
+        GraphPoller = _load_runtime_attr("poller", "GraphPoller")
+    except (AttributeError, ImportError) as exc:
+        output_error(f"Failed to import draft runtime: {exc}", "import_error")
+        raise SystemExit(1)
+
+    try:
+        reply_body = _read_body_input(body, body_file)
+        poller = GraphPoller()
+        draft = poller.create_reply_draft(
+            message_id,
+            subject=subject,
+            body=reply_body,
+            body_content_type=content_type.lower(),
+            attachments=list(attachments),
+            reply_all=reply_all,
+        )
+    except ValueError as exc:
+        output_error(str(exc), "invalid_input")
+        raise SystemExit(1)
+    except Exception as exc:
+        output_error(f"Reply draft creation failed: {exc}", "draft_reply_error")
+        raise SystemExit(1)
+
+    output_json(
+        {
+            "created_via": "reply_all" if reply_all else "reply",
+            "draft": _project_graph_message(draft),
+        }
+    )
 
 
 @attachment_app.command(cls=JSONCommand, name="list")

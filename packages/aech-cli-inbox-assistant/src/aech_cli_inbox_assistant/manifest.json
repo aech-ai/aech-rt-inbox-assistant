@@ -226,6 +226,43 @@
       ]
     },
     {
+      "name": "email project-batch",
+      "description": "Return message bundles for manager-side inbox projection.",
+      "parameters": [
+        {
+          "name": "since",
+          "type": "option",
+          "required": false,
+          "description": "Only emails updated after this ISO timestamp"
+        },
+        {
+          "name": "received_after",
+          "type": "option",
+          "required": false,
+          "description": "Only emails received at or after this ISO timestamp"
+        },
+        {
+          "name": "received_before",
+          "type": "option",
+          "required": false,
+          "description": "Only emails received before this ISO timestamp"
+        },
+        {
+          "name": "limit",
+          "type": "option",
+          "required": false,
+          "description": "Maximum email bundles to return",
+          "default": 100
+        },
+        {
+          "name": "include_read",
+          "type": "flag",
+          "required": false,
+          "description": "Include read emails"
+        }
+      ]
+    },
+    {
       "name": "attachment list",
       "description": "List attachment manifests.",
       "parameters": [
@@ -289,6 +326,111 @@
           "type": "option",
           "required": false,
           "description": "Optional output path to copy the attachment to"
+        }
+      ]
+    },
+    {
+      "name": "draft create",
+      "description": "Create a new draft message in the delegated mailbox.",
+      "parameters": [
+        {
+          "name": "to_recipients",
+          "type": "option",
+          "required": false,
+          "description": "To recipient email. Repeat or use comma-separated values."
+        },
+        {
+          "name": "cc_recipients",
+          "type": "option",
+          "required": false,
+          "description": "CC recipient email. Repeat or use comma-separated values."
+        },
+        {
+          "name": "bcc_recipients",
+          "type": "option",
+          "required": false,
+          "description": "BCC recipient email. Repeat or use comma-separated values."
+        },
+        {
+          "name": "subject",
+          "type": "option",
+          "required": false,
+          "description": "Draft subject",
+          "default": ""
+        },
+        {
+          "name": "body",
+          "type": "option",
+          "required": false,
+          "description": "Draft body content"
+        },
+        {
+          "name": "body_file",
+          "type": "option",
+          "required": false,
+          "description": "Read draft body from a UTF-8 text file"
+        },
+        {
+          "name": "content_type",
+          "type": "option",
+          "required": false,
+          "description": "Draft body content type",
+          "default": "text"
+        },
+        {
+          "name": "attachments",
+          "type": "option",
+          "required": false,
+          "description": "Attach a local file. Repeat to add multiple attachments."
+        }
+      ]
+    },
+    {
+      "name": "draft reply",
+      "description": "Create a reply or reply-all draft for an existing message.",
+      "parameters": [
+        {
+          "name": "message_id",
+          "type": "argument",
+          "required": true,
+          "description": ""
+        },
+        {
+          "name": "subject",
+          "type": "option",
+          "required": false,
+          "description": "Optional subject override for the reply draft"
+        },
+        {
+          "name": "body",
+          "type": "option",
+          "required": false,
+          "description": "Reply text to place above the quoted thread"
+        },
+        {
+          "name": "body_file",
+          "type": "option",
+          "required": false,
+          "description": "Read reply text from a UTF-8 text file"
+        },
+        {
+          "name": "content_type",
+          "type": "option",
+          "required": false,
+          "description": "Reply body content type",
+          "default": "text"
+        },
+        {
+          "name": "attachments",
+          "type": "option",
+          "required": false,
+          "description": "Attach a local file. Repeat to add multiple attachments."
+        },
+        {
+          "name": "reply_all",
+          "type": "flag",
+          "required": false,
+          "description": "Create a reply-all draft instead of reply"
         }
       ]
     },
