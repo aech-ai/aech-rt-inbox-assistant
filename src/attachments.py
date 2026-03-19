@@ -16,7 +16,6 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 import requests
-from aech_cli_msgraph.graph import GraphClient
 
 from .database import get_attachment_store_dir, get_connection
 
@@ -48,6 +47,16 @@ SKIP_FILENAME_PATTERNS = {
 }
 
 
+def _load_graph_client():
+    try:
+        from aech_cli_msgraph.graph import GraphClient
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "aech-cli-msgraph is required for inbox-assistant attachment processing"
+        ) from exc
+    return GraphClient
+
+
 class AttachmentProcessor:
     """
     Processes email attachments: downloads from Graph API and extracts text.
@@ -58,7 +67,7 @@ class AttachmentProcessor:
         if not self.user_email:
             raise ValueError("DELEGATED_USER environment variable must be set")
 
-        self._graph_client = GraphClient()
+        self._graph_client = _load_graph_client()()
 
     def _get_pending_attachments(self, limit: int = 50) -> List[Dict[str, Any]]:
         """Get attachments that need processing."""

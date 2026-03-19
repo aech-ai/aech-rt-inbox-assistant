@@ -35,3 +35,4 @@ services:
       - DEFAULT_TIMEZONE=${DEFAULT_TIMEZONE:-America/Los_Angeles}
       # LLM observability
       - LLM_LOG_DIR=/app/state/llm_logs
+      - INBOX_ASSISTANT_CLI_QUEUE_ROOT=/triggers/cli

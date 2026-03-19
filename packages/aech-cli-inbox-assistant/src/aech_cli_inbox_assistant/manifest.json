@@ -382,6 +382,13 @@
           "type": "option",
           "required": false,
           "description": "Attach a local file. Repeat to add multiple attachments."
+        },
+        {
+          "name": "timeout_seconds",
+          "type": "option",
+          "required": false,
+          "description": "Maximum time to wait for the inbox runtime to create the draft.",
+          "default": 60.0
         }
       ]
     },
@@ -431,6 +438,13 @@
           "type": "flag",
           "required": false,
           "description": "Create a reply-all draft instead of reply"
+        },
+        {
+          "name": "timeout_seconds",
+          "type": "option",
+          "required": false,
+          "description": "Maximum time to wait for the inbox runtime to create the draft.",
+          "default": 60.0
         }
       ]
     },

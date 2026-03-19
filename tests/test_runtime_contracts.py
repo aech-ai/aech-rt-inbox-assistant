@@ -13,6 +13,7 @@ if str(PACKAGE_SRC) not in sys.path:
 
 from aech_cli_inbox_assistant import main as cli_main  # noqa: E402
 from aech_cli_inbox_assistant.main import app  # noqa: E402
+from src.cli_queue import get_draft_queue_paths  # noqa: E402
 
 
 def test_src_import_uses_shared_observability_path_builder(monkeypatch, tmp_path: Path):
@@ -124,10 +125,46 @@ def test_cli_package_declares_runtime_dependency():
     pyproject = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
 
     dependencies = pyproject["project"]["dependencies"]
-    assert "aech-rt-inbox-assistant==0.1.1" in dependencies
+    assert "aech-rt-inbox-assistant==0.1.4" in dependencies
 
     sources = pyproject["tool"]["uv"]["sources"]
     assert sources["aech-rt-inbox-assistant"]["path"] == "../.."
+
+
+def test_runtime_package_does_not_declare_msgraph_dependency():
+    pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    pyproject = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+
+    dependencies = pyproject["project"]["dependencies"]
+    assert "aech-cli-msgraph" not in dependencies
+
+
+def test_cli_queue_uses_namespaced_path_with_global_trigger_root(monkeypatch, tmp_path: Path):
+    trigger_root = tmp_path / "rt_triggers"
+    (trigger_root / "outbox").mkdir(parents=True)
+    (trigger_root / "inbox-assistant").mkdir(parents=True)
+
+    monkeypatch.delenv("INBOX_ASSISTANT_CLI_QUEUE_ROOT", raising=False)
+    monkeypatch.setenv("AECH_RT_TRIGGERS_ROOT", str(trigger_root))
+
+    paths = get_draft_queue_paths()
+
+    assert paths.root == (trigger_root / "inbox-assistant" / "cli").resolve()
+
+
+def test_cli_queue_uses_local_capability_path_when_namespaced_dir_missing(
+    monkeypatch,
+    tmp_path: Path,
+):
+    trigger_root = tmp_path / "rt_triggers"
+    (trigger_root / "outbox").mkdir(parents=True)
+
+    monkeypatch.delenv("INBOX_ASSISTANT_CLI_QUEUE_ROOT", raising=False)
+    monkeypatch.setenv("AECH_RT_TRIGGERS_ROOT", str(trigger_root))
+
+    paths = get_draft_queue_paths()
+
+    assert paths.root == (trigger_root / "cli").resolve()
 
 
 def test_cli_draft_create_imports_runtime_module_from_src_package(monkeypatch, tmp_path: Path):
@@ -138,7 +175,10 @@ def test_cli_draft_create_imports_runtime_module_from_src_package(monkeypatch, t
     attachment_one.write_text("one", encoding="utf-8")
     attachment_two.write_text("two", encoding="utf-8")
 
-    class FakeGraphPoller:
+    class FakeDraftRequestClient:
+        def __init__(self, *, timeout_seconds: float = 60.0):
+            captured["timeout_seconds"] = timeout_seconds
+
         def create_draft(
             self,
             *,
@@ -158,42 +198,45 @@ def test_cli_draft_create_imports_runtime_module_from_src_package(monkeypatch, t
             captured["bcc_recipients"] = bcc_recipients
             captured["attachments"] = attachments
             return {
-                "id": "draft-1",
-                "subject": subject,
-                "conversationId": "thread-1",
-                "webLink": "https://example.com/drafts/1",
-                "isDraft": True,
-                "bodyPreview": body[:255],
-                "toRecipients": [
-                    {"emailAddress": {"address": address}} for address in to_recipients
-                ],
-                "ccRecipients": [
-                    {"emailAddress": {"address": address}} for address in cc_recipients
-                ],
-                "bccRecipients": [
-                    {"emailAddress": {"address": address}} for address in bcc_recipients
-                ],
-                "attachments": [
-                    {
-                        "id": "att-1",
-                        "name": "one.txt",
-                        "contentType": "text/plain",
-                        "size": 3,
-                    },
-                    {
-                        "id": "att-2",
-                        "name": "two.txt",
-                        "contentType": "text/plain",
-                        "size": 3,
-                    },
-                ],
+                "created_via": "new",
+                "draft": {
+                    "id": "draft-1",
+                    "subject": subject,
+                    "conversationId": "thread-1",
+                    "webLink": "https://example.com/drafts/1",
+                    "isDraft": True,
+                    "bodyPreview": body[:255],
+                    "toRecipients": [
+                        {"emailAddress": {"address": address}} for address in to_recipients
+                    ],
+                    "ccRecipients": [
+                        {"emailAddress": {"address": address}} for address in cc_recipients
+                    ],
+                    "bccRecipients": [
+                        {"emailAddress": {"address": address}} for address in bcc_recipients
+                    ],
+                    "attachments": [
+                        {
+                            "id": "att-1",
+                            "name": "one.txt",
+                            "contentType": "text/plain",
+                            "size": 3,
+                        },
+                        {
+                            "id": "att-2",
+                            "name": "two.txt",
+                            "contentType": "text/plain",
+                            "size": 3,
+                        },
+                    ],
+                },
             }
 
     def fake_import_module(name: str):
         imported.append(name)
-        if name != "src.poller":
+        if name != "src.cli_queue":
             raise AssertionError(f"Unexpected import: {name}")
-        return SimpleNamespace(GraphPoller=FakeGraphPoller)
+        return SimpleNamespace(DraftRequestClient=FakeDraftRequestClient)
 
     monkeypatch.setattr(cli_main.importlib, "import_module", fake_import_module)
 
@@ -213,18 +256,21 @@ def test_cli_draft_create_imports_runtime_module_from_src_package(monkeypatch, t
             "Draft subject",
             "--body",
             "Draft body",
-                "--content-type",
-                "html",
-                "--attachment",
-                str(attachment_one),
-                "--attachment",
-                str(attachment_two),
-            ],
-        )
+            "--content-type",
+            "html",
+            "--attachment",
+            str(attachment_one),
+            "--attachment",
+            str(attachment_two),
+            "--timeout-seconds",
+            "12.5",
+        ],
+    )
     assert result.exit_code == 0
     payload = json.loads(result.output)
-    assert imported == ["src.poller"]
+    assert imported == ["src.cli_queue"]
     assert captured == {
+        "timeout_seconds": 12.5,
         "subject": "Draft subject",
         "body": "Draft body",
         "body_content_type": "html",
@@ -245,8 +291,11 @@ def test_cli_draft_reply_imports_runtime_module_from_src_package(monkeypatch, tm
     attachment_path = tmp_path / "reply.txt"
     attachment_path.write_text("reply attachment", encoding="utf-8")
 
-    class FakeGraphPoller:
-        def create_reply_draft(
+    class FakeDraftRequestClient:
+        def __init__(self, *, timeout_seconds: float = 60.0):
+            captured["timeout_seconds"] = timeout_seconds
+
+        def reply_draft(
             self,
             message_id: str,
             *,
@@ -263,55 +312,61 @@ def test_cli_draft_reply_imports_runtime_module_from_src_package(monkeypatch, tm
             captured["attachments"] = attachments
             captured["reply_all"] = reply_all
             return {
-                "id": "draft-reply-1",
-                "subject": "Re: Draft subject",
-                "conversationId": "thread-1",
-                "webLink": "https://example.com/drafts/reply-1",
-                "isDraft": True,
-                "bodyPreview": body[:255],
-                "toRecipients": [{"emailAddress": {"address": "alice@example.com"}}],
-                "ccRecipients": [{"emailAddress": {"address": "finance@example.com"}}],
-                "bccRecipients": [],
-                "attachments": [
-                    {
-                        "id": "att-reply-1",
-                        "name": "reply.txt",
-                        "contentType": "text/plain",
-                        "size": 16,
-                    }
-                ],
+                "created_via": "reply_all",
+                "draft": {
+                    "id": "draft-reply-1",
+                    "subject": "Re: Draft subject",
+                    "conversationId": "thread-1",
+                    "webLink": "https://example.com/drafts/reply-1",
+                    "isDraft": True,
+                    "bodyPreview": body[:255],
+                    "toRecipients": [{"emailAddress": {"address": "alice@example.com"}}],
+                    "ccRecipients": [{"emailAddress": {"address": "finance@example.com"}}],
+                    "bccRecipients": [],
+                    "attachments": [
+                        {
+                            "id": "att-reply-1",
+                            "name": "reply.txt",
+                            "contentType": "text/plain",
+                            "size": 16,
+                        }
+                    ],
+                },
             }
 
     def fake_import_module(name: str):
         imported.append(name)
-        if name != "src.poller":
+        if name != "src.cli_queue":
             raise AssertionError(f"Unexpected import: {name}")
-        return SimpleNamespace(GraphPoller=FakeGraphPoller)
+        return SimpleNamespace(DraftRequestClient=FakeDraftRequestClient)
 
     monkeypatch.setattr(cli_main.importlib, "import_module", fake_import_module)
 
     runner = CliRunner()
     result = runner.invoke(
         app,
-            [
-                "draft",
-                "reply",
-                "email-1",
-                "--subject",
-                "Re: Quarterly update",
-                "--body",
-                "<p>Thanks, will review.</p>",
-                "--content-type",
-                "html",
-                "--attachment",
-                str(attachment_path),
-                "--reply-all",
-            ],
-        )
+        [
+            "draft",
+            "reply",
+            "email-1",
+            "--subject",
+            "Re: Quarterly update",
+            "--body",
+            "<p>Thanks, will review.</p>",
+            "--content-type",
+            "html",
+            "--attachment",
+            str(attachment_path),
+            "--reply-all",
+            "--timeout-seconds",
+            "7",
+        ],
+    )
     assert result.exit_code == 0
     payload = json.loads(result.output)
-    assert imported == ["src.poller"]
+    assert imported == ["src.cli_queue"]
     assert captured == {
+        "timeout_seconds": 7.0,
         "message_id": "email-1",
         "subject": "Re: Quarterly update",
         "body": "<p>Thanks, will review.</p>",
@@ -330,15 +385,15 @@ def test_cli_draft_create_rejects_body_and_body_file(monkeypatch, tmp_path: Path
     body_path = tmp_path / "draft.txt"
     body_path.write_text("Draft body", encoding="utf-8")
 
-    class FakeGraphPoller:
-        def __init__(self):
-            raise AssertionError("GraphPoller should not be instantiated when input validation fails")
+    class FakeDraftRequestClient:
+        def __init__(self, **_: object):
+            raise AssertionError("DraftRequestClient should not be instantiated when input validation fails")
 
     def fake_import_module(name: str):
         imported.append(name)
-        if name != "src.poller":
+        if name != "src.cli_queue":
             raise AssertionError(f"Unexpected import: {name}")
-        return SimpleNamespace(GraphPoller=FakeGraphPoller)
+        return SimpleNamespace(DraftRequestClient=FakeDraftRequestClient)
 
     monkeypatch.setattr(cli_main.importlib, "import_module", fake_import_module)
 
@@ -356,5 +411,28 @@ def test_cli_draft_create_rejects_body_and_body_file(monkeypatch, tmp_path: Path
     )
     assert result.exit_code == 1
     payload = json.loads(result.stderr)
-    assert imported == ["src.poller"]
+    assert imported == ["src.cli_queue"]
     assert payload["error"] == "invalid_input"
+    assert "Provide either --body or --body-file" in payload["message"]
+
+
+def test_cli_draft_commands_are_exposed():
+    runner = CliRunner()
+    result = runner.invoke(app, ["--help"])
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert "draft" in payload["commands"]
+    assert payload["commands"]["draft"]["subcommands"] == ["create", "reply"]
+
+    manifest_path = (
+        Path(__file__).resolve().parents[1]
+        / "packages"
+        / "aech-cli-inbox-assistant"
+        / "src"
+        / "aech_cli_inbox_assistant"
+        / "manifest.json"
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    action_names = {action["name"] for action in manifest["actions"]}
+    assert "draft create" in action_names
+    assert "draft reply" in action_names

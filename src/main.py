@@ -5,6 +5,7 @@ import os
 import time
 
 from src.attachments import AttachmentProcessor
+from src.cli_queue import process_pending_draft_requests
 from src.chunker import process_unindexed_attachments, process_unindexed_emails
 from src.database import get_connection, init_db
 from src.embeddings import embed_pending_chunks
@@ -117,6 +118,10 @@ def _cache_folder_id(
     return folder_id
 
 
+def process_cli_requests(poller: GraphPoller) -> dict[str, int]:
+    return process_pending_draft_requests(poller)
+
+
 def service_loop(
     user_email: str,
     poll_interval: int,
@@ -149,6 +154,14 @@ def service_loop(
 
     while True:
         try:
+            draft_request_results = process_cli_requests(poller)
+            if draft_request_results["processed"] > 0 or draft_request_results["failed"] > 0:
+                logger.info(
+                    "Processed %s draft request(s), %s failed",
+                    draft_request_results["processed"],
+                    draft_request_results["failed"],
+                )
+
             poller.poll_inbox()
             asyncio.run(process_pending_content(concurrency=concurrency))
 

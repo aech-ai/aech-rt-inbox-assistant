@@ -14,10 +14,14 @@ def build_owned_paths(environ: Mapping[str, str]) -> tuple[set[Path], set[Path]]
     home = Path("/home/agentaech")
     fallback_state_dir = home / ".inbox-assistant"
     state_root = Path("/app/state")
+    triggers_root = Path("/triggers")
     state_dir = Path(environ.get("INBOX_STATE_DIR", str(fallback_state_dir))).expanduser()
+    cli_queue_root = Path(
+        environ.get("INBOX_ASSISTANT_CLI_QUEUE_ROOT", str(triggers_root / "cli"))
+    ).expanduser()
 
-    ensure_dirs = {home, fallback_state_dir, state_root, state_dir}
-    repair_paths = {fallback_state_dir, state_dir}
+    ensure_dirs = {home, fallback_state_dir, state_root, state_dir, triggers_root, cli_queue_root}
+    repair_paths = {fallback_state_dir, state_dir, triggers_root, cli_queue_root}
 
     for key in ("INBOX_DB_PATH", "LLM_LOG_DIR"):
         raw = environ.get(key)

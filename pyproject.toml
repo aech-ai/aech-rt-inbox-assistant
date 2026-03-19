@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aech-rt-inbox-assistant"
-version = "0.1.1"
+version = "0.1.4"
 description = "Real-time Inbox Assistant for Agent Aech"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -17,7 +17,6 @@ dependencies = [
     "msal",
     "markdownify",
     "sentence-transformers",
-    "aech-cli-msgraph",
     "aech-cli-documents",
     "aech-llm-observability>=0.2.0,<0.3.0",
 ]
@@ -28,7 +27,6 @@ dev = [
 ]
 
 [tool.uv.sources]
-aech-cli-msgraph = { path = "../aech-main/packages/aech-cli-msgraph", editable = true }
 aech-llm-observability = { path = "../aech-main/packages/aech-llm-observability", editable = true }
 aech-cli-documents = { path = "../aech-cli-documents", editable = true }
 

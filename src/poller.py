@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple, Callable
 
 import requests
-from aech_cli_msgraph.graph import GraphClient
 from .database import get_connection
 from .body_parser import parse_email_body
 
@@ -28,6 +27,16 @@ SIMPLE_ATTACHMENT_MAX_BYTES = 3 * 1024 * 1024
 UPLOAD_CHUNK_SIZE = 327680 * 16
 
 
+def _load_graph_client():
+    try:
+        from aech_cli_msgraph.graph import GraphClient
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "aech-cli-msgraph is required for inbox-assistant Graph operations"
+        ) from exc
+    return GraphClient
+
+
 class GraphPoller:
     """
     Lightweight wrapper around aech-cli-msgraph. All Microsoft Graph operations
@@ -39,7 +48,7 @@ class GraphPoller:
         if not self.user_email:
             raise ValueError("DELEGATED_USER environment variable must be set")
 
-        self._graph_client = GraphClient()
+        self._graph_client = _load_graph_client()()
         self._ignored_senders = self._load_ignored_senders()
 
     @staticmethod

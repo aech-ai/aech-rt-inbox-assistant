@@ -632,6 +632,13 @@ def email_project_batch(
     type=click.Path(exists=True, dir_okay=False, path_type=str),
     help="Attach a local file. Repeat to add multiple attachments.",
 )
+@click.option(
+    "--timeout-seconds",
+    default=60.0,
+    show_default=True,
+    type=float,
+    help="Maximum time to wait for the inbox runtime to create the draft.",
+)
 def draft_create(
     to_recipients: tuple[str, ...],
     cc_recipients: tuple[str, ...],
@@ -641,18 +648,19 @@ def draft_create(
     body_file: str | None,
     content_type: str,
     attachments: tuple[str, ...],
+    timeout_seconds: float,
 ) -> None:
     """Create a new draft message in the delegated mailbox."""
     try:
-        GraphPoller = _load_runtime_attr("poller", "GraphPoller")
+        DraftRequestClient = _load_runtime_attr("cli_queue", "DraftRequestClient")
     except (AttributeError, ImportError) as exc:
         output_error(f"Failed to import draft runtime: {exc}", "import_error")
         raise SystemExit(1)
 
     try:
         draft_body = _read_body_input(body, body_file)
-        poller = GraphPoller()
-        draft = poller.create_draft(
+        client = DraftRequestClient(timeout_seconds=timeout_seconds)
+        result = client.create_draft(
             subject=subject,
             body=draft_body,
             body_content_type=content_type.lower(),
@@ -664,11 +672,19 @@ def draft_create(
     except ValueError as exc:
         output_error(str(exc), "invalid_input")
         raise SystemExit(1)
+    except TimeoutError as exc:
+        output_error(str(exc), "draft_timeout")
+        raise SystemExit(1)
     except Exception as exc:
         output_error(f"Draft creation failed: {exc}", "draft_create_error")
         raise SystemExit(1)
 
-    output_json({"created_via": "new", "draft": _project_graph_message(draft)})
+    output_json(
+        {
+            "created_via": result.get("created_via", "new"),
+            "draft": _project_graph_message(result.get("draft") or {}),
+        }
+    )
 
 
 @draft_app.command(cls=JSONCommand, name="reply")
@@ -691,6 +707,13 @@ def draft_create(
     help="Attach a local file. Repeat to add multiple attachments.",
 )
 @click.option("--reply-all", is_flag=True, help="Create a reply-all draft instead of reply")
+@click.option(
+    "--timeout-seconds",
+    default=60.0,
+    show_default=True,
+    type=float,
+    help="Maximum time to wait for the inbox runtime to create the draft.",
+)
 def draft_reply(
     message_id: str,
     subject: str | None,
@@ -699,18 +722,19 @@ def draft_reply(
     content_type: str,
     attachments: tuple[str, ...],
     reply_all: bool,
+    timeout_seconds: float,
 ) -> None:
     """Create a reply or reply-all draft for an existing message."""
     try:
-        GraphPoller = _load_runtime_attr("poller", "GraphPoller")
+        DraftRequestClient = _load_runtime_attr("cli_queue", "DraftRequestClient")
     except (AttributeError, ImportError) as exc:
         output_error(f"Failed to import draft runtime: {exc}", "import_error")
         raise SystemExit(1)
 
     try:
         reply_body = _read_body_input(body, body_file)
-        poller = GraphPoller()
-        draft = poller.create_reply_draft(
+        client = DraftRequestClient(timeout_seconds=timeout_seconds)
+        result = client.reply_draft(
             message_id,
             subject=subject,
             body=reply_body,
@@ -721,14 +745,17 @@ def draft_reply(
     except ValueError as exc:
         output_error(str(exc), "invalid_input")
         raise SystemExit(1)
+    except TimeoutError as exc:
+        output_error(str(exc), "draft_timeout")
+        raise SystemExit(1)
     except Exception as exc:
         output_error(f"Reply draft creation failed: {exc}", "draft_reply_error")
         raise SystemExit(1)
 
     output_json(
         {
-            "created_via": "reply_all" if reply_all else "reply",
-            "draft": _project_graph_message(draft),
+            "created_via": result.get("created_via", "reply_all" if reply_all else "reply"),
+            "draft": _project_graph_message(result.get("draft") or {}),
         }
     )
 

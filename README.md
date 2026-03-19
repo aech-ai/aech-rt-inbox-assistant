@@ -7,7 +7,7 @@ It does five things:
 - downloads and stores attachments canonically
 - extracts/indexes text for search
 - exposes a JSON CLI for email, thread, attachment, and search retrieval
-- creates delegated mailbox drafts on demand
+- creates delegated mailbox drafts on demand through a deterministic runtime queue
 
 It does **not** decide what any role should do with an email. COO, CFO, Sales, HR, or any other subagent should consume this repo as infrastructure.
 
@@ -15,13 +15,14 @@ It does **not** decide what any role should do with an email. COO, CFO, Sales, H
 
 The service loop is intentionally dumb:
 
-1. poll inbox
-2. persist/update email rows
-3. fetch missing bodies
-4. download and store attachments
-5. extract text
-6. build chunks and embeddings
-7. delta-sync Inbox and optionally Sent Items
+1. drain queued draft/reply-draft requests
+2. poll inbox
+3. persist/update email rows
+4. fetch missing bodies
+5. download and store attachments
+6. extract text
+7. build chunks and embeddings
+8. delta-sync Inbox and optionally Sent Items
 
 That loop lives in [src/main.py](/Users/steven/work/github/agent@aech.ai/aech-rt-inbox-assistant/src/main.py).
 
@@ -64,6 +65,7 @@ Categories are still supported, but only as explicit agent-editable configuratio
 
 Draft creation writes only draft messages. This repo does not send outbound mail.
 Drafts are also synced into the local corpus and marked with `is_draft` plus folder metadata in the `emails` table.
+Subagents do not import Graph directly for this. The CLI stages a deterministic request under the shared trigger mount, and the inbox-assistant runtime performs the Graph operation.
 
 The CLI entrypoint lives in [packages/aech-cli-inbox-assistant/src/aech_cli_inbox_assistant/main.py](/Users/steven/work/github/agent@aech.ai/aech-rt-inbox-assistant/packages/aech-cli-inbox-assistant/src/aech_cli_inbox_assistant/main.py).
 
