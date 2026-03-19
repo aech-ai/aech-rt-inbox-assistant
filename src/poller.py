@@ -112,6 +112,50 @@ class GraphPoller:
         escaped = html.escape(body)
         return f"<div>{escaped.replace(chr(10), '<br>')}</div>"
 
+    def _probe_default_folder_statuses(self) -> dict[str, int]:
+        headers = self._graph_client._get_headers()
+        base_path = self._graph_client._get_base_path(self.user_email)
+        statuses: dict[str, int] = {}
+        for folder_name in ("inbox", "drafts", "sentitems"):
+            try:
+                response = requests.get(
+                    f"{base_path}/mailFolders/{folder_name}",
+                    headers=headers,
+                    timeout=30,
+                )
+            except Exception:
+                continue
+            statuses[folder_name] = response.status_code
+        return statuses
+
+    def _raise_mailbox_write_error_if_diagnosable(
+        self,
+        action: str,
+        response: requests.Response,
+    ) -> None:
+        if response.status_code != 404:
+            return
+
+        statuses = self._probe_default_folder_statuses()
+        inbox_ok = statuses.get("inbox") == 200
+        missing_default_folders = [
+            label
+            for key, label in (("drafts", "Drafts"), ("sentitems", "Sent Items"))
+            if statuses.get(key) == 404
+        ]
+        if not inbox_ok or not missing_default_folders:
+            return
+
+        missing_text = ", ".join(missing_default_folders)
+        raise RuntimeError(
+            f"{action} failed because the authenticated Graph principal can read "
+            f"{self.user_email} Inbox but cannot access the mailbox default folder(s) {missing_text}. "
+            f"Share those default folders with the acting account, or grant equivalent mailbox delegation "
+            f"such as Full Access on {self.user_email}. If this workflow will later send mail, also grant "
+            f"Send As or Send on Behalf. "
+            f"Raw Graph error: {response.status_code} {response.text}"
+        )
+
     @classmethod
     def _prepend_reply_body(cls, existing_html: str, body: str, body_content_type: str) -> str:
         rendered = cls._render_body_html(body, body_content_type)
@@ -453,6 +497,7 @@ class GraphPoller:
 
         resp = requests.post(f"{base_path}/messages", headers=headers, json=payload, timeout=30)
         if not resp.ok:
+            self._raise_mailbox_write_error_if_diagnosable("Draft create", resp)
             raise RuntimeError(
                 f"Draft create failed: {resp.status_code} {resp.text}"
             )
@@ -491,6 +536,7 @@ class GraphPoller:
             timeout=30,
         )
         if not resp.ok:
+            self._raise_mailbox_write_error_if_diagnosable("Reply draft create", resp)
             raise RuntimeError(
                 f"Reply draft create failed for {message_id}: {resp.status_code} {resp.text}"
             )

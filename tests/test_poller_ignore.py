@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from src.database import get_connection, init_db
 from src.poller import ATTACHMENT_EXPAND_FIELDS, GraphPoller, MESSAGE_SELECT_FIELDS
 
@@ -471,6 +473,84 @@ def test_create_reply_draft_prepends_body_and_persists_to_db(monkeypatch, tmp_pa
     assert email_row is not None
     assert email_row["is_draft"] == 1
     assert email_row["mail_folder_name"] == "Drafts"
+
+
+def test_create_draft_surfaces_mailbox_delegation_error(monkeypatch, tmp_path: Path):
+    poller = _make_poller(monkeypatch, tmp_path)
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        if url.endswith("/users/steven@aech.ai/messages"):
+            return _FakeResponse(
+                {"error": {"code": "ErrorItemNotFound", "message": "The specified object was not found in the store."}},
+                ok=False,
+                status_code=404,
+                text='{"error":{"code":"ErrorItemNotFound","message":"The specified object was not found in the store."}}',
+            )
+        raise AssertionError(f"Unexpected POST: {url}")
+
+    def fake_get(url, headers=None, timeout=None):
+        if url.endswith("/users/steven@aech.ai/mailFolders/inbox"):
+            return _FakeResponse({"id": "inbox-folder"})
+        if url.endswith("/users/steven@aech.ai/mailFolders/drafts"):
+            return _FakeResponse(
+                {"error": {"code": "ErrorItemNotFound", "message": "Default folder Drafts not found."}},
+                ok=False,
+                status_code=404,
+                text='{"error":{"code":"ErrorItemNotFound","message":"Default folder Drafts not found."}}',
+            )
+        if url.endswith("/users/steven@aech.ai/mailFolders/sentitems"):
+            return _FakeResponse(
+                {"error": {"code": "ErrorItemNotFound", "message": "Default folder SentItems not found."}},
+                ok=False,
+                status_code=404,
+                text='{"error":{"code":"ErrorItemNotFound","message":"Default folder SentItems not found."}}',
+            )
+        raise AssertionError(f"Unexpected GET: {url}")
+
+    monkeypatch.setattr("src.poller.requests.post", fake_post)
+    monkeypatch.setattr("src.poller.requests.get", fake_get)
+
+    with pytest.raises(RuntimeError, match="Share those default folders with the acting account"):
+        poller.create_draft(subject="Draft subject", body="Draft body")
+
+
+def test_create_reply_draft_surfaces_mailbox_delegation_error(monkeypatch, tmp_path: Path):
+    poller = _make_poller(monkeypatch, tmp_path)
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        if url.endswith("/users/steven@aech.ai/messages/email-1/createReply"):
+            return _FakeResponse(
+                {"error": {"code": "ErrorItemNotFound", "message": "The specified object was not found in the store."}},
+                ok=False,
+                status_code=404,
+                text='{"error":{"code":"ErrorItemNotFound","message":"The specified object was not found in the store."}}',
+            )
+        raise AssertionError(f"Unexpected POST: {url}")
+
+    def fake_get(url, headers=None, timeout=None):
+        if url.endswith("/users/steven@aech.ai/mailFolders/inbox"):
+            return _FakeResponse({"id": "inbox-folder"})
+        if url.endswith("/users/steven@aech.ai/mailFolders/drafts"):
+            return _FakeResponse(
+                {"error": {"code": "ErrorItemNotFound", "message": "Default folder Drafts not found."}},
+                ok=False,
+                status_code=404,
+                text='{"error":{"code":"ErrorItemNotFound","message":"Default folder Drafts not found."}}',
+            )
+        if url.endswith("/users/steven@aech.ai/mailFolders/sentitems"):
+            return _FakeResponse(
+                {"error": {"code": "ErrorItemNotFound", "message": "Default folder SentItems not found."}},
+                ok=False,
+                status_code=404,
+                text='{"error":{"code":"ErrorItemNotFound","message":"Default folder SentItems not found."}}',
+            )
+        raise AssertionError(f"Unexpected GET: {url}")
+
+    monkeypatch.setattr("src.poller.requests.post", fake_post)
+    monkeypatch.setattr("src.poller.requests.get", fake_get)
+
+    with pytest.raises(RuntimeError, match="Share those default folders with the acting account"):
+        poller.create_reply_draft("email-1")
 
 
 def test_add_message_attachment_uses_upload_session_for_large_files(monkeypatch, tmp_path: Path):
