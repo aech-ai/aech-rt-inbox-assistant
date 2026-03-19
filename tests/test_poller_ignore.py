@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 from src.database import get_connection, init_db
-from src.poller import GraphPoller
+from src.poller import ATTACHMENT_EXPAND_FIELDS, GraphPoller, MESSAGE_SELECT_FIELDS
 
 
 class _FakeGraphClient:
@@ -67,6 +67,7 @@ def _attachment_rows(email_id: str):
 
 def test_poll_inbox_ignores_configured_senders(monkeypatch, tmp_path: Path):
     poller = _make_poller(monkeypatch, tmp_path)
+    request_calls: list[dict[str, object]] = []
 
     payload = [
         {
@@ -92,15 +93,46 @@ def test_poll_inbox_ignores_configured_senders(monkeypatch, tmp_path: Path):
             "ccRecipients": [],
             "receivedDateTime": "2026-03-09T06:01:00Z",
             "bodyPreview": "preview",
-            "hasAttachments": False,
+            "hasAttachments": True,
             "isRead": False,
+            "attachments": [
+                {
+                    "id": "att-1",
+                    "name": "brief.txt",
+                    "contentType": "text/plain",
+                    "size": 12,
+                }
+            ],
         },
     ]
-    monkeypatch.setattr(poller, "_run_cli", lambda args: json.dumps(payload))
+
+    def fake_get(url, headers, params=None, timeout=None):
+        request_calls.append(
+            {
+                "url": url,
+                "headers": headers,
+                "params": params,
+                "timeout": timeout,
+            }
+        )
+        return _FakeResponse({"value": payload})
+
+    monkeypatch.setattr("src.poller.requests.get", fake_get)
 
     poller.poll_inbox()
 
     assert _email_row_ids() == ["kept-email"]
+    attachments = _attachment_rows("kept-email")
+    assert len(attachments) == 1
+    assert attachments[0]["id"] == "att-1"
+    assert len(request_calls) == 1
+    assert request_calls[0]["params"] == {
+        "$top": 50,
+        "$orderby": "receivedDateTime desc",
+        "$select": MESSAGE_SELECT_FIELDS,
+        "$expand": ATTACHMENT_EXPAND_FIELDS,
+    }
+    assert request_calls[0]["timeout"] == 30
 
 
 def test_full_sync_folder_skips_ignored_senders(monkeypatch, tmp_path: Path):

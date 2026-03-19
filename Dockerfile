@@ -31,14 +31,15 @@ RUN pip install --no-cache-dir -r requirements.txt --find-links /tmp/wheels/
 # App source
 COPY ./src/ src/
 COPY ./scripts/ scripts/
+COPY ./README.md .
+
+# Install the main package before local CLI wrappers that depend on it
+COPY ./pyproject.toml .
+RUN pip install --no-cache-dir -e .
 
 # Install CLI packages
 COPY ./packages/aech-cli-inbox-assistant/ packages/aech-cli-inbox-assistant/
 RUN pip install --no-cache-dir packages/aech-cli-inbox-assistant/
-
-# Install the main package
-COPY ./pyproject.toml .
-RUN pip install --no-cache-dir -e .
 
 # Create non-root user (align with aech-main UID/GID 1001)
 RUN groupadd -r agentaech -g 1001 && \

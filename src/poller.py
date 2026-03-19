@@ -137,13 +137,31 @@ class GraphPoller:
         return stdout
 
     def poll_inbox(self) -> List[Dict[str, Any]]:
-        """Poll the delegated inbox for messages via aech-cli-msgraph."""
+        """Poll the delegated inbox for recent messages via a lightweight Graph query."""
         logger.debug(f"Polling inbox for {self.user_email}")
         try:
-            stdout = self._run_cli(["poll-inbox", "--json", "--count", "50", "--all-senders", "--include-read"])
-            messages = json.loads(stdout or "[]")
+            headers = self._graph_client._get_headers()
+            base_path = self._graph_client._get_base_path(self.user_email)
+            resp = requests.get(
+                f"{base_path}/mailFolders/inbox/messages",
+                headers=headers,
+                params={
+                    "$top": 50,
+                    "$orderby": "receivedDateTime desc",
+                    "$select": MESSAGE_SELECT_FIELDS,
+                    "$expand": ATTACHMENT_EXPAND_FIELDS,
+                },
+                timeout=30,
+            )
+            if not resp.ok:
+                raise RuntimeError(
+                    f"Recent inbox fetch failed: {resp.status_code} {resp.text}"
+                )
+
+            payload = resp.json()
+            messages = payload.get("value", []) if isinstance(payload, dict) else []
             if not isinstance(messages, list):
-                logger.error("Unexpected poll-inbox output (not a list)")
+                logger.error("Unexpected inbox response payload (value is not a list)")
                 return []
 
             conn = get_connection()
