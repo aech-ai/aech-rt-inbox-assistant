@@ -501,6 +501,11 @@
       ]
     },
     {
+      "name": "context",
+      "description": "Show resolved inbox binding and mailbox context.",
+      "parameters": []
+    },
+    {
       "name": "dbpath",
       "description": "Get the absolute path to the inbox database.",
       "parameters": []

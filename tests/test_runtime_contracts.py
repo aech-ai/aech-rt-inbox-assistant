@@ -35,8 +35,14 @@ def test_src_import_uses_shared_observability_path_builder(monkeypatch, tmp_path
         observability.set_llm_log_path(previous_path)
 
 
-def test_cli_search_imports_runtime_module_from_src_package(monkeypatch):
+def test_cli_search_imports_runtime_module_from_src_package(monkeypatch, tmp_path: Path):
     imported: list[str] = []
+    state_dir = tmp_path / ".inbox-assistant"
+    state_dir.mkdir()
+    (state_dir / "assistant.sqlite").touch()
+    monkeypatch.setenv("INBOX_STATE_DIR", str(state_dir))
+    monkeypatch.delenv("INBOX_DB_PATH", raising=False)
+    monkeypatch.delenv("DELEGATED_USER", raising=False)
 
     def fake_import_module(name: str):
         imported.append(name)
@@ -73,7 +79,14 @@ def test_cli_search_imports_runtime_module_from_src_package(monkeypatch):
     assert payload[0]["web_link"] == "https://example.com/mail/1"
 
 
-def test_cli_search_reports_missing_runtime_package(monkeypatch):
+def test_cli_search_reports_missing_runtime_package(monkeypatch, tmp_path: Path):
+    state_dir = tmp_path / ".inbox-assistant"
+    state_dir.mkdir()
+    (state_dir / "assistant.sqlite").touch()
+    monkeypatch.setenv("INBOX_STATE_DIR", str(state_dir))
+    monkeypatch.delenv("INBOX_DB_PATH", raising=False)
+    monkeypatch.delenv("DELEGATED_USER", raising=False)
+
     def fake_import_module(name: str):
         raise ModuleNotFoundError("No module named 'src'")
 
@@ -87,10 +100,17 @@ def test_cli_search_reports_missing_runtime_package(monkeypatch):
     assert "runtime package is not installed" in payload["message"]
 
 
-def test_cli_ask_imports_runtime_module_from_src_package(monkeypatch):
+def test_cli_ask_imports_runtime_module_from_src_package(monkeypatch, tmp_path: Path):
     imported: list[str] = []
+    captured: dict[str, object] = {}
+
+    home_dir = tmp_path / "home"
+    mailbox_dir = home_dir / ".inbox-assistant" / "steven@aech.ai"
+    mailbox_dir.mkdir(parents=True)
+    (mailbox_dir / "assistant.sqlite").touch()
 
     async def fake_run_query_agent(**kwargs):
+        captured.update(kwargs)
         return {
             "answer": "Found it.",
             "matched_emails": [],
@@ -104,7 +124,10 @@ def test_cli_ask_imports_runtime_module_from_src_package(monkeypatch):
             raise AssertionError(f"Unexpected import: {name}")
         return SimpleNamespace(run_query_agent=fake_run_query_agent)
 
-    monkeypatch.setenv("DELEGATED_USER", "steven@aech.ai")
+    monkeypatch.setenv("AECH_USER_DIR", str(home_dir))
+    monkeypatch.delenv("DELEGATED_USER", raising=False)
+    monkeypatch.delenv("INBOX_STATE_DIR", raising=False)
+    monkeypatch.delenv("INBOX_DB_PATH", raising=False)
     monkeypatch.setattr(cli_main.importlib, "import_module", fake_import_module)
 
     runner = CliRunner()
@@ -112,7 +135,30 @@ def test_cli_ask_imports_runtime_module_from_src_package(monkeypatch):
     assert result.exit_code == 0
     payload = json.loads(result.output)
     assert imported == ["src.query_agent"]
+    assert captured["user_email"] == "steven@aech.ai"
     assert payload["answer"] == "Found it."
+
+
+def test_cli_context_reports_ambiguous_shared_root(monkeypatch, tmp_path: Path):
+    home_dir = tmp_path / "home"
+    first_mailbox = home_dir / ".inbox-assistant" / "steven@aech.ai"
+    second_mailbox = home_dir / ".inbox-assistant" / "alex@aech.ai"
+    first_mailbox.mkdir(parents=True)
+    second_mailbox.mkdir(parents=True)
+    (first_mailbox / "assistant.sqlite").touch()
+    (second_mailbox / "assistant.sqlite").touch()
+
+    monkeypatch.setenv("AECH_USER_DIR", str(home_dir))
+    monkeypatch.delenv("DELEGATED_USER", raising=False)
+    monkeypatch.delenv("INBOX_STATE_DIR", raising=False)
+    monkeypatch.delenv("INBOX_DB_PATH", raising=False)
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["context"])
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert "Ambiguous inbox state root" in payload["error"]
+    assert payload["available_mailboxes"] == ["alex@aech.ai", "steven@aech.ai"]
 
 
 def test_cli_package_declares_runtime_dependency():
@@ -125,7 +171,7 @@ def test_cli_package_declares_runtime_dependency():
     pyproject = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
 
     dependencies = pyproject["project"]["dependencies"]
-    assert "aech-rt-inbox-assistant==0.1.4" in dependencies
+    assert "aech-rt-inbox-assistant==0.1.5" in dependencies
 
     sources = pyproject["tool"]["uv"]["sources"]
     assert sources["aech-rt-inbox-assistant"]["path"] == "../.."
@@ -421,6 +467,7 @@ def test_cli_draft_commands_are_exposed():
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
     payload = json.loads(result.output)
+    assert "context" in payload["commands"]
     assert "draft" in payload["commands"]
     assert payload["commands"]["draft"]["subcommands"] == ["create", "reply"]
 
@@ -434,5 +481,6 @@ def test_cli_draft_commands_are_exposed():
     )
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     action_names = {action["name"] for action in manifest["actions"]}
+    assert "context" in action_names
     assert "draft create" in action_names
     assert "draft reply" in action_names

@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 from src.attachments import AttachmentProcessor
-from src.database import get_connection, get_state_dir, init_db
+from src.database import get_connection, get_db_path, get_state_dir, init_db
 
 
 def _insert_email(conn, email_id: str) -> None:
@@ -81,3 +81,41 @@ def test_process_attachment_stores_blob_and_reuses_duplicate(monkeypatch, tmp_pa
     stored_path = get_state_dir() / first["storage_path"]
     assert stored_path.exists()
     assert stored_path.read_text() == "hello"
+
+
+def test_runtime_database_resolves_single_mailbox_from_shared_root(
+    monkeypatch,
+    tmp_path: Path,
+):
+    home_dir = tmp_path / "home"
+    mailbox_dir = home_dir / ".inbox-assistant" / "steven@aech.ai"
+    mailbox_dir.mkdir(parents=True)
+    (mailbox_dir / "assistant.sqlite").touch()
+
+    monkeypatch.setenv("AECH_USER_DIR", str(home_dir))
+    monkeypatch.delenv("DELEGATED_USER", raising=False)
+    monkeypatch.delenv("INBOX_STATE_DIR", raising=False)
+    monkeypatch.delenv("INBOX_DB_PATH", raising=False)
+
+    assert get_state_dir() == mailbox_dir.resolve()
+    assert get_db_path() == (mailbox_dir / "assistant.sqlite").resolve()
+
+
+def test_runtime_database_uses_shared_inbox_root_env_and_mailbox_selector(
+    monkeypatch,
+    tmp_path: Path,
+):
+    shared_root = tmp_path / "shared-inbox-root"
+    mailbox_dir = shared_root / "steven@aech.ai"
+    mailbox_dir.mkdir(parents=True)
+    (mailbox_dir / "assistant.sqlite").touch()
+
+    monkeypatch.setenv("AECH_SHARED_INBOX_ROOT", str(shared_root))
+    monkeypatch.setenv("DELEGATED_INBOX_USER", "steven@aech.ai")
+    monkeypatch.delenv("AECH_USER_DIR", raising=False)
+    monkeypatch.delenv("DELEGATED_USER", raising=False)
+    monkeypatch.delenv("INBOX_STATE_DIR", raising=False)
+    monkeypatch.delenv("INBOX_DB_PATH", raising=False)
+
+    assert get_state_dir() == mailbox_dir.resolve()
+    assert get_db_path() == (mailbox_dir / "assistant.sqlite").resolve()

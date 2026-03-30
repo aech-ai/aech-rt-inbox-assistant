@@ -60,7 +60,6 @@ def test_cli_email_get_and_attachment_fetch(monkeypatch, tmp_path: Path):
     db_path = state_dir / "assistant.sqlite"
     monkeypatch.setenv("INBOX_STATE_DIR", str(state_dir))
     monkeypatch.setenv("INBOX_DB_PATH", str(db_path))
-    monkeypatch.setenv("DELEGATED_USER", "steven@aech.ai")
 
     init_db(db_path)
     _seed_db(db_path, state_dir)
@@ -91,6 +90,64 @@ def test_cli_email_get_and_attachment_fetch(monkeypatch, tmp_path: Path):
     fetched = json.loads(result.output)
     assert fetched["output_path"] == str(output_path)
     assert output_path.read_text() == "budget text"
+
+
+def test_cli_context_resolves_single_mailbox_from_shared_root(monkeypatch, tmp_path: Path):
+    home_dir = tmp_path / "home"
+    state_dir = home_dir / ".inbox-assistant" / "steven@aech.ai"
+    db_path = state_dir / "assistant.sqlite"
+    state_dir.mkdir(parents=True)
+
+    monkeypatch.setenv("AECH_USER_DIR", str(home_dir))
+    monkeypatch.delenv("DELEGATED_USER", raising=False)
+    monkeypatch.delenv("INBOX_STATE_DIR", raising=False)
+    monkeypatch.delenv("INBOX_DB_PATH", raising=False)
+
+    init_db(db_path)
+    _seed_db(db_path, state_dir)
+
+    runner = CliRunner()
+
+    result = runner.invoke(app, ["context"])
+    assert result.exit_code == 0
+    context = json.loads(result.output)
+    assert context["mailbox"] == "steven@aech.ai"
+    assert context["binding_mode"] == "single_mailbox_subdir"
+    assert context["db_exists"] is True
+
+    result = runner.invoke(app, ["email", "list", "--include-read"])
+    assert result.exit_code == 0
+    emails = json.loads(result.output)
+    assert [email["id"] for email in emails] == ["email-1"]
+
+
+def test_cli_context_uses_shared_inbox_root_env_and_mailbox_selector(
+    monkeypatch,
+    tmp_path: Path,
+):
+    shared_root = tmp_path / "shared-inbox-root"
+    state_dir = shared_root / "steven@aech.ai"
+    db_path = state_dir / "assistant.sqlite"
+    state_dir.mkdir(parents=True)
+
+    monkeypatch.setenv("AECH_SHARED_INBOX_ROOT", str(shared_root))
+    monkeypatch.setenv("AECH_SHARED_INBOX_MAILBOX", "steven@aech.ai")
+    monkeypatch.delenv("DELEGATED_INBOX_USER", raising=False)
+    monkeypatch.delenv("DELEGATED_USER", raising=False)
+    monkeypatch.delenv("INBOX_STATE_DIR", raising=False)
+    monkeypatch.delenv("INBOX_DB_PATH", raising=False)
+
+    init_db(db_path)
+    _seed_db(db_path, state_dir)
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["context"])
+    assert result.exit_code == 0
+    context = json.loads(result.output)
+    assert context["root_state_dir"] == str(shared_root.resolve())
+    assert context["mailbox"] == "steven@aech.ai"
+    assert context["mailbox_selector"] == "steven@aech.ai"
+    assert context["binding_mode"] == "shared_root_env_selected"
 
 
 def test_cli_email_changes_uses_updated_at(monkeypatch, tmp_path: Path):

@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 import importlib
 import json
-import os
 import shutil
 from pathlib import Path
 from typing import Any
@@ -31,7 +30,7 @@ from .state import (
     InvalidPreferenceKeyError,
     VALID_PREFERENCE_KEYS,
     connect_db,
-    get_db_path,
+    describe_state_context,
     get_state_dir,
     read_preferences,
     set_preference_from_string,
@@ -137,6 +136,37 @@ def _load_runtime_attr(module_name: str, attr_name: str) -> Any:
         return getattr(module, attr_name)
     except AttributeError as exc:
         raise ImportError(f"{module_path} does not export {attr_name}") from exc
+
+
+def _state_context_or_exit() -> dict[str, Any]:
+    context = describe_state_context()
+    if context.get("error"):
+        output_error(str(context["error"]), "state_error")
+        raise SystemExit(1)
+    return context
+
+
+def _require_db_context_or_exit() -> dict[str, Any]:
+    context = _state_context_or_exit()
+    if context.get("db_exists"):
+        return context
+    output_error(
+        f"Database not found at {context['db_path']}. The inbox has not been synced yet.",
+        "db_missing",
+    )
+    raise SystemExit(1)
+
+
+def _connect_db_or_exit(*, read_only: bool = False):
+    try:
+        return connect_db(read_only=read_only)
+    except FileNotFoundError as exc:
+        output_error(str(exc), "db_missing")
+    except RuntimeError as exc:
+        output_error(str(exc), "state_error")
+    except Exception as exc:
+        output_error(f"Failed to open inbox database: {exc}", "db_error")
+    raise SystemExit(1)
 
 
 def _row_to_email_dict(row) -> dict[str, Any]:
@@ -484,7 +514,7 @@ def categories_colors() -> None:
 @click.option("--include-read", is_flag=True, help="Include read emails")
 def email_list(limit: int, include_read: bool) -> None:
     """List ingested emails."""
-    conn = connect_db(read_only=True)
+    conn = _connect_db_or_exit(read_only=True)
     query = "SELECT * FROM emails WHERE 1=1"
     params: list[Any] = []
     if not include_read:
@@ -502,7 +532,7 @@ def email_list(limit: int, include_read: bool) -> None:
 @click.option("--include-read", is_flag=True, help="Include read emails")
 def email_changes(since: str | None, limit: int, include_read: bool) -> None:
     """List emails changed since a checkpoint."""
-    conn = connect_db(read_only=True)
+    conn = _connect_db_or_exit(read_only=True)
     query = "SELECT * FROM emails WHERE 1=1"
     params: list[Any] = []
     if since:
@@ -521,7 +551,7 @@ def email_changes(since: str | None, limit: int, include_read: bool) -> None:
 @click.argument("message_id")
 def email_get(message_id: str) -> None:
     """Get a single email plus attachment manifests."""
-    conn = connect_db(read_only=True)
+    conn = _connect_db_or_exit(read_only=True)
     row = conn.execute("SELECT * FROM emails WHERE id = ?", (message_id,)).fetchone()
     if not row:
         conn.close()
@@ -539,7 +569,7 @@ def email_get(message_id: str) -> None:
 @click.option("--limit", default=200, help="Maximum messages to return")
 def email_thread(conversation_id: str, limit: int) -> None:
     """Get all emails in a thread plus attachment manifests."""
-    conn = connect_db(read_only=True)
+    conn = _connect_db_or_exit(read_only=True)
     rows = conn.execute(
         """
         SELECT * FROM emails
@@ -583,7 +613,7 @@ def email_project_batch(
     include_read: bool,
 ) -> None:
     """Return message bundles for manager-side inbox projection."""
-    conn = connect_db(read_only=True)
+    conn = _connect_db_or_exit(read_only=True)
     payload = _project_batch_output(
         conn,
         since=since,
@@ -766,7 +796,7 @@ def draft_reply(
 @click.option("--limit", default=50, help="Number of attachments to list")
 def attachment_list(email_id: str | None, status_filter: str | None, limit: int) -> None:
     """List attachment manifests."""
-    conn = connect_db(read_only=True)
+    conn = _connect_db_or_exit(read_only=True)
     query = """
         SELECT id, email_id, filename, content_type, size_bytes, extraction_status,
                extraction_error, content_hash, storage_path, downloaded_at, stored_at,
@@ -792,7 +822,7 @@ def attachment_list(email_id: str | None, status_filter: str | None, limit: int)
 @click.argument("attachment_id")
 def attachment_meta(attachment_id: str) -> None:
     """Get attachment manifest metadata."""
-    conn = connect_db(read_only=True)
+    conn = _connect_db_or_exit(read_only=True)
     row = conn.execute(
         """
         SELECT id, email_id, filename, content_type, size_bytes, extraction_status,
@@ -814,7 +844,7 @@ def attachment_meta(attachment_id: str) -> None:
 @click.argument("attachment_id")
 def attachment_text(attachment_id: str) -> None:
     """Get extracted text for an attachment."""
-    conn = connect_db(read_only=True)
+    conn = _connect_db_or_exit(read_only=True)
     row = conn.execute(
         """
         SELECT id, filename, content_type, extraction_status, extracted_text
@@ -835,7 +865,7 @@ def attachment_text(attachment_id: str) -> None:
 @click.option("--output", default=None, help="Optional output path to copy the attachment to")
 def attachment_fetch(attachment_id: str, output: str | None) -> None:
     """Resolve or copy a stored attachment blob."""
-    conn = connect_db(read_only=True)
+    conn = _connect_db_or_exit(read_only=True)
     row = conn.execute(
         """
         SELECT id, filename, content_type, size_bytes, extraction_status, storage_path
@@ -874,19 +904,25 @@ def attachment_fetch(attachment_id: str, output: str | None) -> None:
 @click.option("--facts/--no-facts", default=True, help="Include facts in search")
 def search(query: str, limit: int, mode: str, facts: bool) -> None:
     """Search emails, attachments, and facts using unified search."""
+    _require_db_context_or_exit()
+
     try:
         unified_search = _load_runtime_attr("search", "unified_search")
     except (AttributeError, ImportError) as exc:
         output_error(f"Failed to import unified search: {exc}", "import_error")
         raise SystemExit(1)
 
-    results = unified_search(
-        query=query,
-        limit=limit,
-        mode=mode,
-        include_facts=facts,
-        recency_weight=True,
-    )
+    try:
+        results = unified_search(
+            query=query,
+            limit=limit,
+            mode=mode,
+            include_facts=facts,
+            recency_weight=True,
+        )
+    except Exception as exc:
+        output_error(f"Search failed: {exc}", "search_error")
+        raise SystemExit(1)
 
     output = []
     for result in results:
@@ -922,10 +958,8 @@ def search(query: str, limit: int, mode: str, facts: bool) -> None:
 @click.option("--max-results", default=5, help="Maximum matched emails to return")
 def ask_query(query: str, max_results: int) -> None:
     """Ask inbox-assistant in natural language with grounded retrieval."""
-    user_email = os.environ.get("DELEGATED_USER", "").strip().lower()
-    if not user_email:
-        output_error("DELEGATED_USER environment variable must be set", "missing_user")
-        raise SystemExit(1)
+    context = _require_db_context_or_exit()
+    user_email = str(context.get("mailbox") or context.get("delegated_user") or "").strip().lower()
 
     try:
         run_query_agent = _load_runtime_attr("query_agent", "run_query_agent")
@@ -948,16 +982,26 @@ def ask_query(query: str, max_results: int) -> None:
     output_json(result)
 
 
+@app.command(cls=JSONCommand, name="context")
+def context_command() -> None:
+    """Show resolved inbox binding and mailbox context."""
+    output_json(describe_state_context())
+
+
 @app.command(cls=JSONCommand)
 def dbpath() -> None:
     """Get the absolute path to the inbox database."""
-    output_json({"path": str(get_db_path())})
+    context = describe_state_context()
+    if context.get("error"):
+        output_error(str(context["error"]), "state_error")
+        raise SystemExit(1)
+    output_json({"path": str(context["db_path"])})
 
 
 @app.command(cls=JSONCommand, name="sync-status")
 def sync_status() -> None:
     """Show per-folder sync checkpoints."""
-    conn = connect_db(read_only=True)
+    conn = _connect_db_or_exit(read_only=True)
     rows = conn.execute(
         """
         SELECT folder_id, last_sync_at, sync_type, messages_synced,
@@ -973,7 +1017,7 @@ def sync_status() -> None:
 @app.command(cls=JSONCommand)
 def stats() -> None:
     """Show mailbox corpus statistics."""
-    conn = connect_db(read_only=True)
+    conn = _connect_db_or_exit(read_only=True)
     cursor = conn.cursor()
 
     data: dict[str, Any] = {}
